@@ -1,0 +1,20 @@
+# LF in the index and in the working tree, on every platform.
+*               text=auto eol=lf
+
+*.fs            text eol=lf
+*.fsx           text eol=lf
+*.fsproj        text eol=lf
+*.slnx          text eol=lf
+*.props         text eol=lf
+*.targets       text eol=lf
+*.md            text eol=lf
+*.svg           text eol=lf
+*.csv           text eol=lf
+
+*.png           binary
+*.pdf           binary
+*.nupkg         binary
+*.mrys          binary
+*.arrow         binary
+*.ttf           binary
+*.otf           binary

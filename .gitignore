@@ -1,0 +1,33 @@
+# Build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+publish/
+*.user
+*.suo
+
+# Tests
+TestResults/
+*.trx
+*.actual.png
+*.actual.svg
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+local-feed/
+
+# Editors
+.vs/
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+Thumbs.db
+.DS_Store
