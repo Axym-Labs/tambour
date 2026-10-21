@@ -28,3 +28,8 @@ the table.
 ## Requirements
 
 The .NET 10 SDK (`global.json`).
+
+## Licence
+
+[MPL-2.0](LICENSE). Changes to Tambour's own files stay open; using it, bundling it or building
+on it does not put anything else under the same terms.
