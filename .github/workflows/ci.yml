@@ -79,6 +79,7 @@ jobs:
           echo "NUGET_NOWARN=-p:NoWarn=NU1605" >> "$GITHUB_ENV"
 
       - name: Build
+        id: build
         run: dotnet build Tambour.slnx -c Release ${{ env.NUGET_NOWARN }}
 
       # The headless test paints the figure pane on Skia's raster canvas and compares it with
@@ -90,7 +91,7 @@ jobs:
       # its context through. Without them Avalonia paints on a CPU canvas, and the GPU path the
       # app takes on a real machine goes unchecked.
       - name: Install Mesa's OpenGL
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.build.outcome == 'success' }}
         run: |
           sudo apt-get update -q
           sudo apt-get install --no-install-recommends -y libgl1-mesa-dri libglx-mesa0 libgl1
@@ -98,7 +99,9 @@ jobs:
       # A real window. The runners have no GPU: Linux paints on Mesa's llvmpipe under Xvfb, Windows
       # on ANGLE over WARP. Software GL on both, which is enough to catch a SkiaSharp, HarfBuzzSharp
       # or Avalonia upgrade that breaks the pair. The canvas must be a GPU one.
+      # After the build, whether or not the tests passed: the two checks report on their own.
       - name: Paint a figure in a window
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: bash
         run: |
           run=(dotnet src/Tambour/bin/Release/net10.0/tambour.dll --self-check)
