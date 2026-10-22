@@ -86,13 +86,23 @@ jobs:
       - name: Test
         run: dotnet test Tambour.slnx -c Release --no-build --logger "console;verbosity=normal"
 
+      # Mesa's DRI drivers (llvmpipe among them) and the GLX side Avalonia's X11 backend asks for
+      # its context through. Without them Avalonia paints on a CPU canvas, and the GPU path the
+      # app takes on a real machine goes unchecked.
+      - name: Install Mesa's OpenGL
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install --no-install-recommends -y libgl1-mesa-dri libglx-mesa0 libgl1
+
       # A real window. The runners have no GPU: Linux paints on Mesa's llvmpipe under Xvfb, Windows
       # on ANGLE over WARP. Software GL on both, which is enough to catch a SkiaSharp, HarfBuzzSharp
-      # or Avalonia upgrade that breaks the pair.
-      - name: Paint a figure in a window (Linux)
-        if: runner.os == 'Linux'
-        run: xvfb-run -a dotnet src/Tambour/bin/Release/net10.0/tambour.dll --self-check
-
-      - name: Paint a figure in a window (Windows)
-        if: runner.os == 'Windows'
-        run: dotnet src/Tambour/bin/Release/net10.0/tambour.dll --self-check
+      # or Avalonia upgrade that breaks the pair. The canvas must be a GPU one.
+      - name: Paint a figure in a window
+        shell: bash
+        run: |
+          run=(dotnet src/Tambour/bin/Release/net10.0/tambour.dll --self-check)
+          if [ "$RUNNER_OS" = Linux ]; then run=(xvfb-run -a "${run[@]}"); fi
+          "${run[@]}" 2>&1 | tee self-check.log
+          test "${PIPESTATUS[0]}" -eq 0
+          grep -q 'canvas: OpenGL' self-check.log || { echo "::error::the figure painted on a CPU canvas, not OpenGL"; exit 1; }
