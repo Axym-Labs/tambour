@@ -29,14 +29,12 @@ jobs:
         run: echo "commit=$(sed -n 's:.*<MareyCommit>\(.*\)</MareyCommit>.*:\1:p' Directory.Packages.props)" >> "$GITHUB_OUTPUT"
 
       # The whole history, since the package version counts the commits the pinned one reaches.
-      # While Marey's repository is private, a token that can read it is needed as MAREY_TOKEN.
       - uses: actions/checkout@v4
         with:
           repository: Axym-Labs/marey
           ref: ${{ steps.pin.outputs.commit }}
           path: marey
           fetch-depth: 0
-          token: ${{ secrets.MAREY_TOKEN || github.token }}
 
       - uses: actions/setup-dotnet@v4
         with:

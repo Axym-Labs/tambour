@@ -1,0 +1,8 @@
+<Project>
+
+  <!-- No build telemetry. Avalonia.BuildServices reports each build to Avalonia unless
+       AVALONIA_TELEMETRY_OPTOUT=1 is in the environment, which a property cannot set; this replaces
+       its target, so no build of Tambour reports, wherever it runs. -->
+  <Target Name="AvaloniaStats" />
+
+</Project>
