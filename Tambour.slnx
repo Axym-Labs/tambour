@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Tambour/Tambour.fsproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Tambour.Tests/Tambour.Tests.fsproj" />
+  </Folder>
+</Solution>

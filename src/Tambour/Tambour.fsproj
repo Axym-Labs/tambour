@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>tambour</AssemblyName>
+    <RootNamespace>Tambour</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="FigureView.fs" />
+    <Compile Include="App.fs" />
+    <Compile Include="SelfCheck.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Marey" />
+    <PackageReference Include="Marey.Backend.Skia" />
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Desktop" />
+    <PackageReference Include="Avalonia.Skia" />
+    <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="SkiaSharp" />
+    <PackageReference Include="HarfBuzzSharp" />
+  </ItemGroup>
+
+</Project>
