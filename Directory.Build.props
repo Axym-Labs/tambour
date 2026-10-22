@@ -1,0 +1,18 @@
+<Project>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <OtherFlags>$(OtherFlags) --warnon:1182 --warnon:3390</OtherFlags>
+
+    <!-- No lock files yet. A Linux package built offline (a Flatpak, say) will list its NuGet
+         sources from them, but while Marey comes from a feed each machine packs for itself, two
+         packs of one commit differ byte for byte and a lock file's hash fails restore everywhere
+         but where it was written. They are turned on with Marey from nuget.org. -->
+
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+</Project>

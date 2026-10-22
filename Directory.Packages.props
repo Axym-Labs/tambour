@@ -1,0 +1,34 @@
+<Project>
+
+  <!-- Every package at one exact version. Marey comes from the local feed (tools/marey-feed.sh)
+       until 1.0.0 is on nuget.org; moving to a newer commit of its main is a repack and these two
+       lines. -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <MareyVersion>1.0.0-dev.309</MareyVersion>
+    <MareyCommit>a27511753acc52b06140778dc7f9a923406240f4</MareyCommit>
+    <AvaloniaVersion>12.1.4</AvaloniaVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageVersion Include="Marey" Version="[$(MareyVersion)]" />
+    <PackageVersion Include="Marey.Backend.Skia" Version="[$(MareyVersion)]" />
+
+    <PackageVersion Include="Avalonia" Version="[$(AvaloniaVersion)]" />
+    <PackageVersion Include="Avalonia.Desktop" Version="[$(AvaloniaVersion)]" />
+    <PackageVersion Include="Avalonia.Skia" Version="[$(AvaloniaVersion)]" />
+    <PackageVersion Include="Avalonia.Themes.Fluent" Version="[$(AvaloniaVersion)]" />
+    <PackageVersion Include="Avalonia.Headless.XUnit" Version="[$(AvaloniaVersion)]" />
+
+    <!-- Avalonia.Skia asks for SkiaSharp 3.119 and HarfBuzzSharp 8.3 as lower bounds, Marey for
+         4.151 and 14.2; a process loads one of each, so both are pinned here to Marey's, which
+         Avalonia runs on. The window check fails if a pair stops working together. -->
+    <PackageVersion Include="SkiaSharp" Version="[4.151.1]" />
+    <PackageVersion Include="HarfBuzzSharp" Version="[14.2.1.1]" />
+
+    <PackageVersion Include="xunit.v3" Version="[3.2.2]" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="[3.1.5]" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="[18.11.0]" />
+  </ItemGroup>
+
+</Project>

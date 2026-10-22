@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      skiasharp:
+        description: >-
+          A SkiaSharp version to build against instead of the pinned one, forced past NuGet's
+          downgrade check, to see the window checks fail on a broken pair
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  # Marey is packed from the commit Directory.Packages.props pins, so CI never depends on a feed on
+  # someone's disk. Packed once, on Linux; both OSes restore from the same packages.
+  marey-feed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the pinned commit
+        id: pin
+        run: echo "commit=$(sed -n 's:.*<MareyCommit>\(.*\)</MareyCommit>.*:\1:p' Directory.Packages.props)" >> "$GITHUB_OUTPUT"
+
+      # The whole history, since the package version counts the commits the pinned one reaches.
+      # While Marey's repository is private, a token that can read it is needed as MAREY_TOKEN.
+      - uses: actions/checkout@v4
+        with:
+          repository: Axym-Labs/marey
+          ref: ${{ steps.pin.outputs.commit }}
+          path: marey
+          fetch-depth: 0
+          token: ${{ secrets.MAREY_TOKEN || github.token }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: marey/global.json
+
+      - name: Pack Marey into the local feed
+        run: tools/marey-feed.sh marey
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: marey-feed
+          path: artifacts/marey-feed/*.nupkg
+          if-no-files-found: error
+
+  build:
+    needs: marey-feed
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: marey-feed
+          path: artifacts/marey-feed
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Pin a different SkiaSharp
+        if: inputs.skiasharp != ''
+        shell: bash
+        env:
+          SKIASHARP: ${{ inputs.skiasharp }}
+        run: |
+          sed -i "s/\"SkiaSharp\" Version=\"\[[^]]*\]\"/\"SkiaSharp\" Version=\"[$SKIASHARP]\"/" Directory.Packages.props
+          grep '"SkiaSharp"' Directory.Packages.props
+          echo "NUGET_NOWARN=-p:NoWarn=NU1605" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: dotnet build Tambour.slnx -c Release ${{ env.NUGET_NOWARN }}
+
+      # The headless test paints the figure pane on Skia's raster canvas and compares it with
+      # Marey's PNG export of the same scene.
+      - name: Test
+        run: dotnet test Tambour.slnx -c Release --no-build --logger "console;verbosity=normal"
+
+      # A real window. The runners have no GPU: Linux paints on Mesa's llvmpipe under Xvfb, Windows
+      # on ANGLE over WARP. Software GL on both, which is enough to catch a SkiaSharp, HarfBuzzSharp
+      # or Avalonia upgrade that breaks the pair.
+      - name: Paint a figure in a window (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a dotnet src/Tambour/bin/Release/net10.0/tambour.dll --self-check
+
+      - name: Paint a figure in a window (Windows)
+        if: runner.os == 'Windows'
+        run: dotnet src/Tambour/bin/Release/net10.0/tambour.dll --self-check
