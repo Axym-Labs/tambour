@@ -16,6 +16,7 @@
     <Compile Include="EditsTests.fs" />
     <Compile Include="HistoryTests.fs" />
     <Compile Include="FilesTests.fs" />
+    <Compile Include="TableTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -24,6 +25,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/Tambour/Tambour.fsproj" />
+    <ProjectReference Include="../../src/Tambour.Data/Tambour.Data.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

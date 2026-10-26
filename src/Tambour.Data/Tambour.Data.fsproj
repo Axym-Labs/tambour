@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The table: its columns, the units they carry, and its file. No Avalonia and no FCS, since
+       the worker reads it too. -->
+  <PropertyGroup>
+    <RootNamespace>Tambour.Data</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Table.fs" />
+    <Compile Include="Units.fs" />
+    <Compile Include="Csv.fs" />
+    <Compile Include="Arrow.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Marey.Units" />
+    <PackageReference Include="Apache.Arrow" />
+  </ItemGroup>
+
+</Project>
