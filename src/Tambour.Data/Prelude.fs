@@ -6,6 +6,7 @@ module Tambour.Data.Prelude
 open System
 open System.Text
 open System.Text.RegularExpressions
+open Marey
 
 [<Literal>]
 let FileName = "prelude.fsx"
@@ -254,3 +255,68 @@ let generate (sources: Source list) : string =
 
     line "#endif"
     text.ToString()
+
+// ---- Witnesses ------------------------------------------------------------------------------------
+
+/// Marey's witness for each SI symbol, by its symbol: what a typed column is plotted under.
+let private witnesses =
+    dict
+        [ "m", "U.metre"; "g", "U.kilogram"; "s", "U.second"; "A", "U.ampere"; "K", "U.kelvin"; "mol", "U.mole"; "cd", "U.candela"
+          "Hz", "U.hertz"; "N", "U.newton"; "Pa", "U.pascal"; "J", "U.joule"; "W", "U.watt"; "C", "U.coulomb"; "V", "U.volt"
+          "F", "U.farad"; "Ω", "U.ohm"; "S", "U.siemens"; "Wb", "U.weber"; "T", "U.tesla"; "H", "U.henry"; "lm", "U.lumen"
+          "lx", "U.lux"; "Bq", "U.becquerel"; "Gy", "U.gray"; "Sv", "U.sievert"; "kat", "U.katal" ]
+
+let private prefixes =
+    [ "da"; "Q"; "R"; "Y"; "Z"; "E"; "P"; "T"; "G"; "M"; "k"; "h"; "d"; "c"; "m"; "µ"; "μ"; "u"; "n"; "p"; "f"; "a"; "z"; "y"; "r"; "q" ]
+
+/// A symbol's witness with its prefix taken off, since a typed column holds the coherent SI unit.
+let private witnessOf (symbol: string) =
+    match witnesses.TryGetValue symbol with
+    | true, w -> Some w
+    | _ ->
+        prefixes
+        |> List.tryPick (fun p ->
+            if symbol.Length > p.Length && symbol.StartsWith p then
+                match witnesses.TryGetValue(symbol.Substring p.Length) with
+                | true, w -> Some w
+                | _ -> None
+            else
+                None)
+
+/// The F# expression of Marey's witness a typed column is plotted under, composed as the unit is
+/// written (`V/m` is `U.div U.volt U.metre`), in the coherent SI unit; None for a column the
+/// script sees as a plain float.
+let witness (unitText: string) : string option =
+    match Units.typing unitText with
+    | Typed _ ->
+        match U.tryParse unitText with
+        | Ok u ->
+            let factors = if List.isEmpty u.Factors then [ u.Symbol, 1 ] else u.Factors
+
+            let power (w: string) (n: int) =
+                match n with
+                | 1 -> w
+                | 2 -> $"(U.square {w})"
+                | 3 -> $"(U.cube {w})"
+                | n -> List.replicate (n - 1) w |> List.fold (fun acc x -> $"(U.mul {acc} {x})") w
+
+            let parts sign =
+                factors
+                |> List.filter (fun (_, e) -> sign * e > 0)
+                |> List.map (fun (s, e) -> witnessOf s |> Option.map (fun w -> power w (abs e)))
+
+            let product (ws: string option list) =
+                if ws |> List.exists Option.isNone then None
+                else
+                    match ws |> List.choose id with
+                    | [] -> Some ""
+                    | first :: rest -> Some(rest |> List.fold (fun acc w -> $"(U.mul {acc} {w})") first)
+
+            match product (parts 1), product (parts -1) with
+            | Some "", Some "" -> None
+            | Some n, Some "" -> Some n
+            | Some "", Some d -> Some $"(U.recip {d})"
+            | Some n, Some d -> Some $"(U.div {n} {d})"
+            | _ -> None
+        | Error _ -> None
+    | _ -> None

@@ -202,3 +202,51 @@ let ``a table's edits run the figure again, rename a column in the prelude, undo
     pumpUntil 10.0 "the table removed" (fun () -> window.GetVisualDescendants().OfType<TabItem>().Count() = 2)
     File.Delete outside
     window.Close()
+
+[<AvaloniaFact>]
+let ``two columns selected are plotted, and a row picked in the figure is marked in the grid`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-plotpick").FullName
+    let t = Array.init 30 (fun i -> float i * 0.1)
+
+    let trials: Tambour.Data.Table =
+        { Name = "trials"
+          Columns =
+            [ { Name = "Time"; Unit = "s"; Values = Tambour.Data.Floats t }
+              { Name = "Height"; Unit = "m"; Values = Tambour.Data.Floats(t |> Array.map (fun t -> 50.0 - 4.9 * t * t)) } ] }
+
+    Tambour.Data.Csv.writeFile (Path.Combine(dir, "trials.csv")) trials
+    File.WriteAllText(Path.Combine(dir, "figure.fsx"), "// Figures of the trials.\n")
+    Project.write dir (Project.defaults "figure.fsx")
+
+    let window = new Shell.MainWindow(Shell.example, Some dir)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    let editor = window.GetVisualDescendants().OfType<ScriptEditor>().Single()
+    pumpUntil 30.0 "the project's script" (fun () -> editor.Text.StartsWith "// Figures")
+
+    // Both columns selected in the grid, then plotted: a block written, run, and shown.
+    window.Post(Shell.SelectTab 1)
+    pumpUntil 10.0 "the table's tab" (fun () -> window.GetVisualDescendants().OfType<TableGrid>().Any())
+    let grid = window.GetVisualDescendants().OfType<TableGrid>().Single()
+    grid.Select({ Column = 0; Row = 0 }, { Column = 1; Row = 0 })
+    window.Post Shell.PlotSelected
+    pumpUntil 10.0 "the block written" (fun () -> editor.Text.Contains "plot trials {")
+    Assert.Contains("x U.second (fun r -> r.Time)", editor.Text)
+    Assert.Contains("y U.metre (fun r -> r.Height)", editor.Text)
+    let pane = window.GetVisualDescendants().OfType<FigurePane>().Single()
+    pumpUntil 60.0 "the figure" (fun () -> not (isNull pane.Picture))
+
+    // An area around the whole plot picks every row; each is ringed in the figure.
+    window.Post(Shell.Pick(Avalonia.Rect(0.0, 0.0, float pane.Picture.Extent.Width, float pane.Picture.Extent.Height)))
+    pumpUntil 30.0 "every row ringed" (fun () -> pane.Marks.Length = 30)
+
+    // Ctrl+click on one ring picks its row alone, and the grid marks it.
+    let ring = pane.Marks.[7]
+    let at = (Avalonia.VisualExtensions.TranslatePoint(pane, ring, window)).Value
+    window.MouseDown(at, MouseButton.Left, RawInputModifiers.Control)
+    window.MouseUp(at, MouseButton.Left, RawInputModifiers.Control)
+    pumpUntil 30.0 "the row picked" (fun () -> pane.Marks.Length = 1)
+    window.Post(Shell.SelectTab 1)
+    pumpUntil 10.0 "the grid shown again" (fun () -> window.GetVisualDescendants().OfType<TableGrid>().Any())
+    Assert.Equal<Set<int>>(set [ 7 ], window.GetVisualDescendants().OfType<TableGrid>().Single().Marked)
+    window.Close()

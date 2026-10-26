@@ -132,6 +132,9 @@ type TableGrid() as this =
     static let columnWidth = 120.0
 
     let edited = Event<TableEdit list>()
+    let selectionChanged = Event<int list>()
+    /// Rows marked from elsewhere, as picked in a figure.
+    let mutable marked: Set<int> = Set.empty
     let refused = Event<string>()
     let header = Event<int>()
 
@@ -269,6 +272,8 @@ type TableGrid() as this =
         focus <- c
         if not extend then anchor <- c
         bringIntoView c
+        let c0, c1 = min anchor.Column focus.Column, max anchor.Column focus.Column
+        selectionChanged.Trigger [ c0..c1 ]
 
     /// The cell under a point, or the column whose header it is over.
     let hit (p: Point) =
@@ -400,6 +405,24 @@ type TableGrid() as this =
     [<CLIEvent>]
     member _.Refused = refused.Publish
 
+    /// The columns the selection covers, left to right, after each change to it.
+    [<CLIEvent>]
+    member _.SelectionChanged = selectionChanged.Publish
+
+    /// Rows marked from elsewhere, drawn highlighted; the first is brought into view.
+    member _.Marked
+        with get () = marked
+        and set (rows: Set<int>) =
+            if rows <> marked then
+                marked <- rows
+
+                if not rows.IsEmpty then
+                    let first = Set.minElement rows
+                    if first < top || first >= top + visibleRows () then top <- max 0 (first - 2)
+                    clampScroll ()
+
+                this.InvalidateVisual()
+
     /// A column's header double-clicked, to edit the column.
     [<CLIEvent>]
     member _.HeaderActivated = header.Publish
@@ -480,7 +503,11 @@ type TableGrid() as this =
             dc.FillRectangle(headerBrush, Rect(0.0, 0.0, bounds.Width, headerHeight))
             dc.FillRectangle(headerBrush, Rect(0.0, 0.0, numbers, bounds.Height))
 
-            // The selection, under the text.
+            // Marked rows, then the selection, under the text.
+            for i in 0 .. shownRows - 1 do
+                if marked.Contains(top + i) then
+                    dc.FillRectangle(SolidColorBrush(Color.FromArgb(70uy, 250uy, 200uy, 40uy)), Rect(0.0, headerHeight + float i * rowHeight, bounds.Width, rowHeight))
+
             let c0, c1, r0, r1 = selectionBounds ()
             let a = cellRect { Column = max c0 left; Row = max r0 top }
             let b = cellRect { Column = c1; Row = r1 }

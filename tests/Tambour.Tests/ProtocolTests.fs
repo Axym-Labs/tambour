@@ -30,7 +30,9 @@ let requests: obj[] list =
       Request.Select 2
       Request.Live { Kind = "zoom"; Args = [| 1.0; 2.5; nan; infinity |] }
       Request.Export { Format = "png"; Width = 800.0; Height = 500.0; Skia = { Dpi = 3.0; FontFiles = [||] } }
-      Request.Table { Name = "trials λ"; Bytes = Array.init 1000 byte } ]
+      Request.Table { Name = "trials λ"; Bytes = Array.init 1000 byte }
+      Request.Pick { Values = [| 1.0; 2.0; nan; 4.5 |]; Clamp = true }
+      Request.Place { Values = [||]; Clamp = false } ]
     |> List.map (fun r -> [| box r |])
 
 let replies: obj[] list =
@@ -63,7 +65,9 @@ let replies: obj[] list =
             Lines = [| "x 1 s"; "y 2 m" |] }
       Reply.Output { Stream = "err"; Text = "ünïcode\n" }
       Reply.Exported { Figure = 1; Width = 800.0; Height = 500.0; Bytes = Array.init 300 byte }
-      Reply.Failed "no" ]
+      Reply.Failed "no"
+      Reply.Picked { Figure = 1; Values = [| 0.5; nan |] }
+      Reply.Placed { Figure = 0; Values = [| 10.0; 20.0 |] } ]
     |> List.map (fun r -> [| box r |])
 
 // Structural equality would hold even for a codec that dropped a NaN, so the JSON form of each

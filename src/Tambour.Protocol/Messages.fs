@@ -48,6 +48,11 @@ type TableBytes =
 
     override this.GetHashCode() = hash (this.Name, this.Bytes.Length)
 
+/// Points, as pairs one after the other: `x0, y0, x1, y1, …`. A picked point off every plot is
+/// clamped onto the first plot's rectangle where `Clamp` is set, as an area's corners are, and is
+/// no datum otherwise.
+type Points = { Values: float[]; Clamp: bool }
+
 /// What the app sends a worker.
 [<RequireQualifiedAccess>]
 type Request =
@@ -59,6 +64,10 @@ type Request =
     | Export of Export
     /// A table's columns, replacing any of its name.
     | Table of TableBytes
+    /// Points in the figure on screen, in its px, to be read back as data.
+    | Pick of Points
+    /// Data, in each axis's own unit, to be placed in the figure on screen, in its px.
+    | Place of Points
 
 /// A worker started and ran its prelude.
 type Ready =
@@ -167,6 +176,9 @@ type Frame =
 
     override this.GetHashCode() = hash (this.Figure, this.Width, this.Height, this.Bytes.Length)
 
+/// Points answered for the figure on screen.
+type Located = { Figure: int; Values: float[] }
+
 /// What a worker sends back.
 [<RequireQualifiedAccess>]
 type Reply =
@@ -181,6 +193,10 @@ type Reply =
     | Output of Output
     /// The bytes of an export, in the format asked for, at the size asked for.
     | Exported of Frame
+    /// The data at each point picked, both NaN for a point off every plot.
+    | Picked of Located
+    /// Where each datum placed is in the figure, in its px, both NaN for one it cannot place.
+    | Placed of Located
     /// A request the worker could not carry out, in a sentence.
     | Failed of message: string
 
@@ -248,6 +264,8 @@ type AnalysisRequest =
     /// What each action would come to for this figure, and the columns its rows have.
     | Actions of FigureIn
     | Act of ActionOn
+    /// What a figure's plot block plots: its rows and its x and y fields.
+    | Plotted of FigureIn
 
 type Checked = { Id: int; Diagnostics: Diagnostic[] }
 
@@ -287,6 +305,13 @@ type Acted =
       Text: string
       Outcome: ActionOutcome }
 
+/// A figure's rows and the fields its x and y read, all empty where it is not a plot block.
+type PlottedFields =
+    { Id: int
+      Rows: string
+      X: string
+      Y: string }
+
 [<RequireQualifiedAccess>]
 type AnalysisReply =
     /// Started, in this many milliseconds from the process starting.
@@ -298,4 +323,5 @@ type AnalysisReply =
     | Used of Used
     | Actions of ActionsFor
     | Acted of Acted
+    | Plotted of PlottedFields
     | Failed of id: int * message: string

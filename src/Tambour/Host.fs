@@ -457,6 +457,7 @@ type LanguageService(command: Command, init: AnalysisInit) =
                                     | AnalysisReply.Used r -> r.Id
                                     | AnalysisReply.Actions r -> r.Id
                                     | AnalysisReply.Acted r -> r.Id
+                                    | AnalysisReply.Plotted r -> r.Id
                                     | AnalysisReply.Failed(id, _) -> id
                                     | AnalysisReply.Started _ -> -1
 
@@ -551,6 +552,13 @@ type LanguageService(command: Command, init: AnalysisInit) =
             match! this.AskAsync(fun id -> AnalysisRequest.Act { Id = id; Text = text; Path = path; Figure = figure; Action = action }) with
             | AnalysisReply.Acted a -> return a
             | other -> return failwith $"an action answered with {other}"
+        }
+
+    member this.PlottedAsync(text: string, path: string, figure: string) : Task<PlottedFields> =
+        task {
+            match! this.AskAsync(fun id -> AnalysisRequest.Plotted { Id = id; Text = text; Path = path; Figure = figure }) with
+            | AnalysisReply.Plotted p -> return p
+            | other -> return failwith $"plotted answered with {other}"
         }
 
     interface IDisposable with

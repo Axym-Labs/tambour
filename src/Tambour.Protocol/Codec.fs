@@ -78,6 +78,8 @@ module Codec =
             Buffer.BlockCopy(name, 0, bytes, 5, name.Length)
             Buffer.BlockCopy(t.Bytes, 0, bytes, 5 + name.Length, t.Bytes.Length)
             bytes
+        | Request.Pick m -> tagged 7uy m
+        | Request.Place m -> tagged 8uy m
 
     let decodeRequest (bytes: byte[]) : Request =
         nonEmpty bytes
@@ -93,6 +95,8 @@ module Codec =
             let n = BinaryPrimitives.ReadInt32LittleEndian(ReadOnlySpan(bytes, 1, 4))
             if n < 0 || 5 + n > bytes.Length then raise (ProtocolException $"a table's name of {n} bytes")
             Request.Table { Name = Text.Encoding.UTF8.GetString(bytes, 5, n); Bytes = bytes.[5 + n ..] }
+        | 7uy -> Request.Pick(body bytes)
+        | 8uy -> Request.Place(body bytes)
         | tag -> raise (ProtocolException $"no request has the tag {tag}")
 
     let encodeReply (reply: Reply) : byte[] =
@@ -106,6 +110,8 @@ module Codec =
         | Reply.Output m -> tagged 70uy m
         | Reply.Exported f -> binary 71uy f
         | Reply.Failed message -> tagged 72uy message
+        | Reply.Picked m -> tagged 73uy m
+        | Reply.Placed m -> tagged 74uy m
 
     let decodeReply (bytes: byte[]) : Reply =
         nonEmpty bytes
@@ -120,6 +126,8 @@ module Codec =
         | 70uy -> Reply.Output(body bytes)
         | 71uy -> Reply.Exported(frame bytes)
         | 72uy -> Reply.Failed(body bytes)
+        | 73uy -> Reply.Picked(body bytes)
+        | 74uy -> Reply.Placed(body bytes)
         | tag -> raise (ProtocolException $"no reply has the tag {tag}")
 
     // The language service's requests from 16, its replies from 96.
@@ -134,6 +142,7 @@ module Codec =
         | AnalysisRequest.Uses m -> tagged 21uy m
         | AnalysisRequest.Actions m -> tagged 22uy m
         | AnalysisRequest.Act m -> tagged 23uy m
+        | AnalysisRequest.Plotted m -> tagged 24uy m
 
     let decodeAnalysisRequest (bytes: byte[]) : AnalysisRequest =
         nonEmpty bytes
@@ -147,6 +156,7 @@ module Codec =
         | 21uy -> AnalysisRequest.Uses(body bytes)
         | 22uy -> AnalysisRequest.Actions(body bytes)
         | 23uy -> AnalysisRequest.Act(body bytes)
+        | 24uy -> AnalysisRequest.Plotted(body bytes)
         | tag -> raise (ProtocolException $"no analysis request has the tag {tag}")
 
     let encodeAnalysisReply (reply: AnalysisReply) : byte[] =
@@ -159,6 +169,7 @@ module Codec =
         | AnalysisReply.Used m -> tagged 101uy m
         | AnalysisReply.Actions m -> tagged 103uy m
         | AnalysisReply.Acted m -> tagged 104uy m
+        | AnalysisReply.Plotted m -> tagged 105uy m
         | AnalysisReply.Failed(id, message) -> tagged 102uy {| Id = id; Message = message |}
 
     let decodeAnalysisReply (bytes: byte[]) : AnalysisReply =
@@ -173,6 +184,7 @@ module Codec =
         | 101uy -> AnalysisReply.Used(body bytes)
         | 103uy -> AnalysisReply.Actions(body bytes)
         | 104uy -> AnalysisReply.Acted(body bytes)
+        | 105uy -> AnalysisReply.Plotted(body bytes)
         | 102uy ->
             let f: {| Id: int; Message: string |} = body bytes
             AnalysisReply.Failed(f.Id, f.Message)
