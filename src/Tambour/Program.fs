@@ -12,11 +12,7 @@ let private usage = "usage: tambour [--self-check | --check-pane [--scaling <s>]
 
 [<MethodImpl(MethodImplOptions.NoInlining)>]
 let private window (argv: string[]) =
-    App.MainWindow <- fun () ->
-        use measurer = new Marey.SkiaTextMeasurer()
-        let node = Marey.Chart.toSceneWith measurer SelfCheck.extent (SelfCheck.figure ())
-        Window(Title = "Tambour", SizeToContent = SizeToContent.WidthAndHeight,
-               Content = new FigurePane(Picture = Picture(node, SelfCheck.extent, 0)))
+    App.MainWindow <- fun () -> new Shell.MainWindow() :> Window
     App.builder().StartWithClassicDesktopLifetime argv
 
 [<MethodImpl(MethodImplOptions.NoInlining)>]

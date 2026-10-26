@@ -106,3 +106,23 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then
             grep -q 'canvas: OpenGL' self-check.log || { echo "::error::the figure painted on a CPU canvas, not OpenGL"; exit 1; }
           fi
+
+      # The figure pane in a real window, both paint paths against Marey's PNG export, and a
+      # million points timed from their bytes to the screen. Linux clears Avalonia's llvmpipe
+      # blacklist for this check, so it paints on software GL rather than the CPU.
+      - name: Check the figure pane
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          run=(dotnet src/Tambour/bin/Release/net10.0/tambour.dll --check-pane)
+          if [ "$RUNNER_OS" = Linux ]; then run=(xvfb-run -a "${run[@]}"); fi
+          "${run[@]}"
+
+      # At a scaling of 2 the GPU path draws its 1x image stretched, which the check reports until
+      # Marey's GPU renderer can render at a scale; reported, not required.
+      - name: Check the figure pane at a scaling of 2
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'Linux' }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: xvfb-run -a dotnet src/Tambour/bin/Release/net10.0/tambour.dll --check-pane --scaling 2

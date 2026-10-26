@@ -13,6 +13,7 @@
     <Compile Include="Host.fs" />
     <Compile Include="FigurePane.fs" />
     <Compile Include="App.fs" />
+    <Compile Include="Shell.fs" />
     <Compile Include="SelfCheck.fs" />
     <Compile Include="PaneCheck.fs" />
     <Compile Include="Program.fs" />
@@ -31,6 +32,9 @@
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Skia" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="Avalonia.FuncUI" />
+    <PackageReference Include="Avalonia.FuncUI.Elmish" />
+    <PackageReference Include="Elmish" />
     <PackageReference Include="SkiaSharp" />
     <PackageReference Include="HarfBuzzSharp" />
   </ItemGroup>
