@@ -14,7 +14,8 @@ fi
 empty=$(mktemp -d)
 trap 'rmdir "$empty"' EXIT
 
-args=(--bind / / --dev /dev --proc /proc --unshare-net --die-with-parent)
+# The GPU stays, as a user has one; only .NET is taken away.
+args=(--bind / / --dev /dev --dev-bind-try /dev/dri /dev/dri --proc /proc --unshare-net --die-with-parent)
 for d in /usr/share/dotnet /usr/lib/dotnet /usr/lib64/dotnet /usr/local/share/dotnet /opt/dotnet \
          "$HOME/.dotnet" "$HOME/.nuget"; do
   if [ -e "$d" ]; then args+=(--bind "$empty" "$d"); fi

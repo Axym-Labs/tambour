@@ -21,6 +21,7 @@
     <Compile Include="AnalysisCheck.fs" />
     <Compile Include="SelfCheck.fs" />
     <Compile Include="PaneCheck.fs" />
+    <Compile Include="PackageCheck.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
