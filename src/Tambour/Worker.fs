@@ -266,6 +266,7 @@ type private Worker(send: Reply -> unit, flush: unit -> unit) =
         match shown with
         | None -> send (Reply.Failed "there is no figure on screen to export")
         | Some s ->
+            let skia = if isNull (box m.Skia) then skia else m.Skia
             let extent: Extent<px> = { Width = m.Width * 1.0<px>; Height = m.Height * 1.0<px> }
             let figure = Live.view s.Live s.State
 

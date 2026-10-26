@@ -31,7 +31,9 @@ type Export =
     { /// `png`, `pdf` or `svg`.
       Format: string
       Width: float
-      Height: float }
+      Height: float
+      /// The project's text settings, or null for the worker's own.
+      Skia: SkiaSettings }
 
 /// What the app sends a worker.
 [<RequireQualifiedAccess>]

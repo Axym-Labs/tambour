@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main, 'build/**']
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
     inputs:
@@ -175,3 +176,65 @@ jobs:
       - name: The unit error, with no .NET
         timeout-minutes: 3
         run: tools/no-dotnet.sh artifacts/publish/linux-x64/tambour --check-analysis tests/Tambour.Tests/scripts/unit-error.fsx
+
+  # The packages, on a version tag or by hand: a tarball and an AppImage for Linux, a zip for
+  # Windows, kept as the run's artifacts; nothing is released from here. The Linux tarball, unpacked
+  # in a sandbox with no .NET, is checked end to end: a script opened, drawn, its unit error shown
+  # and taken back, an action applied and taken back, and a PNG exported that renderPng draws.
+  # The Windows zip is checked by hand on a clean machine.
+  package:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
+    needs: marey-feed
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: marey-feed
+          path: artifacts/marey-feed
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Install bubblewrap and Xvfb
+        timeout-minutes: 5
+        run: |
+          sudo apt-get install -y --no-install-recommends bubblewrap xvfb xauth
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      # AppImageKit's release 13, run without FUSE.
+      - name: Fetch appimagetool
+        timeout-minutes: 3
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/appimagetool.AppImage" \
+            https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/appimagetool.AppImage"
+          printf '#!/bin/sh\nexec "%s" --appimage-extract-and-run "$@"\n' "$RUNNER_TEMP/appimagetool.AppImage" > "$RUNNER_TEMP/bin/appimagetool"
+          chmod +x "$RUNNER_TEMP/bin/appimagetool"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Build the packages
+        run: tools/package.sh "${GITHUB_REF_NAME#v}"
+
+      - name: The package, end to end, with no .NET
+        timeout-minutes: 5
+        run: |
+          unpacked=$(mktemp -d)
+          tar -xzf artifacts/package/*-linux-x64.tar.gz -C "$unpacked"
+          xvfb-run -a tools/no-dotnet.sh "$unpacked"/tambour-*/tambour --check-package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: |
+            artifacts/package/*.tar.gz
+            artifacts/package/*.AppImage
+            artifacts/package/*.zip
+          if-no-files-found: error
+
