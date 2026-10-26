@@ -37,22 +37,38 @@ module TextEdit =
           Removed = before.Substring(prefix, before.Length - prefix - suffix)
           Inserted = after.Substring(prefix, after.Length - prefix - suffix) }
 
+/// What the history changes: the script and the project's tables.
+type State =
+    { Script: string
+      Tables: Map<string, Tambour.Data.Table> }
+
 /// One step of the history.
 type Entry =
     /// Edits to the script, in the order they were made.
     | Script of TextEdit list
+    /// Edits to the tables, in the order they were made.
+    | Tables of Tambour.Data.TableEdit list
 
 module Entry =
 
-    /// The script after the entry is done.
-    let redo (script: string) (entry: Entry) =
+    /// The state after the entry is done.
+    let redo (state: State) (entry: Entry) =
         match entry with
-        | Script edits -> edits |> List.fold TextEdit.apply script
+        | Script edits -> { state with Script = edits |> List.fold TextEdit.apply state.Script }
+        | Tables edits -> { state with Tables = edits |> List.fold Tambour.Data.TableEdit.apply state.Tables }
 
-    /// The script after the entry is taken back.
-    let undo (script: string) (entry: Entry) =
+    /// The state after the entry is taken back.
+    let undo (state: State) (entry: Entry) =
         match entry with
-        | Script edits -> edits |> List.rev |> List.map TextEdit.invert |> List.fold TextEdit.apply script
+        | Script edits -> { state with Script = edits |> List.rev |> List.map TextEdit.invert |> List.fold TextEdit.apply state.Script }
+        | Tables edits ->
+            { state with Tables = edits |> List.rev |> List.map Tambour.Data.TableEdit.invert |> List.fold Tambour.Data.TableEdit.apply state.Tables }
+
+    /// Whether doing or undoing the entry changes a table's columns, and so the prelude.
+    let changesSchema (entry: Entry) =
+        match entry with
+        | Script _ -> false
+        | Tables edits -> edits |> List.exists Tambour.Data.TableEdit.changesSchema
 
 /// How long a pause in typing ends the group being typed.
 let pause = TimeSpan.FromSeconds 1.0
@@ -109,6 +125,15 @@ let record (now: DateTime) (typed: bool) (edit: TextEdit) (h: History) : History
             { Done = Script [ edit ] :: h.Done
               Undone = []
               Typing = if typed then Some now else None }
+
+/// Records edits to the tables, as one entry of their own.
+let recordTables (edits: Tambour.Data.TableEdit list) (h: History) : History =
+    if edits.IsEmpty then
+        h
+    else
+        { Done = Tables edits :: h.Done
+          Undone = []
+          Typing = None }
 
 /// Takes the latest entry back: the entry, to be undone, and the history after.
 let undo (h: History) : (Entry * History) option =

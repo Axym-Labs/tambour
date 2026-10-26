@@ -12,6 +12,9 @@ open Xunit
 
 let private t0 = DateTime(2026, 10, 26, 12, 0, 0, DateTimeKind.Utc)
 
+/// The history's state holding a script alone.
+let private st (script: string) = { Script = script; Tables = Map.empty }
+
 /// Types `text` one character at a time from `offset`, `gap` apart, into `h`.
 let private typeIn (start: DateTime) (gap: TimeSpan) (offset: int) (text: string) (h: History) =
     text
@@ -19,7 +22,7 @@ let private typeIn (start: DateTime) (gap: TimeSpan) (offset: int) (text: string
     |> Seq.fold (fun h (i, c) -> record (start + gap * float i) true { Offset = offset + i; Removed = ""; Inserted = string c } h) h
 
 let private inserted (h: History) =
-    h.Done |> List.rev |> List.map (function Script edits -> edits |> List.map (fun e -> e.Inserted) |> String.concat "")
+    h.Done |> List.rev |> List.map (function Script edits -> edits |> List.map (fun e -> e.Inserted) |> String.concat "" | Tables _ -> "")
 
 [<Fact>]
 let ``typing is grouped by word, and a line break and a pause end a group`` () =
@@ -41,8 +44,8 @@ let ``backspaces are one entry, and a GUI action is one of its own`` () =
         |> List.fold (fun h (i, at) -> record (t0 + fast * float i) true { Offset = at; Removed = string text.[at]; Inserted = "" } h) empty
 
     Assert.Equal(1, h.Done.Length)
-    Assert.Equal("abc", Entry.redo text h.Done.Head)
-    Assert.Equal(text, Entry.undo "abc" h.Done.Head)
+    Assert.Equal("abc", (Entry.redo (st text) h.Done.Head).Script)
+    Assert.Equal(text, (Entry.undo (st "abc") h.Done.Head).Script)
     let h = record (t0 + fast * 4.0) false (TextEdit.between "abc" "abcX") h
     let h = record (t0 + fast * 5.0) true { Offset = 4; Removed = ""; Inserted = "Y" } h
     Assert.Equal(3, h.Done.Length)
@@ -51,9 +54,9 @@ let ``backspaces are one entry, and a GUI action is one of its own`` () =
 let ``undo and redo walk the history, and something new forgets what was undone`` () =
     let h = empty |> record t0 false (TextEdit.between "a" "ab") |> record t0 false (TextEdit.between "ab" "abc")
     let e1, h = (undo h).Value
-    Assert.Equal("ab", Entry.undo "abc" e1)
+    Assert.Equal("ab", (Entry.undo (st "abc") e1).Script)
     let e2, h = (redo h).Value
-    Assert.Equal("abc", Entry.redo "ab" e2)
+    Assert.Equal("abc", (Entry.redo (st "ab") e2).Script)
     let _, h = (undo h).Value
     let h = record t0 false (TextEdit.between "ab" "abd") h
     Assert.True((redo h).IsNone)
@@ -175,7 +178,7 @@ let private replay (script: int) (session: Step list) =
 
     for expected in expectedBack do
         let entry, h' = (undo h).Value
-        t <- Entry.undo t entry
+        t <- (Entry.undo (st t) entry).Script
         h <- h'
 
         if t <> expected then
@@ -187,7 +190,7 @@ let private replay (script: int) (session: Step list) =
     // Redone to the end.
     for expected in List.rev after do
         let entry, h' = (redo h).Value
-        t <- Entry.redo t entry
+        t <- (Entry.redo (st t) entry).Script
         h <- h'
 
         if t <> expected then
@@ -202,3 +205,125 @@ let ``any interleaving of typing and actions, undone, gives the original byte fo
         Prop.forAll (Arb.fromGen (Gen.zip (Gen.choose (0, 4)) steps)) (fun (script, session) -> replay script session)
 
     Check.One(Config.QuickThrowOnFailure.WithMaxTest(300).WithEndSize(80), property)
+
+// ---- Gate: table edits on the same history ----------------------------------------------------------
+
+/// A step of a session that edits the table as well as the script.
+type TableStep =
+    | Text of Step
+    | Cell of column: float * row: float * seed: int
+    | AddColumn of at: float * kind: int
+    | RemoveColumn of at: float
+    | Rename of at: float * suffix: int
+    | AddRows of at: float * count: int
+    | RemoveRows of at: float * count: int
+
+let private tableSteps =
+    let fraction = Gen.choose (0, 1000) |> Gen.map (fun n -> float n / 1000.0)
+
+    let textStep =
+        let character = Gen.elements [ 'a'; ' '; '\n'; '(' ]
+        Gen.oneof [ Gen.map2 (fun at c -> Type(at, c)) fraction character; Gen.map Backspace fraction; Gen.constant Pause ]
+
+    Gen.frequency
+        [ 3, Gen.map Text textStep
+          5, Gen.map3 (fun c r s -> Cell(c, r, s)) fraction fraction (Gen.choose (-1000, 1000))
+          1, Gen.map2 (fun at k -> AddColumn(at, k)) fraction (Gen.choose (0, 4))
+          1, Gen.map RemoveColumn fraction
+          1, Gen.map2 (fun at n -> Rename(at, n)) fraction (Gen.choose (0, 99))
+          2, Gen.map2 (fun at n -> AddRows(at, n)) fraction (Gen.choose (1, 5))
+          2, Gen.map2 (fun at n -> RemoveRows(at, n)) fraction (Gen.choose (1, 5)) ]
+    |> Gen.listOf
+
+let private trials =
+    { Tambour.Data.Table.Name = "trials"
+      Tambour.Data.Table.Columns =
+        [ { Name = "Time"; Unit = "s"; Values = Tambour.Data.Floats(Array.init 20 (fun i -> float i * 0.1)) }
+          { Name = "Displacement"; Unit = "m"; Values = Tambour.Data.Floats(Array.init 20 (fun i -> float (i * i))) }
+          { Name = "Sample"; Unit = null; Values = Tambour.Data.Texts(Array.init 20 (fun i -> $"S{i % 3}")) } ] }
+
+/// A value of a column's type from a seed.
+let private valueOf (kind: string) (seed: int) =
+    match kind with
+    | "float" -> Tambour.Data.Floats [| (if seed % 7 = 0 then nan else float seed / 8.0) |]
+    | "int" -> Tambour.Data.Ints [| seed |]
+    | "string" -> Tambour.Data.Texts [| $"v{seed}" |]
+    | "bool" -> Tambour.Data.Bools [| seed % 2 = 0 |]
+    | _ -> Tambour.Data.Dates [| DateTime.UnixEpoch.AddSeconds(float seed) |]
+
+let private replayTables (session: TableStep list) =
+    let original = { Script = File.ReadAllText(scriptNames.[0]); Tables = Map.ofList [ "trials", trials ] }
+    let mutable state = original
+    let mutable history = empty
+    let mutable after: State list = []
+    let mutable clock = t0
+    let kinds = [| "float"; "int"; "string"; "bool"; "date" |]
+
+    let note (h: History) =
+        if h.Done.Length > history.Done.Length then after <- state :: after
+        elif h.Done.Length = history.Done.Length && h.Done.Length > 0 then after <- state :: List.tail after
+        history <- h
+
+    let edit (e: Tambour.Data.TableEdit) =
+        state <- { state with Tables = Tambour.Data.TableEdit.apply state.Tables e }
+        note (recordTables [ e ] history)
+
+    for step in session do
+        let t = state.Tables.["trials"]
+        let width = t.Columns.Length
+        let pick (at: float) n = min (n - 1) (int (at * float n))
+
+        match step with
+        | Text(Type(at, c)) ->
+            clock <- clock + TimeSpan.FromMilliseconds 120.0
+            let e = { Offset = int (at * float state.Script.Length); Removed = ""; Inserted = string c }
+            state <- { state with Script = TextEdit.apply state.Script e }
+            note (record clock true e history)
+        | Text(Backspace at) ->
+            clock <- clock + TimeSpan.FromMilliseconds 120.0
+            let offset = int (at * float state.Script.Length)
+
+            if offset > 0 then
+                let e = { Offset = offset - 1; Removed = string state.Script.[offset - 1]; Inserted = "" }
+                state <- { state with Script = TextEdit.apply state.Script e }
+                note (record clock true e history)
+        | Text _ -> clock <- clock + TimeSpan.FromSeconds 2.0
+        | Cell(c, r, seed) when width > 0 && t.Rows > 0 ->
+            let column = pick c width
+            edit (Tambour.Data.TableEdit.setCells t column (pick r t.Rows) (valueOf t.Columns.[column].Values.Kind seed))
+        | AddColumn(at, k) -> edit (Tambour.Data.TableEdit.addColumn t (int (at * float width)) $"new{history.Done.Length}" kinds.[k] null)
+        | RemoveColumn at when width > 1 -> edit (Tambour.Data.TableEdit.removeColumn t (pick at width))
+        | Rename(at, n) when width > 0 ->
+            let i = pick at width
+            edit (Tambour.Data.TableEdit.changeColumn t i { t.Columns.[i] with Name = $"{t.Columns.[i].Name}_{n}" })
+        | AddRows(at, n) -> edit (Tambour.Data.TableEdit.addRows t (int (at * float t.Rows)) n)
+        | RemoveRows(at, n) when t.Rows > 0 ->
+            let row = pick at t.Rows
+            edit (Tambour.Data.TableEdit.removeRows t row (min n (t.Rows - row)))
+        | _ -> ()
+
+    let final = state
+    let expectedBack = match after with [] -> [] | _ :: older -> older @ [ original ]
+    let mutable h = history
+    let mutable s = final
+
+    for expected in expectedBack do
+        let entry, h' = (undo h).Value
+        s <- Entry.undo s entry
+        h <- h'
+        if s <> expected then failwithf "an undo gave a state that was not there:\n%A\n---\n%A" s expected
+
+    if s <> original then failwith "undone to the start, the script and table are not the original"
+
+    for expected in List.rev after do
+        let entry, h' = (redo h).Value
+        s <- Entry.redo s entry
+        h <- h'
+        if s <> expected then failwithf "a redo gave a state that was not there:\n%A\n---\n%A" s expected
+
+    if s <> final then failwith "redone to the end, the script and table are not the final ones"
+    true
+
+[<Fact>]
+let ``any interleaving of table edits and typing, undone, gives the original script and table, and redone the final`` () =
+    Check.One(Config.QuickThrowOnFailure.WithMaxTest(300).WithEndSize(60), Prop.forAll (Arb.fromGen tableSteps) replayTables)

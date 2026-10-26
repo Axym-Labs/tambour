@@ -153,7 +153,9 @@ type Session(references: string seq) =
 
     let argv =
         Array.append
-            [| "fsi.exe"; "--noninteractive"; "--nologo"; "--quiet"; "--gui-"; "--optimize+"; "--define:TAMBOUR" |]
+            // FS3566: a prelude evaluated again leaves the session holding each version of its
+            // record types, and FSI takes the newest, which is the one meant.
+            [| "fsi.exe"; "--noninteractive"; "--nologo"; "--quiet"; "--gui-"; "--optimize+"; "--define:TAMBOUR"; "--nowarn:3566" |]
             (Seq.concat [ Seq.ofArray marey; Seq.ofArray own; references ] |> Seq.map (fun r -> "-r:" + r) |> Array.ofSeq)
 
     let fsi =

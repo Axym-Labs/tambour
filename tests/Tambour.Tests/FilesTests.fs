@@ -71,16 +71,134 @@ let ``a project opens, saves, takes a change from disk back, and exports what re
     window.KeyPress(Key.Z, RawInputModifiers.Control, PhysicalKey.Z, null)
     pumpUntil 10.0 "the reload taken back" (fun () -> editor.Text = saved)
 
-    // Exported, the figure is what Marey's own PNG export draws of it.
-    let before = pane.Picture
-    pumpUntil 30.0 "the figure run again" (fun () -> not (obj.ReferenceEquals(pane.Picture, before)))
-    let png = Path.Combine(dir, "decay.png")
-    window.Post(Shell.ExportTo(png, "png", 640.0, 400.0))
-    pumpUntil 30.0 "the export" (fun () -> File.Exists png && (try File.ReadAllBytes(png).Length > 0 with _ -> false))
+    // Exported, the figure is what Marey's own PNG export draws of it, once the run that the undo
+    // started has drawn it: exported until it is, rather than waiting on a scene that may already
+    // have arrived.
     let extent = Chart.size 640.0 400.0
     use measurer = new SkiaTextMeasurer()
     use expected = SKBitmap.Decode(SkiaBackend.renderPng extent (Chart.toSceneWith measurer extent (decayFigure ())))
-    use exported = SKBitmap.Decode(File.ReadAllBytes png)
-    let c = PaneCheck.compare exported expected
-    Assert.Equal(0, c.Worst)
+    let clock = Stopwatch.StartNew()
+    let mutable worst = Int32.MaxValue
+    let mutable attempt = 0
+
+    while worst <> 0 && clock.Elapsed.TotalSeconds < 30.0 do
+        attempt <- attempt + 1
+        let png = Path.Combine(dir, $"decay-{attempt}.png")
+        window.Post(Shell.ExportTo(png, "png", 640.0, 400.0))
+        pumpUntil 30.0 "the export" (fun () -> File.Exists png && (try File.ReadAllBytes(png).Length > 0 with _ -> false))
+        use exported = SKBitmap.Decode(File.ReadAllBytes png)
+        worst <- (PaneCheck.compare exported expected).Worst
+        if worst <> 0 then Thread.Sleep 200
+
+    Assert.Equal(0, worst)
+    window.Close()
+
+[<AvaloniaFact>]
+let ``a table's edits run the figure again, rename a column in the prelude, undo, and save`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-tables").FullName
+    let t = Array.init 30 (fun i -> float i * 0.1)
+
+    let trials: Tambour.Data.Table =
+        { Name = "trials"
+          Columns =
+            [ { Name = "Time"; Unit = "s"; Values = Tambour.Data.Floats t }
+              { Name = "Displacement"; Unit = "m"; Values = Tambour.Data.Floats(t |> Array.map (fun t -> 4.9 * t * t)) } ] }
+
+    Tambour.Data.Csv.writeFile (Path.Combine(dir, "trials.csv")) trials
+    let script = "#load \"prelude.fsx\"\nopen Prelude\n\nlet fig =\n    plot trials {\n        x U.second (fun r -> r.Time)\n        y U.metre (fun r -> r.Displacement)\n        layer GeomPoint\n    }\n"
+    File.WriteAllText(Path.Combine(dir, "figure.fsx"), script)
+    Project.write dir (Project.defaults "figure.fsx")
+
+    let window = new Shell.MainWindow(Shell.example, Some dir)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    let pane = window.GetVisualDescendants().OfType<FigurePane>().Single()
+    pumpUntil 60.0 "the table's figure" (fun () -> not (isNull pane.Picture))
+    Assert.Contains("Displacement: float<m>", File.ReadAllText(Path.Combine(dir, "prelude.fsx")))
+
+    // A cell typed into, in the table's tab: the figure runs again and the title marks it.
+    window.Post(Shell.SelectTab 1)
+    pumpUntil 10.0 "the table's tab" (fun () -> window.GetVisualDescendants().OfType<TableGrid>().Any())
+    let current () = window.GetVisualDescendants().OfType<TableGrid>().Single()
+    let grid = current ()
+    let drawn = pane.Picture
+    grid.Select({ Column = 1; Row = 0 }, { Column = 1; Row = 0 })
+    grid.TypeInto "100"
+    pumpUntil 30.0 "the figure run with the new value" (fun () -> not (obj.ReferenceEquals(pane.Picture, drawn)))
+    Assert.EndsWith("• — Tambour", window.Title)
+
+    let value () =
+        match grid.Table with
+        | Some t ->
+            match t.Columns.[1].Values with
+            | Tambour.Data.Floats a -> a.[0]
+            | _ -> nan
+        | None -> nan
+
+    Assert.Equal(100.0, value ())
+    window.KeyPress(Key.Z, RawInputModifiers.Control, PhysicalKey.Z, null)
+    pumpUntil 10.0 "the value taken back" (fun () -> value () = 0.0)
+
+    // A column renamed: the prelude says so, and the script no longer compiles until it is taken back.
+    window.Post(Shell.EditHeader("trials", 1))
+    window.Post(Shell.Typed("header name", "Height"))
+    window.Post(Shell.ApplyHeader)
+    let prelude () = File.ReadAllText(Path.Combine(dir, "prelude.fsx"))
+    pumpUntil 10.0 "the prelude written again" (fun () -> prelude().Contains "Height: float<m>")
+    pumpUntil 30.0 "the script's error" (fun () -> window.GetVisualDescendants().OfType<TextBlock>().Any(fun b -> not (isNull b.Text) && b.Text = "the script does not compile"))
+    window.KeyPress(Key.Z, RawInputModifiers.Control, PhysicalKey.Z, null)
+    pumpUntil 10.0 "the rename taken back" (fun () -> prelude().Contains "Displacement: float<m>")
+
+    // And the script runs again, against the prelude as it was.
+    let output () =
+        window.GetVisualDescendants().OfType<TextBox>()
+        |> Seq.map (fun b -> b.Text)
+        |> Seq.filter (fun t -> not (isNull t) && t.Contains "FS0039")
+        |> String.concat " | "
+
+    (try
+        pumpUntil 30.0 "the script run cleanly again" (fun () ->
+            window.GetVisualDescendants().OfType<TextBlock>().Any(fun b -> not (isNull b.Text) && b.Text.StartsWith "ran in") && output () = "")
+     with e -> failwith $"{e.Message}: {output ()}")
+
+    // Saved: the table's file holds the value typed again.
+    // The grid is the one there before the header's form opened and closed.
+    Assert.True(obj.ReferenceEquals(grid, current ()), "the grid was made again")
+    grid.Select({ Column = 1; Row = 2 }, { Column = 1; Row = 2 })
+    grid.TypeInto "7.25"
+    pumpUntil 10.0 "the value" (fun () -> grid.Table.Value.Columns.[1].Values.Equals(Tambour.Data.Values.replace 2 (Tambour.Data.Floats [| 7.25 |]) trials.Columns.[1].Values))
+    let status () = window.GetVisualDescendants().OfType<TextBlock>() |> Seq.map (fun b -> b.Text) |> Seq.filter (fun t -> not (isNull t) && (t.StartsWith "ran" || t.StartsWith "running" || t.Contains "compile")) |> String.concat " | "
+
+    (try
+        pumpUntil 30.0 "the edited table's run, clean" (fun () -> status().StartsWith "ran in" && output () = "")
+     with e -> failwith $"{e.Message}: status {status ()}; {output ()}")
+
+    window.KeyPress(Key.S, RawInputModifiers.Control, PhysicalKey.S, null)
+    pumpUntil 10.0 "the save" (fun () -> not (window.Title.Contains "•"))
+
+    (try
+        pumpUntil 30.0 "the saved script run cleanly" (fun () ->
+            window.GetVisualDescendants().OfType<TextBlock>().Any(fun b -> not (isNull b.Text) && b.Text.StartsWith "ran in") && output () = "")
+     with e -> failwith $"{e.Message}: {output ()}")
+
+    match Environment.GetEnvironmentVariable "TAMBOUR_CHECK_OUT" with
+    | null | "" -> ()
+    | out ->
+        use frame = window.CaptureRenderedFrame()
+        frame.Save(Path.Combine(out, "shell-table.png"), Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default)
+
+    match Tambour.Data.Csv.readFile (Path.Combine(dir, "trials.csv")) with
+    | Ok back -> Assert.Equal(Tambour.Data.Values.replace 2 (Tambour.Data.Floats [| 7.25 |]) trials.Columns.[1].Values, back.Columns.[1].Values)
+    | Error e -> failwith e
+
+    // A table imported from elsewhere gets a tab of its own, and goes when removed.
+    let outside = Path.Combine(Path.GetTempPath(), $"readings-{Guid.NewGuid():N}.csv")
+    File.WriteAllText(outside, "a,b\n1,2\n3,4\n")
+    window.Post(Shell.Import outside)
+    pumpUntil 10.0 "the imported table's tab" (fun () -> window.GetVisualDescendants().OfType<TabItem>().Count() = 3)
+    let name = window.GetVisualDescendants().OfType<TabItem>().Last().Header :?> string
+    Assert.StartsWith("readings", name)
+    window.Post(Shell.RemoveTable name)
+    pumpUntil 10.0 "the table removed" (fun () -> window.GetVisualDescendants().OfType<TabItem>().Count() = 2)
+    File.Delete outside
     window.Close()
