@@ -123,11 +123,19 @@ let private figures () =
 let private arrivalLimit =
     if Environment.GetEnvironmentVariable "GITHUB_ACTIONS" = "true" then 300.0 else 100.0
 
-let private check (pane: FigurePane) (window: Controls.Window) : Task<bool> =
+let private check (asked: float option) (pane: FigurePane) (window: Controls.Window) : Task<bool> =
     task {
         let scaling = window.RenderScaling
         let mutable ok = true
         let say (line: string) = eprintfn "%s" line
+
+        // Avalonia reads AVALONIA_GLOBAL_SCALE_FACTOR on X11 only; on Windows the display's own
+        // scale sets the window's. A scaling not taken is a check not made, not one passed.
+        match asked with
+        | Some s when s <> scaling ->
+            say $"FAILS  scaling {s} asked, but the window is at {scaling}; on Windows, set the display's scale instead"
+            ok <- false
+        | _ -> ()
 
         let presentedOnce (picture: Picture) (capture: bool) =
             let shown = TaskCompletionSource<SKBitmap>(TaskCreationOptions.RunContinuationsAsynchronously)
@@ -250,7 +258,7 @@ let run (scaling: float option) : int =
             Dispatcher.UIThread.Post(fun () ->
                 task {
                     try
-                        let! ok = check pane window
+                        let! ok = check scaling pane window
                         exitCode <- if ok then 0 else 1
                     with e ->
                         eprintfn "the check failed: %O" e
