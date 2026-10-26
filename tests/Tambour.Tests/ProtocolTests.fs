@@ -28,7 +28,7 @@ let requests: obj[] list =
       Request.Evaluate { Text = "let x = 1\n"; Path = null }
       Request.Select 2
       Request.Live { Kind = "zoom"; Args = [| 1.0; 2.5; nan; infinity |] }
-      Request.Export { Format = "png"; Width = 800.0; Height = 500.0 } ]
+      Request.Export { Format = "png"; Width = 800.0; Height = 500.0; Skia = { Dpi = 3.0; FontFiles = [||] } } ]
     |> List.map (fun r -> [| box r |])
 
 let replies: obj[] list =

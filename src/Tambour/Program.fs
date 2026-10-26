@@ -4,16 +4,16 @@ open System.Runtime.CompilerServices
 open Avalonia
 open Avalonia.Controls
 
-let private usage = "usage: tambour [--self-check | --check-pane [--scaling <s>] | --check-analysis <script> | --worker <socket> <app pid> | --analysis <socket> <app pid>]"
+let private usage = "usage: tambour [<script or folder> | --self-check | --check-pane [--scaling <s>] | --check-analysis <script> | --worker <socket> <app pid> | --analysis <socket> <app pid>]"
 
 // Each role is its own method, kept out of `main`, so that starting one loads only what that role
 // touches: .NET loads an assembly when a method that names it is compiled, and the worker never
 // names Avalonia.
 
 [<MethodImpl(MethodImplOptions.NoInlining)>]
-let private window (argv: string[]) =
-    App.MainWindow <- fun () -> new Shell.MainWindow() :> Window
-    App.builder().StartWithClassicDesktopLifetime argv
+let private window (path: string option) =
+    App.MainWindow <- fun () -> new Shell.MainWindow(Shell.example, path) :> Window
+    App.builder().StartWithClassicDesktopLifetime [||]
 
 [<MethodImpl(MethodImplOptions.NoInlining)>]
 let private selfCheck () = SelfCheck.run ()
@@ -33,7 +33,8 @@ let private analysis (socket: string) (app: int) = Analysis.run socket app
 [<EntryPoint>]
 let main argv =
     match argv with
-    | [||] -> window argv
+    | [||] -> window None
+    | [| path |] when not (path.StartsWith "-") -> window (Some path)
     | [| "--self-check" |] -> selfCheck ()
     | [| "--check-pane" |] -> checkPane None
     | [| "--check-analysis"; script |] -> checkAnalysis script

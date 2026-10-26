@@ -4,6 +4,7 @@
 module Tambour.Shell
 
 open System
+open System.IO
 open System.Threading
 open System.Threading.Tasks
 open Elmish
@@ -19,6 +20,7 @@ open Avalonia.Input
 open Avalonia.Interactivity
 open Avalonia.Layout
 open Avalonia.Media
+open Avalonia.Platform.Storage
 open Avalonia.Threading
 open Tambour.Protocol
 
@@ -95,6 +97,15 @@ module Editor =
 
         AttrBuilder<ScriptEditor>.CreateSubscription<'a>(name, subscribe, f)
 
+    let path (p: string) : IAttr<ScriptEditor> =
+        AttrBuilder<ScriptEditor>.CreateProperty<string>(
+            "Path",
+            p,
+            ValueSome(fun (v: ScriptEditor) -> v.Path),
+            ValueSome(fun (v: ScriptEditor, p) -> v.Path <- p),
+            ValueNone
+        )
+
     let onEdited f = subscription "Edited" (fun e -> e.Edited) f
     let onProblemsChanged f = subscription "ProblemsChanged" (fun e -> e.ProblemsChanged) f
 
@@ -116,11 +127,13 @@ let fall =
 let prelude =
     "open Marey\nopen Marey.UnitsOfMeasure\nopen Microsoft.FSharp.Data.UnitSystems.SI.UnitSymbols\n"
 
-/// The workers, the task that has them started, and the language service.
+/// The workers, the task that has them started, the language service, and the window, whose
+/// pickers ask where a file is.
 type Env =
     { Workers: Workers
       Started: Task
-      Language: LanguageService }
+      Language: LanguageService
+      Window: TopLevel }
 
 /// The most output kept, in characters; older text goes first.
 [<Literal>]
@@ -151,7 +164,17 @@ type Model =
       /// What the last GUI action did, shown until the script is next edited.
       ActionNote: string
       /// Every change to the script, to take back and do again.
-      History: History.History }
+      History: History.History
+      /// Where the script is on disk, if it is.
+      Path: string option
+      /// The project directory the script belongs to, if any, and its settings.
+      Project: string option
+      Settings: Project.Settings option
+      /// The script as last read or written, to tell what is unsaved, and our own writes from
+      /// someone else's.
+      Saved: string
+      /// Where the export being made goes.
+      Exporting: string option }
 
 type Msg =
     | Edited of History.TextEdit * string
@@ -171,6 +194,15 @@ type Msg =
     | Typed of field: string * text: string
     | Act of ActionSpec
     | Acted of Acted
+    | OpenPath of string
+    | ChooseOpen of folder: bool
+    | Save
+    | SaveAs of string
+    | DiskChanged
+    | ChooseExport
+    | ExportTo of path: string * format: string * width: float * height: float
+    /// A picker closed without a choice.
+    | Dismissed
     | Failed of exn
 
 let init (script: string) () : Model * Cmd<Msg> =
@@ -191,7 +223,12 @@ let init (script: string) () : Model * Cmd<Msg> =
       Running = false
       Status = "starting a worker…"
       ActionNote = ""
-      History = History.empty },
+      History = History.empty
+      Path = None
+      Project = None
+      Settings = None
+      Saved = script
+      Exporting = None },
     Cmd.none
 
 let private send (env: Env) (request: Request) : Cmd<Msg> =
@@ -224,6 +261,43 @@ let private appendOutput (model: Model) (text: string) =
 let private diagnosticLine (d: Diagnostic) =
     $"{d.StartLine}:{d.StartColumn + 1} {d.Severity} {d.Code}: {d.Message}"
 
+/// The export formats, and what their files are called.
+let exportFormats = [| "png"; "pdf"; "svg" |]
+
+let private pickOpen (window: TopLevel) (folder: bool) : Task<string option> =
+    task {
+        if folder then
+            let! picked = window.StorageProvider.OpenFolderPickerAsync(FolderPickerOpenOptions(Title = "Open a project folder"))
+            return picked |> Seq.tryHead |> Option.bind (fun f -> Option.ofObj (f.TryGetLocalPath()))
+        else
+            let scripts = FilePickerFileType("F# scripts", Patterns = [| "*.fsx" |])
+            let! picked = window.StorageProvider.OpenFilePickerAsync(FilePickerOpenOptions(Title = "Open a script", FileTypeFilter = [| scripts |]))
+            return picked |> Seq.tryHead |> Option.bind (fun f -> Option.ofObj (f.TryGetLocalPath()))
+    }
+
+let private pickSave (window: TopLevel) (title: string) (name: string) (extension: string) : Task<string option> =
+    task {
+        let! picked =
+            window.StorageProvider.SaveFilePickerAsync(
+                FilePickerSaveOptions(Title = title, SuggestedFileName = name, DefaultExtension = extension, ShowOverwritePrompt = true)
+            )
+
+        return Option.ofObj picked |> Option.bind (fun f -> Option.ofObj (f.TryGetLocalPath()))
+    }
+
+/// The project's text settings, or the app's.
+let private skiaOf (model: Model) =
+    match model.Settings with
+    | Some s -> s.Skia
+    | None -> (Project.defaults "").Skia
+
+let private writeProject (model: Model) =
+    match model.Project, model.Path with
+    | Some dir, Some path when Path.GetDirectoryName path = dir ->
+        let settings = model.Settings |> Option.defaultValue (Project.defaults (Path.GetFileName path))
+        Project.write dir { settings with Script = Path.GetFileName path; Marey = Project.mareyVersion }
+    | _ -> ()
+
 let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
     | Edited(edit, text) ->
@@ -244,7 +318,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         | None -> model, Cmd.none
     | Run ->
         { model with Running = true; Status = "running…"; Playing = Set.empty },
-        send env (Request.Evaluate { Text = model.Script; Path = null })
+        send env (Request.Evaluate { Text = model.Script; Path = Option.toObj model.Path })
     | Cancel when model.Running ->
         { model with Running = false; Status = "cancelled" }, Cmd.OfTask.attempt env.Workers.CancelAsync () Failed
     | Cancel -> model, Cmd.none
@@ -257,6 +331,14 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 | true, _ -> $"ran in {e.Timings.Evaluate:F0} ms"
                 | false, null -> "the script does not compile"
                 | false, ex -> $"the script threw: {ex}"
+
+            // A project from another Marey is run on this one, and what does not compile is said
+            // to be that, rather than migrated.
+            let status =
+                match model.Settings with
+                | Some s when not e.Ok && s.Marey <> Project.mareyVersion ->
+                    $"{status}: the project was last run on Marey {s.Marey}, and this is {Project.mareyVersion}"
+                | _ -> status
 
             let next =
                 { model with
@@ -282,7 +364,15 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         | Reply.Controls c -> { model with Controls = c.Controls }, Cmd.none
         | Reply.Readout r -> { model with Readout = Some r }, Cmd.none
         | Reply.Output o -> { model with Output = appendOutput model o.Text }, Cmd.none
-        | Reply.Exported _ -> model, Cmd.none
+        | Reply.Exported frame ->
+            match model.Exporting with
+            | Some path ->
+                try
+                    File.WriteAllBytes(path, frame.Bytes)
+                    { model with Exporting = None; Status = $"exported {Path.GetFileName path}" }, Cmd.none
+                with e ->
+                    { model with Exporting = None; Status = $"the export was not written: {e.Message}" }, Cmd.none
+            | None -> model, Cmd.none
         | Reply.Failed message -> { model with Running = false; Status = message }, Cmd.none
     | Select index when index <> model.Selected && index >= 0 ->
         let next = { model with Selected = index; Playing = Set.empty; Actions = [||] }
@@ -344,6 +434,89 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             ActionNote = note
             History = History.record DateTime.UtcNow false (History.TextEdit.between model.Script a.Text) model.History },
         Cmd.ofMsg Run
+    | OpenPath path ->
+        try
+            let opened = Project.resolve path
+            let text = if File.Exists opened.Script then File.ReadAllText opened.Script else ""
+
+            let note =
+                match opened.Settings with
+                | Some s when s.Marey <> Project.mareyVersion -> $"last run on Marey {s.Marey}; this is {Project.mareyVersion}"
+                | _ -> ""
+
+            { model with
+                Script = text
+                Saved = text
+                Path = Some opened.Script
+                Project = opened.Project
+                Settings = opened.Settings
+                History = History.empty
+                Figures = [||]
+                Selected = -1
+                Picture = null
+                Readout = None
+                Controls = [||]
+                Actions = [||]
+                Diagnostics = [||]
+                Output = ""
+                ActionNote = note },
+            Cmd.ofMsg Run
+        with e ->
+            { model with Status = $"{path} did not open: {e.Message}" }, Cmd.none
+    | ChooseOpen folder -> model, Cmd.OfTask.either (fun () -> pickOpen env.Window folder) () (Option.map OpenPath >> Option.defaultValue Dismissed) Failed
+    | Save ->
+        match model.Path with
+        | Some path ->
+            try
+                File.WriteAllText(path, model.Script)
+                writeProject model
+                { model with Saved = model.Script; Status = $"saved {Path.GetFileName path}" }, Cmd.ofMsg Run
+            with e ->
+                { model with Status = $"not saved: {e.Message}" }, Cmd.none
+        | None ->
+            model, Cmd.OfTask.either (fun () -> pickSave env.Window "Save the script" "figure.fsx" "fsx") () (Option.map SaveAs >> Option.defaultValue Dismissed) Failed
+    | SaveAs path -> { model with Path = Some path }, Cmd.ofMsg Save
+    | DiskChanged ->
+        match model.Path with
+        | Some path when File.Exists path ->
+            let text = try File.ReadAllText path with _ -> model.Saved
+
+            if text = model.Saved || text = model.Script then
+                { model with Saved = text }, Cmd.none
+            else
+                // Someone else's change, as one entry of the history, so it can be taken back.
+                { model with
+                    Script = text
+                    Saved = text
+                    ActionNote = "reloaded from disk"
+                    History = History.record DateTime.UtcNow false (History.TextEdit.between model.Script text) model.History },
+                Cmd.ofMsg Run
+        | _ -> model, Cmd.none
+    | ChooseExport ->
+        let format = model.Inputs.TryFind "export format" |> Option.defaultValue "png"
+        let name = (model.Path |> Option.map Path.GetFileNameWithoutExtension |> Option.defaultValue "figure") + "." + format
+
+        let size field fallback =
+            match Double.TryParse(model.Inputs.TryFind field |> Option.defaultValue "", Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
+            | true, v when v > 0.0 -> v
+            | _ -> fallback
+
+        let width, height =
+            match model.Picture with
+            | null -> size "export width" 800.0, size "export height" 500.0
+            | p -> size "export width" (float p.Extent.Width), size "export height" (float p.Extent.Height)
+
+        model,
+        Cmd.OfTask.either
+            (fun () -> pickSave env.Window "Export the figure" name format)
+            ()
+            (Option.map (fun path -> ExportTo(path, format, width, height)) >> Option.defaultValue Dismissed)
+            Failed
+    | ExportTo(path, format, width, height) when not (isNull model.Picture) ->
+        { model with Exporting = Some path; Status = "exporting…" },
+        send env (Request.Export { Format = format; Width = width; Height = height; Skia = skiaOf model })
+    | ExportTo _ -> { model with Status = "there is no figure to export" }, Cmd.none
+    | Dismissed -> model, Cmd.none
     | Failed e -> { model with Status = e.Message }, Cmd.none
 
 let private label (text: string) : IView =
@@ -521,6 +694,9 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                 StackPanel.margin (Thickness 6.0)
                 StackPanel.spacing 6.0
                 StackPanel.children [
+                    Button.create [ Button.content "Open…"; Button.onClick (fun _ -> dispatch (ChooseOpen false)) ]
+                    Button.create [ Button.content "Open folder…"; Button.onClick (fun _ -> dispatch (ChooseOpen true)) ]
+                    Button.create [ Button.content "Save"; Button.isEnabled (model.Script <> model.Saved || model.Path.IsNone); Button.onClick (fun _ -> dispatch Save) ]
                     Button.create [ Button.content "Run"; Button.onClick (fun _ -> dispatch Run) ]
                     Button.create [ Button.content "Cancel"; Button.isEnabled model.Running; Button.onClick (fun _ -> dispatch Cancel) ]
                     Button.create [ Button.content "Undo"; Button.isEnabled (not model.History.Done.IsEmpty); Button.onClick (fun _ -> dispatch Undo) ]
@@ -532,6 +708,12 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                         ComboBox.selectedIndex model.Selected
                         ComboBox.onSelectedIndexChanged (fun i -> dispatch (Select i))
                     ]
+                    ComboBox.create [
+                        ComboBox.dataItems exportFormats
+                        ComboBox.selectedIndex (exportFormats |> Array.tryFindIndex (fun f -> Some f = model.Inputs.TryFind "export format") |> Option.defaultValue 0)
+                        ComboBox.onSelectedIndexChanged ((fun i -> if i >= 0 then dispatch (Typed("export format", exportFormats.[i]))), SubPatchOptions.Always)
+                    ]
+                    Button.create [ Button.content "Export…"; Button.isEnabled (not (isNull model.Picture)); Button.onClick (fun _ -> dispatch ChooseExport) ]
                     label model.Status
                     TextBlock.create [
                         TextBlock.text model.ActionNote
@@ -550,6 +732,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                             Editor.create [
                                 Grid.row 0
                                 Editor.text model.Script
+                                Editor.path (Option.toObj model.Path)
                                 Editor.language env.Language
                                 Editor.goTo model.GoTo
                                 Editor.onEdited (Edited >> dispatch)
@@ -601,8 +784,15 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
         ]
     ]
 
-/// The worker's replies, and the clock of a playing time control.
-let private subscriptions (env: Env) (window: Window) (model: Model) : Sub<Msg> =
+/// The window's title: the script's name, marked while it has unsaved changes.
+let title (model: Model) =
+    let name = model.Path |> Option.map Path.GetFileName |> Option.defaultValue "untitled"
+    let unsaved = if model.Script <> model.Saved then " •" else ""
+    $"{name}{unsaved} — Tambour"
+
+/// The worker's replies, the keys, the clock of a playing time control, the script's file on
+/// disk, and the window's title.
+let private subscriptions (env: Env) (window: Window) (expose: (Msg -> unit) -> unit) (model: Model) : Sub<Msg> =
     let replies (dispatch: Msg -> unit) : IDisposable =
         let cts = new CancellationTokenSource()
 
@@ -640,6 +830,12 @@ let private subscriptions (env: Env) (window: Window) (model: Model) : Sub<Msg> 
                 | Key.Z, m when m = (KeyModifiers.Control ||| KeyModifiers.Shift) ->
                     e.Handled <- true
                     dispatch Redo
+                | Key.S, KeyModifiers.Control ->
+                    e.Handled <- true
+                    dispatch Save
+                | Key.O, KeyModifiers.Control ->
+                    e.Handled <- true
+                    dispatch (ChooseOpen false)
                 | _ -> ())
 
         window.AddHandler(InputElement.KeyDownEvent, handler, RoutingStrategies.Tunnel) |> ignore
@@ -663,13 +859,45 @@ let private subscriptions (env: Env) (window: Window) (model: Model) : Sub<Msg> 
 
         timer
 
+    /// Someone else's change to the script's file, a moment after it settles.
+    let watch (path: string) (dispatch: Msg -> unit) : IDisposable =
+        let watcher = new FileSystemWatcher(Path.GetDirectoryName path, Path.GetFileName path)
+        watcher.NotifyFilter <- NotifyFilters.LastWrite ||| NotifyFilters.Size ||| NotifyFilters.FileName
+        let mutable changes = 0
+
+        let changed _ =
+            let change = Interlocked.Increment &changes
+            Task.Delay(200).ContinueWith(fun (_: Task) -> if change = changes then dispatch DiskChanged) |> ignore
+
+        watcher.Changed.Add changed
+        watcher.Created.Add changed
+        watcher.Renamed.Add changed
+        watcher.EnableRaisingEvents <- true
+        watcher :> IDisposable
+
+    let titled (text: string) (_: Msg -> unit) : IDisposable =
+        window.Title <- text
+        { new IDisposable with member _.Dispose() = () }
+
+    let exposed (dispatch: Msg -> unit) : IDisposable =
+        expose dispatch
+        { new IDisposable with member _.Dispose() = () }
+
     [ [ "replies" ], replies
       [ "keys" ], keys
+      [ "post" ], exposed
+      [ "title"; title model ], titled (title model)
+      match model.Path with
+      | Some path when Directory.Exists(Path.GetDirectoryName path) -> [ "watch"; path ], watch path
+      | _ -> ()
       if not model.Playing.IsEmpty then [ "clock" ], clock ]
 
-/// The main window, with its workers, which end when it closes.
-type MainWindow(script: string) as this =
+/// The main window, with its workers, which end when it closes. It opens `path` once started, if
+/// one is given, and the example script otherwise.
+type MainWindow(script: string, path: string option) as this =
     inherit HostWindow()
+
+    let mutable dispatch: Msg -> unit = ignore
 
     let workers =
         new Workers(Command.ofThisApp (), { References = [||]; Prelude = prelude; Skia = { Dpi = float Marey.Space.screenDpi; FontFiles = [||] } })
@@ -679,7 +907,8 @@ type MainWindow(script: string) as this =
     let env =
         { Workers = workers
           Started = workers.StartAsync()
-          Language = language }
+          Language = language
+          Window = this }
 
     do
         this.Title <- "Tambour"
@@ -690,12 +919,20 @@ type MainWindow(script: string) as this =
             (workers :> IDisposable).Dispose()
             (language :> IDisposable).Dispose())
 
-        Program.mkProgram (init script) (update env) (view env)
+        let init () =
+            let model, cmd = init script ()
+            model, (match path with Some p -> Cmd.batch [ cmd; Cmd.ofMsg (OpenPath p) ] | None -> cmd)
+
+        Program.mkProgram init (update env) (view env)
         |> Program.withHost this
-        |> Program.withSubscription (subscriptions env this)
+        |> Program.withSubscription (subscriptions env this (fun d -> dispatch <- d))
         |> Program.runWithAvaloniaSyncDispatch ()
 
-    new() = new MainWindow(example)
+    new() = new MainWindow(example, None)
+    new(script: string) = new MainWindow(script, None)
+
+    /// Sends the window's loop a message, as its own controls do.
+    member _.Post(msg: Msg) = dispatch msg
 
     /// The workers' start, for whoever waits on it.
     member _.Started = env.Started

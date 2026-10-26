@@ -219,7 +219,7 @@ let ``a live figure answers a control, a zoom and the pointer`` () : Task =
         Assert.Equal(2, readout.Lines.Length)
         Assert.DoesNotContain(seen, (function Reply.Patch _ -> true | _ -> false))
 
-        do! workers.SendAsync(Request.Export { Format = "png"; Width = 400.0; Height = 250.0 })
+        do! workers.SendAsync(Request.Export { Format = "png"; Width = 400.0; Height = 250.0; Skia = Unchecked.defaultof<_> })
 
         let! png, _ =
             until workers 30.0 (function

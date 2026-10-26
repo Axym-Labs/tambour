@@ -15,6 +15,7 @@
     <Compile Include="EditorTests.fs" />
     <Compile Include="EditsTests.fs" />
     <Compile Include="HistoryTests.fs" />
+    <Compile Include="FilesTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

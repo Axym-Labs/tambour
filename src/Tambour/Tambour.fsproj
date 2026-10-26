@@ -16,6 +16,7 @@
     <Compile Include="History.fs" />
     <Compile Include="ScriptEditor.fs" />
     <Compile Include="App.fs" />
+    <Compile Include="Project.fs" />
     <Compile Include="Shell.fs" />
     <Compile Include="AnalysisCheck.fs" />
     <Compile Include="SelfCheck.fs" />
