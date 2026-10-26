@@ -7,7 +7,6 @@ open System
 open System.Diagnostics
 open System.IO
 open System.Net.Sockets
-open System.Text.RegularExpressions
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Diagnostics
 open FSharp.Compiler.EditorServices
@@ -15,11 +14,7 @@ open FSharp.Compiler.Text
 open FSharp.Compiler.Tokenization
 open Tambour.Protocol
 
-/// The path F# spells a unit of the SI by, which a reader does not need: `float<m>` rather than
-/// `float<Data.UnitSystems.SI.UnitSymbols.m>`.
-let private unitPath = Regex(@"(Microsoft\.FSharp\.)?Data\.UnitSystems\.SI\.Unit(Symbols|Names)\.")
-
-let shorten (text: string) = if isNull text then text else unitPath.Replace(text, "")
+let private shorten = Evaluation.shorten
 
 let private kindOf (glyph: FSharpGlyph) =
     match glyph with

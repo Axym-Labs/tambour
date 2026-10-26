@@ -153,6 +153,10 @@ let ``a script that does not compile keeps the figures, with its error where it 
         let error = bad.Diagnostics |> Array.find (fun d -> d.Severity = "error")
         Assert.Equal(2, error.StartLine)
         Assert.Equal(13, error.StartColumn)
+        let! units, _ = run workers "let wrong: float<Microsoft.FSharp.Data.UnitSystems.SI.UnitSymbols.s> = 1.0<Microsoft.FSharp.Data.UnitSystems.SI.UnitSymbols.m>\n"
+        let unitError = units.Diagnostics |> Array.find (fun d -> d.Code = "FS0001")
+        Assert.Contains("float<m>", unitError.Message)
+        Assert.DoesNotContain("UnitSymbols", unitError.Message)
         let! thrown, _ = run workers "let c: int = failwith \"on purpose\"\n"
         Assert.False thrown.Ok
         Assert.Contains("on purpose", thrown.Exception)
