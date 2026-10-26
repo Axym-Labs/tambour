@@ -225,9 +225,14 @@ type Span =
       EndLine: int
       EndColumn: int }
 
-/// One completion: what is shown, what is inserted, and what kind of thing it is (`method`,
-/// `property`, `field`, `type`, `module`, `namespace`, `value`, `keyword`, …).
-type Completion = { Name: string; Insert: string; Kind: string }
+/// One completion: what is shown, what is inserted, what kind of thing it is (`method`,
+/// `property`, `field`, `type`, `module`, `namespace`, `value`, `keyword`, …), and the glyph FCS
+/// gives it, by the name of its `FSharpGlyph` case (`Class`, `Method`, `EnumMember`, …).
+type Completion =
+    { Name: string
+      Insert: string
+      Kind: string
+      Glyph: string }
 
 /// A GUI action: its kind, by the name the panel shows (`title`, `x label`, `y label`, `log y`,
 /// `y domain`, `theme`, `legend`, `colour by`, `facet`, `fit`, `layer`), and its argument: text
@@ -267,12 +272,28 @@ type AnalysisRequest =
     /// What a figure's plot block plots: its rows and its x and y fields.
     | Plotted of FigureIn
 
-type Checked = { Id: int; Diagnostics: Diagnostic[] }
+/// A stretch of one line the compiler classifies, by the semantic token type the language server
+/// protocol names (`namespace`, `type`, `class`, `struct`, `enum`, `interface`, `typeParameter`,
+/// `parameter`, `variable`, `property`, `enumMember`, `event`, `function`, `method`, `operator`,
+/// `keyword`), and whether what it names is mutable. Counted as `At` is; no two overlap.
+type Token =
+    { Line: int
+      StartColumn: int
+      EndColumn: int
+      Kind: string
+      Mutable: bool }
+
+/// What one check of a script found: its problems, and its tokens in order.
+type Checked =
+    { Id: int
+      Diagnostics: Diagnostic[]
+      Tokens: Token[] }
 
 type Completions = { Id: int; Items: Completion[] }
 
-/// The tooltip at a place, as text; empty where there is none.
-type Hovered = { Id: int; Text: string }
+/// The tooltip at a place: the signature, as text, and the documentation of what it names; each
+/// empty where there is none.
+type Hovered = { Id: int; Text: string; Doc: string }
 
 /// The overloads of the call the place is in, each as one line, the one most likely meant, and
 /// which of its parameters the place is at.

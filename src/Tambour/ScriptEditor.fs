@@ -4,8 +4,12 @@ open System
 open System.Threading.Tasks
 open Avalonia
 open Avalonia.Controls
+open Avalonia.Controls.Documents
 open Avalonia.Input
+open Avalonia.Interactivity
+open Avalonia.Layout
 open Avalonia.Media
+open Avalonia.Styling
 open Avalonia.Threading
 open AvaloniaEdit
 open AvaloniaEdit.CodeCompletion
@@ -16,12 +20,151 @@ open AvaloniaEdit.TextMate
 open TextMateSharp.Grammars
 open Tambour.Protocol
 
-/// One completion as the completion list shows and inserts it.
-type private CompletionItem(item: Completion) =
+/// What has been typed of the name being completed, which the list's entries show in bold.
+type private Typed() =
+    let changed = Event<string>()
+    let mutable text = ""
+
+    member _.Text
+        with get () = text
+        and set v =
+            if v <> text then
+                text <- v
+                changed.Trigger v
+
+    member _.Changed = changed.Publish
+
+module private Shown =
+
+    /// The editor's font, and the code in its tooltips.
+    let code = FontFamily "Cascadia Code,Consolas,DejaVu Sans Mono,monospace"
+
+    /// Which characters of a name the typed text matches, in order and ignoring case; none where it
+    /// does not match them all.
+    let matched (name: string) (typed: string) =
+        let marks = Array.zeroCreate name.Length
+        let mutable j = 0
+
+        for i in 0 .. name.Length - 1 do
+            if j < typed.Length && Char.ToLowerInvariant name.[i] = Char.ToLowerInvariant typed.[j] then
+                marks.[i] <- true
+                j <- j + 1
+
+        if j = typed.Length then marks else Array.zeroCreate name.Length
+
+    /// A name, its typed characters in bold.
+    let showMatched (block: TextBlock) (name: string) (typed: string) =
+        let marks = matched name typed
+        let inlines = InlineCollection()
+        let mutable i = 0
+
+        while i < name.Length do
+            let s = i
+
+            while i < name.Length && marks.[i] = marks.[s] do
+                i <- i + 1
+
+            inlines.Add(Run(name.Substring(s, i - s), FontWeight = (if marks.[s] then FontWeight.Bold else FontWeight.Normal)))
+
+        block.Inlines <- inlines
+
+    let private keywords =
+        set [ "val"; "member"; "property"; "type"; "module"; "namespace"; "new"; "static"; "abstract"; "override"
+              "union"; "case"; "active"; "pattern"; "field"; "event"; "mutable"; "inherit"; "interface"; "exception"
+              "struct"; "class"; "of"; "with"; "get"; "set"; "and"; "inline"; "private"; "internal" ]
+
+    let private pieces = Text.RegularExpressions.Regex(@"[A-Za-z_][A-Za-z0-9_']*|\s+|.")
+
+    /// A signature as code: its keywords, its name, its parameters and its types in their colours.
+    let signature (look: Palette.Look) (text: string) =
+        let inlines = InlineCollection()
+        let brush (kind: string) = SolidColorBrush(Palette.colourOf look kind)
+        let plain = SolidColorBrush look.Foreground
+        let mutable named = false
+        let mutable expectType = false
+        let mutable depth = 0
+        let mutable previous = ""
+
+        for m in pieces.Matches text do
+            let p = m.Value
+
+            let colour: IBrush =
+                if Char.IsWhiteSpace p.[0] then
+                    if p.Contains '\n' then
+                        named <- false
+                        expectType <- false
+                        depth <- 0
+
+                    plain
+                elif Char.IsLetter p.[0] || p.[0] = '_' then
+                    if depth = 0 && not expectType && keywords.Contains p then brush "keyword"
+                    elif depth > 0 || expectType then brush "type"
+                    elif not named then
+                        named <- true
+                        brush "function"
+                    else
+                        brush "parameter"
+                else
+                    match p with
+                    | "<" -> depth <- depth + 1
+                    | ">" when previous = "-" -> expectType <- true
+                    | ">" -> depth <- max 0 (depth - 1)
+                    | ":"
+                    | "*" -> expectType <- true
+                    | "("
+                    | ")"
+                    | ","
+                    | "=" when depth = 0 -> expectType <- false
+                    | _ -> ()
+
+                    plain
+
+            previous <- p
+            inlines.Add(Run(p, Foreground = colour))
+
+        inlines
+
+/// One completion as the completion list shows and inserts it: its kind's glyph, and its name in
+/// the kind's colour with what has been typed of it in bold. The kind's name is its description.
+type private CompletionItem(item: Completion, look: Palette.Look, typed: Typed) =
+    let content =
+        lazy
+            (let mark, kind = Palette.glyphs.TryFind item.Glyph |> Option.defaultValue ("·", "")
+             let colour = SolidColorBrush(Palette.colourOf look kind)
+
+             let glyph =
+                 Border(
+                     Width = 16.0,
+                     Height = 16.0,
+                     CornerRadius = CornerRadius 3.0,
+                     BorderBrush = colour,
+                     BorderThickness = Thickness 1.0,
+                     Margin = Thickness(0.0, 0.0, 6.0, 0.0),
+                     Child =
+                         TextBlock(
+                             Text = mark,
+                             Foreground = colour,
+                             FontSize = 10.0,
+                             FontWeight = FontWeight.Bold,
+                             HorizontalAlignment = HorizontalAlignment.Center,
+                             VerticalAlignment = VerticalAlignment.Center
+                         )
+                 )
+
+             let name = TextBlock(Foreground = colour, FontFamily = Shown.code, VerticalAlignment = VerticalAlignment.Center)
+             Shown.showMatched name item.Name typed.Text
+             typed.Changed.Add(Shown.showMatched name item.Name)
+             let row = StackPanel(Orientation = Orientation.Horizontal)
+             row.Children.Add glyph
+             row.Children.Add name
+             row)
+
+    member _.Item = item
+
     interface ICompletionData with
         member _.Image = null
         member _.Text = item.Name
-        member _.Content = box $"{item.Name}    {item.Kind}"
+        member _.Content = box content.Value
         member _.Description = box item.Kind
         member _.Priority = 0.0
 
@@ -49,12 +192,11 @@ type private Overloads(methods: string[], active: int) =
         [<CLIEvent>]
         member _.PropertyChanged = changed.Publish
 
-/// The squiggles under the script's problems and the marks on the uses of the symbol at the caret.
-type private Marks(document: unit -> TextDocument) =
-    let mutable problems: Diagnostic[] = [||]
-    let mutable uses: Span[] = [||]
+module private Segments =
 
-    let segment (doc: TextDocument) (startLine: int) (startColumn: int) (endLine: int) (endColumn: int) =
+    /// A stretch of the script, counted as the language service counts (lines from 1, columns
+    /// from 0), as offsets: at least one character, so that an empty range can be seen.
+    let of' (doc: TextDocument) (startLine: int) (startColumn: int) (endLine: int) (endColumn: int) =
         let offset line column =
             let line = max 1 (min doc.LineCount line)
             let l = doc.GetLineByNumber line
@@ -64,6 +206,17 @@ type private Marks(document: unit -> TextDocument) =
         let e = max (offset endLine endColumn) (min doc.TextLength (s + 1))
         TextSegment(StartOffset = s, Length = max 0 (e - s))
 
+    let ofProblem (doc: TextDocument) (p: Diagnostic) = of' doc p.StartLine p.StartColumn p.EndLine p.EndColumn
+
+/// The squiggles under the script's problems, the marks on the uses of the symbol at the caret,
+/// and on the bracket at the caret and its match.
+type private Marks(document: unit -> TextDocument) =
+    let mutable problems: Diagnostic[] = [||]
+    let mutable uses: Span[] = [||]
+    let mutable brackets: (int * int) option = None
+
+    member val Look = Palette.light with get, set
+
     member _.Problems
         with get () = problems
         and set v = problems <- v
@@ -71,29 +224,43 @@ type private Marks(document: unit -> TextDocument) =
     member _.Uses
         with set v = uses <- v
 
+    member _.Brackets
+        with get () = brackets
+        and set v = brackets <- v
+
     interface IBackgroundRenderer with
         member _.Layer = KnownLayer.Selection
 
-        member _.Draw(view: TextView, dc: DrawingContext) =
+        member this.Draw(view: TextView, dc: DrawingContext) =
             let doc = document ()
 
             if not (isNull doc) && view.VisualLinesValid then
-                let useBrush = SolidColorBrush(Color.FromArgb(60uy, 120uy, 160uy, 230uy))
+                let look = this.Look
+                let useBrush = SolidColorBrush look.Uses
 
                 for u in uses do
-                    for r in BackgroundGeometryBuilder.GetRectsForSegment(view, segment doc u.StartLine u.StartColumn u.EndLine u.EndColumn, false) do
+                    for r in BackgroundGeometryBuilder.GetRectsForSegment(view, Segments.of' doc u.StartLine u.StartColumn u.EndLine u.EndColumn, false) do
                         dc.FillRectangle(useBrush, r)
+
+                match brackets with
+                | Some(a, b) when max a b < doc.TextLength ->
+                    let bracketBrush = SolidColorBrush look.Bracket
+
+                    for o in [ a; b ] do
+                        for r in BackgroundGeometryBuilder.GetRectsForSegment(view, TextSegment(StartOffset = o, Length = 1), false) do
+                            dc.FillRectangle(bracketBrush, r)
+                | _ -> ()
 
                 for p in problems do
                     let colour =
                         match p.Severity with
-                        | "error" -> Color.FromRgb(220uy, 40uy, 40uy)
-                        | "warning" -> Color.FromRgb(200uy, 150uy, 0uy)
-                        | _ -> Color.FromRgb(80uy, 140uy, 200uy)
+                        | "error" -> look.Error
+                        | "warning" -> look.Warning
+                        | _ -> look.Info
 
                     let pen = Pen(SolidColorBrush colour, 1.0)
 
-                    for r in BackgroundGeometryBuilder.GetRectsForSegment(view, segment doc p.StartLine p.StartColumn p.EndLine p.EndColumn, false) do
+                    for r in BackgroundGeometryBuilder.GetRectsForSegment(view, Segments.ofProblem doc p, false) do
                         // A wave along the bottom of the text.
                         let geometry = StreamGeometry()
 
@@ -111,19 +278,106 @@ type private Marks(document: unit -> TextDocument) =
                         g.EndFigure false
                         dc.DrawGeometry(null, pen, geometry)
 
-/// The script editor: AvaloniaEdit with F# highlighting, and what the language service says about
-/// the script. Problems are underlined, the symbol at the caret is marked where it is used, a dot
-/// or Ctrl+Space completes, a parenthesis or a comma shows the call's overloads, the pointer
-/// resting on a name shows its tooltip, and F2 renames a binding the script makes.
+/// One stretch of the document the compiler classified: where, what kind, and whether mutable.
+[<Struct>]
+type Classified =
+    { Offset: int
+      Length: int
+      Kind: string
+      Mutable: bool }
+
+/// Semantic highlighting: each stretch the compiler classified, drawn in its kind's colour over the
+/// grammar's colours, a mutable one underlined. The stretches move with each edit until the next
+/// check replaces them, so nothing flickers while typing.
+type private Classes() =
+    inherit DocumentColorizingTransformer()
+
+    let mutable runs: Classified[] = [||]
+    let mutable look = Palette.light
+    let mutable brushes: Map<string, IBrush> = Map.empty
+
+    let brushOf (kind: string) =
+        match brushes.TryFind kind with
+        | Some b -> b
+        | None ->
+            let b = SolidColorBrush(Palette.colourOf look kind) :> IBrush
+            brushes <- brushes.Add(kind, b)
+            b
+
+    member val Enabled = true with get, set
+
+    member _.Look
+        with get () = look
+        and set v =
+            look <- v
+            brushes <- Map.empty
+
+    /// In order, none overlapping.
+    member _.Runs
+        with get () = runs
+        and set v = runs <- v
+
+    member _.Move(e: DocumentChangeEventArgs) =
+        runs <-
+            runs
+            |> Array.choose (fun r ->
+                let s = e.GetNewOffset(r.Offset, AnchorMovementType.AfterInsertion)
+                let t = e.GetNewOffset(r.Offset + r.Length, AnchorMovementType.BeforeInsertion)
+                if t > s then Some { r with Offset = s; Length = t - s } else None)
+
+    override this.ColorizeLine(line: DocumentLine) =
+        if this.Enabled && runs.Length > 0 then
+            let a = line.Offset
+            let b = line.EndOffset
+
+            // The first run that ends past the line's start.
+            let mutable lo = 0
+            let mutable hi = runs.Length
+
+            while lo < hi do
+                let mid = (lo + hi) / 2
+                if runs.[mid].Offset + runs.[mid].Length <= a then lo <- mid + 1 else hi <- mid
+
+            let mutable i = lo
+
+            while i < runs.Length && runs.[i].Offset < b do
+                let r = runs.[i]
+                let s = max r.Offset a
+                let t = min (r.Offset + r.Length) b
+
+                if t > s then
+                    let brush = brushOf r.Kind
+                    let underline = r.Mutable
+
+                    this.ChangeLinePart(
+                        s,
+                        t,
+                        fun element ->
+                            element.TextRunProperties.SetForegroundBrush brush
+
+                            if underline then
+                                element.TextRunProperties.SetTextDecorations TextDecorations.Underline
+                    )
+
+                i <- i + 1
+
+/// The script editor: AvaloniaEdit with F# highlighting, the grammar's and the compiler's, in the
+/// colours of the app's light or dark theme, and what the language service says about the script.
+/// Problems are underlined and their messages shown on hover, the symbol at the caret is marked
+/// where it is used and the bracket at it with its match, a dot or Ctrl+Space completes, a
+/// parenthesis or a comma shows the call's overloads, the pointer resting on a name shows its
+/// tooltip, and F2 renames a binding the script makes. Enter, Tab, Shift+Tab and Backspace indent
+/// as F# is indented, and brackets and quotes are closed as they are opened.
 type ScriptEditor() as this =
     inherit UserControl()
 
     let editor =
-        TextEditor(ShowLineNumbers = true, FontFamily = FontFamily "Cascadia Code,Consolas,DejaVu Sans Mono,monospace", FontSize = 13.0)
+        TextEditor(ShowLineNumbers = true, FontFamily = Shown.code, FontSize = 13.0)
 
     let registry = RegistryOptions ThemeName.LightPlus
     let textMate = TextMate.InstallTextMate(editor, registry, true, null)
     let marks = Marks(fun () -> editor.Document)
+    let classes = Classes()
 
     let edited = Event<History.TextEdit * string>()
     let problemsChanged = Event<Diagnostic[]>()
@@ -134,10 +388,21 @@ type ScriptEditor() as this =
     let mutable version = 0
     let mutable settingText = false
     let mutable completion: CompletionWindow = null
+    let mutable typed = Typed()
     let mutable overloads: OverloadInsightWindow = null
+    let mutable look = Palette.light
+    let mutable dark = false
 
     /// Counts caret moves, as `version` counts edits.
     let mutable moves = 0
+    /// Counts the checks asked for.
+    let mutable checks = 0
+    /// Counts hovers, so a tooltip arriving after the pointer moved on is set aside.
+    let mutable hovers = 0
+    let mutable tipText = ""
+
+    /// The closers the editor put in, while the caret stays on their line.
+    let closers = ResizeArray<TextAnchor>()
 
     /// Runs `f` on the UI thread after `ms`, unless `still` no longer holds by then.
     let after (ms: int) (still: unit -> bool) (f: unit -> unit) =
@@ -162,12 +427,36 @@ type ScriptEditor() as this =
                         Dispatcher.UIThread.Post(fun () -> if asked = version then answer t.Result))
             |> ignore
 
+    /// The tokens of a check as stretches of the document, in order.
+    let classify (tokens: Token[]) =
+        let doc = editor.Document
+
+        tokens
+        |> Array.choose (fun t ->
+            if t.Line >= 1 && t.Line <= doc.LineCount then
+                let l = doc.GetLineByNumber t.Line
+                let s = min t.StartColumn l.Length
+                let e = min t.EndColumn l.Length
+
+                if e > s then
+                    Some
+                        { Offset = l.Offset + s
+                          Length = e - s
+                          Kind = t.Kind
+                          Mutable = t.Mutable }
+                else
+                    None
+            else
+                None)
+
     let check () =
         let text = editor.Text
+        checks <- checks + 1
 
         ask (fun l -> l.CheckAsync(text, path)) (fun c ->
             marks.Problems <- c.Diagnostics
-            redraw ()
+            classes.Runs <- classify c.Tokens
+            editor.TextArea.TextView.Redraw()
             problemsChanged.Trigger c.Diagnostics)
 
     let markUses () =
@@ -197,9 +486,11 @@ type ScriptEditor() as this =
                 if not (isNull completion) then completion.Close()
                 let window = CompletionWindow(editor.TextArea)
                 window.StartOffset <- wordStart ()
+                typed <- Typed()
+                typed.Text <- editor.Document.GetText(window.StartOffset, editor.CaretOffset - window.StartOffset)
 
                 for item in c.Items do
-                    window.CompletionList.CompletionData.Add(CompletionItem item)
+                    window.CompletionList.CompletionData.Add(CompletionItem(item, look, typed))
 
                 window.Closed.Add(fun _ -> completion <- null)
                 completion <- window
@@ -217,6 +508,16 @@ type ScriptEditor() as this =
                 window.Closed.Add(fun _ -> overloads <- null)
                 overloads <- window
                 window.Show())
+
+    /// What typing a character sets off: completion after a dot, the overloads after an opening
+    /// parenthesis or a comma.
+    let reactTo (input: string) =
+        match input with
+        | "." -> complete ()
+        | "("
+        | "," -> signature ()
+        | ")" -> if not (isNull overloads) then overloads.Close()
+        | _ -> ()
 
     /// Renames the binding at the caret everywhere the script uses it, as one edit. False when
     /// the symbol there is not one the script defines.
@@ -275,12 +576,167 @@ type ScriptEditor() as this =
                 box.SelectAll()
                 box.Focus() |> ignore)
 
+    // ---- Typing --------------------------------------------------------------------------------
+
+    let isInserted (offset: int) =
+        closers |> Seq.exists (fun a -> not a.IsDeleted && a.Offset = offset)
+
+    let selection () =
+        let area = editor.TextArea
+
+        if area.Selection.IsEmpty then
+            editor.CaretOffset, editor.CaretOffset
+        else
+            let s = area.Selection.SurroundingSegment
+            s.Offset, s.EndOffset
+
+    /// Makes a change as one edit, and puts the selection where it says.
+    let apply (c: Typing.Change) =
+        let doc = editor.Document
+
+        if c.Length > 0 || c.Text.Length > 0 then
+            doc.Replace(c.Offset, c.Length, c.Text)
+
+        if c.SelectionStart = c.SelectionEnd then
+            editor.TextArea.ClearSelection()
+            editor.CaretOffset <- c.SelectionEnd
+        else
+            editor.Select(c.SelectionStart, c.SelectionEnd - c.SelectionStart)
+
+        if c.Closer >= 0 then
+            closers.Add(doc.CreateAnchor c.Closer)
+
+        editor.TextArea.Caret.BringCaretToView()
+
+    let onKey (e: KeyEventArgs) =
+        let text () = editor.Text
+
+        match e.Key, e.KeyModifiers with
+        | Key.Tab, KeyModifiers.None when isNull completion ->
+            e.Handled <- true
+            let s, t = selection ()
+            apply (Typing.indent (text ()) s t)
+        | Key.Tab, KeyModifiers.Shift when isNull completion ->
+            e.Handled <- true
+            let s, t = selection ()
+            apply (Typing.outdent (text ()) s t)
+        | Key.Back, KeyModifiers.None ->
+            let s, t = selection ()
+
+            match Typing.backspace (text ()) s t isInserted with
+            | Some c ->
+                e.Handled <- true
+                apply c
+            | None -> ()
+        | _ -> ()
+
+    let onTextEntering (e: TextInputEventArgs) =
+        let s, t = selection ()
+
+        match e.Text with
+        | "\n"
+        | "\r"
+        | "\r\n" ->
+            e.Handled <- true
+            apply (Typing.enter editor.Text s t)
+        | input when not (isNull input) ->
+            match Typing.typed editor.Text s t input isInserted with
+            | Some c ->
+                e.Handled <- true
+                apply c
+                reactTo input
+            | None -> ()
+        | _ -> ()
+
+    // ---- Hover -----------------------------------------------------------------------------------
+
+    let problemsAt (offset: int) =
+        let doc = editor.Document
+
+        marks.Problems
+        |> Array.filter (fun p ->
+            let s = Segments.ofProblem doc p
+            s.StartOffset <= offset && offset < s.EndOffset)
+
+    let tipView (problems: Diagnostic[]) (hovered: Hovered option) : Control =
+        let panel = StackPanel(Spacing = 6.0, MaxWidth = 640.0)
+        let texts = ResizeArray<string>()
+
+        for p in problems do
+            let colour =
+                match p.Severity with
+                | "error" -> look.Error
+                | "warning" -> look.Warning
+                | _ -> look.Info
+
+            let message = $"{p.Code}: {p.Message}"
+            texts.Add message
+            panel.Children.Add(TextBlock(Text = message, Foreground = SolidColorBrush colour, TextWrapping = TextWrapping.Wrap))
+
+        match hovered with
+        | Some h when not (String.IsNullOrWhiteSpace h.Text) ->
+            texts.Add h.Text
+
+            panel.Children.Add(
+                TextBlock(Inlines = Shown.signature look h.Text, FontFamily = Shown.code, TextWrapping = TextWrapping.Wrap)
+            )
+
+            if not (String.IsNullOrWhiteSpace h.Doc) then
+                texts.Add h.Doc
+                panel.Children.Add(TextBlock(Text = h.Doc, TextWrapping = TextWrapping.Wrap, Opacity = 0.85))
+        | _ -> ()
+
+        tipText <- String.Join("\n", texts)
+        panel
+
+    let showTip (content: Control) =
+        ToolTip.SetTip(editor, content)
+        ToolTip.SetIsOpen(editor, true)
+
+    /// What the pointer resting at an offset shows: the problems there at once, then the symbol's
+    /// tooltip below them when the language service answers.
+    let hoverAt (offset: int) =
+        hovers <- hovers + 1
+        let hover = hovers
+        let problems = problemsAt offset
+        let location = editor.Document.GetLocation offset
+        let text = editor.Text
+        tipText <- ""
+
+        if problems.Length > 0 then
+            showTip (tipView problems None)
+
+        ask (fun l -> l.HoverAsync(text, path, location.Line, location.Column - 1)) (fun h ->
+            if hover = hovers && (problems.Length > 0 || not (String.IsNullOrWhiteSpace h.Text)) then
+                showTip (tipView problems (Some h)))
+
+    // ---- The look ------------------------------------------------------------------------------
+
+    let applyLook () =
+        dark <- this.ActualThemeVariant = ThemeVariant.Dark
+        look <- Palette.forVariant this.ActualThemeVariant
+        textMate.SetTheme(registry.LoadTheme(if dark then ThemeName.DarkPlus else ThemeName.LightPlus))
+        editor.Background <- SolidColorBrush look.Background
+        editor.Foreground <- SolidColorBrush look.Foreground
+        editor.LineNumbersForeground <- SolidColorBrush look.LineNumbers
+        editor.TextArea.SelectionBrush <- SolidColorBrush look.Selection
+        editor.TextArea.TextView.CurrentLineBackground <- SolidColorBrush look.CurrentLine
+        editor.TextArea.TextView.CurrentLineBorder <- Pen(Brushes.Transparent, 0.0)
+        classes.Look <- look
+        marks.Look <- look
+        editor.TextArea.TextView.Redraw()
+
     do
         textMate.SetGrammar(registry.GetScopeByLanguageId "fsharp")
+        // After the grammar's colouriser, so the compiler's classes are drawn over it.
+        editor.TextArea.TextView.LineTransformers.Add classes
         editor.TextArea.TextView.BackgroundRenderers.Add marks
         editor.Options.ConvertTabsToSpaces <- true
-        editor.Options.IndentationSize <- 4
+        editor.Options.IndentationSize <- Typing.Width
+        editor.Options.HighlightCurrentLine <- true
         this.Content <- editor
+        applyLook ()
+        this.ActualThemeVariantChanged.Add(fun _ -> applyLook ())
 
         // The app keeps the history, so AvaloniaEdit keeps none.
         editor.Document.UndoStack.SizeLimit <- 0
@@ -292,6 +748,8 @@ type ScriptEditor() as this =
             after 250 (fun () -> edit = version) check)
 
         editor.Document.Changed.Add(fun e ->
+            classes.Move e
+
             if not settingText then
                 let edit: History.TextEdit =
                     { Offset = e.Offset
@@ -303,15 +761,19 @@ type ScriptEditor() as this =
         editor.TextArea.Caret.PositionChanged.Add(fun _ ->
             moves <- moves + 1
             let move = moves
+            let line = editor.TextArea.Caret.Line
+            closers.RemoveAll(fun a -> a.IsDeleted || a.Line <> line) |> ignore
+            marks.Brackets <- Typing.matching editor.Text editor.CaretOffset
+            redraw ()
+
+            if not (isNull completion) && editor.CaretOffset >= completion.StartOffset then
+                typed.Text <- editor.Document.GetText(completion.StartOffset, editor.CaretOffset - completion.StartOffset)
+
             after 300 (fun () -> move = moves) markUses)
 
-        editor.TextArea.TextEntered.Add(fun e ->
-            match e.Text with
-            | "." -> complete ()
-            | "("
-            | "," -> signature ()
-            | ")" -> if not (isNull overloads) then overloads.Close()
-            | _ -> ())
+        editor.TextArea.TextEntering.Add onTextEntering
+        editor.TextArea.TextEntered.Add(fun e -> reactTo e.Text)
+        editor.TextArea.AddHandler(InputElement.KeyDownEvent, EventHandler<KeyEventArgs>(fun _ e -> onKey e), RoutingStrategies.Tunnel)
 
         editor.TextArea.KeyDown.Add(fun e ->
             match e.Key, e.KeyModifiers with
@@ -324,17 +786,15 @@ type ScriptEditor() as this =
             | _ -> ())
 
         editor.PointerHover.Add(fun e ->
-            match editor.GetPositionFromPoint(e.GetPosition editor) |> Option.ofNullable with
-            | Some p ->
-                let text = editor.Text
+            let view = editor.TextArea.TextView
 
-                ask (fun l -> l.HoverAsync(text, path, p.Line, p.Column - 1)) (fun h ->
-                    if not (String.IsNullOrWhiteSpace h.Text) then
-                        ToolTip.SetTip(editor, h.Text)
-                        ToolTip.SetIsOpen(editor, true))
+            match view.GetPositionFloor(e.GetPosition view + view.ScrollOffset) |> Option.ofNullable with
+            | Some p -> hoverAt (editor.Document.GetOffset(p.Location))
             | None -> ())
 
-        editor.PointerHoverStopped.Add(fun _ -> ToolTip.SetIsOpen(editor, false))
+        editor.PointerHoverStopped.Add(fun _ ->
+            hovers <- hovers + 1
+            ToolTip.SetIsOpen(editor, false))
 
     /// The script's text. Setting it replaces only what differs, as one edit, so the caret stays
     /// where it was outside it; the edit is not reported as typed.
@@ -379,6 +839,22 @@ type ScriptEditor() as this =
     /// The problems the language service last found.
     member _.Problems = marks.Problems
 
+    /// The stretches the last check classified, moved with the edits since.
+    member _.Classified = classes.Runs
+
+    /// Whether the compiler's classes are drawn; the grammar's colours alone where not.
+    member _.Semantic
+        with get () = classes.Enabled
+        and set (value: bool) =
+            classes.Enabled <- value
+            editor.TextArea.TextView.Redraw()
+
+    /// The colours the editor is drawn in, which follow the app's theme.
+    member _.Look = look
+
+    /// How many checks the editor has asked for.
+    member _.Checks = checks
+
     /// The editor underneath, for what this control does not wrap.
     member _.Editor = editor
 
@@ -388,6 +864,12 @@ type ScriptEditor() as this =
 
     /// Renames the binding at the caret, as F2 does once a name is typed.
     member _.RenameAsync(name: string) : Task<bool> = renameTo name
+
+    /// Shows what the pointer resting on the character at an offset shows.
+    member _.HoverAt(offset: int) = hoverAt offset
+
+    /// The text of the tooltip last shown: the problems' messages, the signature, its documentation.
+    member _.TipText = tipText
 
     /// Moves the caret to a line and column (from 1 and 0) and brings it into view.
     member _.GoTo(line: int, column: int) =

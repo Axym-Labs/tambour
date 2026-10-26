@@ -90,7 +90,8 @@ let private isSpace (c: char) = Char.IsWhiteSpace c
 
 /// Whether typed `next` joins the group `last` was typed into, as an editor groups typing: one
 /// character at a time, each where the last left off, the same way (typing or deleting), no line
-/// break before it, and no new word after a space.
+/// break before it, and no new word after a space. A backspace in indentation, which takes the
+/// spaces back to the level before, counts as one.
 let private joins (last: TextEdit) (next: TextEdit) =
     match last, next with
     | { Removed = "" }, { Removed = ""; Inserted = c } when c.Length = 1 && last.Inserted.Length > 0 ->
@@ -99,10 +100,10 @@ let private joins (last: TextEdit) (next: TextEdit) =
         next.Offset = last.Offset + last.Inserted.Length
         && previous <> '\n'
         && not (isSpace previous && not (isSpace c.[0]))
-    | { Inserted = "" }, { Inserted = ""; Removed = c } when c.Length = 1 && last.Removed.Length > 0 ->
+    | { Inserted = "" }, { Inserted = ""; Removed = c } when (c.Length = 1 || c.Trim(' ') = "") && last.Removed.Length > 0 ->
         c <> "\n"
         // A backspace, just before the last; or a delete, at the same place.
-        && (next.Offset + 1 = last.Offset || next.Offset = last.Offset)
+        && (next.Offset + c.Length = last.Offset || next.Offset = last.Offset)
     | _ -> false
 
 let private merge (last: TextEdit) (next: TextEdit) =
