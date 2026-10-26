@@ -14,6 +14,11 @@
     <PackageVersion Include="Marey" Version="[$(MareyVersion)]" />
     <PackageVersion Include="Marey.Backend.Skia" Version="[$(MareyVersion)]" />
 
+    <!-- The worker's and the language service's F#: FCS states the FSharp.Core it was built with
+         exactly, so the whole app runs on that one. -->
+    <PackageVersion Include="FSharp.Core" Version="[10.1.202]" />
+    <PackageVersion Include="FSharp.Compiler.Service" Version="[43.12.202]" />
+
     <PackageVersion Include="Avalonia" Version="[$(AvaloniaVersion)]" />
     <PackageVersion Include="Avalonia.Desktop" Version="[$(AvaloniaVersion)]" />
     <PackageVersion Include="Avalonia.Skia" Version="[$(AvaloniaVersion)]" />

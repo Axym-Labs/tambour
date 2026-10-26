@@ -7,6 +7,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="Paths.fs" />
+    <Compile Include="Evaluation.fs" />
+    <Compile Include="Worker.fs" />
+    <Compile Include="Host.fs" />
     <Compile Include="FigureView.fs" />
     <Compile Include="App.fs" />
     <Compile Include="SelfCheck.fs" />
@@ -14,8 +18,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../Tambour.Protocol/Tambour.Protocol.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Marey" />
     <PackageReference Include="Marey.Backend.Skia" />
+    <PackageReference Include="FSharp.Compiler.Service" />
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Skia" />
