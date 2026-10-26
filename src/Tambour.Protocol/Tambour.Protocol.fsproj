@@ -9,7 +9,7 @@
   <ItemGroup>
     <Compile Include="Messages.fs" />
     <Compile Include="Codec.fs" />
-    <Compile Include="Frame.fs" />
+    <Compile Include="Framing.fs" />
   </ItemGroup>
 
 </Project>

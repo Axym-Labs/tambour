@@ -13,6 +13,7 @@
   <ItemGroup>
     <PackageVersion Include="Marey" Version="[$(MareyVersion)]" />
     <PackageVersion Include="Marey.Backend.Skia" Version="[$(MareyVersion)]" />
+    <PackageVersion Include="Marey.Backend.Gpu" Version="[$(MareyVersion)]" />
 
     <!-- The worker's and the language service's F#: FCS states the FSharp.Core it was built with
          exactly, so the whole app runs on that one. -->
@@ -24,6 +25,9 @@
     <PackageVersion Include="Avalonia.Skia" Version="[$(AvaloniaVersion)]" />
     <PackageVersion Include="Avalonia.Themes.Fluent" Version="[$(AvaloniaVersion)]" />
     <PackageVersion Include="Avalonia.Headless.XUnit" Version="[$(AvaloniaVersion)]" />
+    <PackageVersion Include="Avalonia.FuncUI" Version="[2.0.0]" />
+    <PackageVersion Include="Avalonia.FuncUI.Elmish" Version="[2.0.0]" />
+    <PackageVersion Include="Elmish" Version="[5.0.2]" />
 
     <!-- Avalonia.Skia asks for SkiaSharp 3.119 and HarfBuzzSharp 8.3 as lower bounds, Marey for
          4.151 and 14.2; a process loads one of each, so both are pinned here to Marey's, which

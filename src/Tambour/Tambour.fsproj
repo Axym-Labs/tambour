@@ -11,9 +11,11 @@
     <Compile Include="Evaluation.fs" />
     <Compile Include="Worker.fs" />
     <Compile Include="Host.fs" />
-    <Compile Include="FigureView.fs" />
+    <Compile Include="FigurePane.fs" />
     <Compile Include="App.fs" />
+    <Compile Include="Shell.fs" />
     <Compile Include="SelfCheck.fs" />
+    <Compile Include="PaneCheck.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
@@ -24,11 +26,15 @@
   <ItemGroup>
     <PackageReference Include="Marey" />
     <PackageReference Include="Marey.Backend.Skia" />
+    <PackageReference Include="Marey.Backend.Gpu" />
     <PackageReference Include="FSharp.Compiler.Service" />
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Skia" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="Avalonia.FuncUI" />
+    <PackageReference Include="Avalonia.FuncUI.Elmish" />
+    <PackageReference Include="Elmish" />
     <PackageReference Include="SkiaSharp" />
     <PackageReference Include="HarfBuzzSharp" />
   </ItemGroup>

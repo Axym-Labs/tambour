@@ -7,9 +7,10 @@
 
   <ItemGroup>
     <Compile Include="TestApp.fs" />
-    <Compile Include="FigureViewTests.fs" />
+    <Compile Include="FigurePaneTests.fs" />
     <Compile Include="ProtocolTests.fs" />
     <Compile Include="WorkerTests.fs" />
+    <Compile Include="ShellTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -147,6 +147,12 @@ type WorkerProcess private (proc: Process, connection: Connection, replies: Chan
 /// worker running it and puts the spare on duty; a worker whose heap has grown past a limit is
 /// replaced the same way once it is idle, and so is one that dies. Replies come from the worker on
 /// duty only.
+///
+/// The figure on screen came from the last script that ran to the end, and a worker put on duty
+/// does not hold it. A worn-out worker's replacement runs that script again at once. After a
+/// cancel or a death it is run again when the figure is next asked for, a control, a zoom, the
+/// pointer, a selection or an export, before that request; a new script sent first makes it
+/// unnecessary. Either way what it prints is not passed on, since it was once already.
 type Workers(command: Command, init: Init, heapLimit: int64) =
 
     let replies = Channel.CreateUnbounded<Reply>()
@@ -157,12 +163,16 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
     /// The spare being put on duty, which a request sent meanwhile waits for.
     let mutable promoting: Task = Task.CompletedTask
 
-    // What a worker put on duty is told again: the pane's size, and, when a worn-out worker is
-    // replaced, the script and the figure on screen.
+    // What a worker put on duty is told again: the pane's size, the last script that ran to the
+    // end, and the figure on screen.
     let mutable lastSize: LiveInput option = None
-    let mutable lastEvaluate: Evaluate option = None
+    let mutable lastGood: Evaluate option = None
     let mutable selected = -1
-    let mutable running = 0
+    /// The scripts sent and not yet reported, oldest first, each with whether its output is held
+    /// back. The worker runs them in order, so the oldest is the one running.
+    let runs = Collections.Generic.Queue<Evaluate * bool>()
+    /// The worker on duty lacks the figure on screen, and gets it on the next request for it.
+    let mutable stale = false
     let mutable recycleDue = false
 
     let start () : Task<WorkerProcess * Ready> =
@@ -205,15 +215,21 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
                         lock gate (fun () ->
                             match current with
                             | Some(c, ready) when obj.ReferenceEquals(c, w) ->
-                                match reply with
-                                | Reply.Evaluated e ->
-                                    running <- max 0 (running - 1)
-                                    selected <- e.Selected
-                                    if e.Heap > ready.Heap + heapLimit then recycleDue <- true
-                                | _ -> ()
+                                let held =
+                                    match reply with
+                                    | Reply.Output _ -> runs.Count > 0 && snd (runs.Peek())
+                                    | Reply.Evaluated e ->
+                                        if runs.Count > 0 then
+                                            let ran, _ = runs.Dequeue()
+                                            if e.Ok then lastGood <- Some ran
 
-                                replies.Writer.TryWrite reply |> ignore
-                                if recycleDue && running = 0 then recycle ()
+                                        selected <- e.Selected
+                                        if e.Heap > ready.Heap + heapLimit then recycleDue <- true
+                                        false
+                                    | _ -> false
+
+                                if not held then replies.Writer.TryWrite reply |> ignore
+                                if recycleDue && runs.Count = 0 then recycle ()
                             | _ -> ())
 
             // The worker went away. If it was on duty, nobody asked it to.
@@ -238,8 +254,9 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
         | None -> ()
 
         current <- None
-        running <- 0
+        runs.Clear()
         recycleDue <- false
+        stale <- not replay && lastGood.IsSome
 
         promoting <-
             task {
@@ -253,9 +270,9 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
                           | Some s -> Request.Live s
                           | None -> ()
                           if replay then
-                              match lastEvaluate with
+                              match lastGood with
                               | Some e ->
-                                  running <- 1
+                                  runs.Enqueue(e, true)
                                   Request.Evaluate e
                                   if selected > 0 then Request.Select selected
                               | None -> () ]
@@ -291,33 +308,55 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
     member _.Pid = lock gate (fun () -> current |> Option.map (fun (w, _) -> w.Pid))
 
     /// Sends a request to the worker on duty, or, while a spare is being put on duty, to that one
-    /// once it is.
+    /// once it is; after the last good script again, if the request needs the figure it drew.
     member _.SendAsync(request: Request) : Task =
-        let target, pending =
+        let target, pending, restore =
             lock gate (fun () ->
+                let restore =
+                    match request with
+                    | Request.Evaluate e ->
+                        runs.Enqueue(e, false)
+                        stale <- false
+                        []
+                    // A new size is not a request for the figure: the worker keeps it for the next.
+                    | Request.Live l when l.Kind = "size" ->
+                        lastSize <- Some l
+                        []
+                    | _ when stale ->
+                        stale <- false
+
+                        match lastGood with
+                        | Some e ->
+                            runs.Enqueue(e, true)
+
+                            [ Request.Evaluate e
+                              match request with
+                              | Request.Select _ -> ()
+                              | _ -> if selected > 0 then Request.Select selected ]
+                        | None -> []
+                    | _ -> []
+
                 match request with
-                | Request.Evaluate e ->
-                    lastEvaluate <- Some e
-                    running <- running + 1
-                | Request.Live l when l.Kind = "size" -> lastSize <- Some l
                 | Request.Select i -> selected <- i
                 | _ -> ()
 
-                current, promoting)
+                current, promoting, restore)
 
-        match target with
-        | Some(w, _) -> w.SendAsync request
-        | None ->
+        match target, restore with
+        | Some(w, _), [] -> w.SendAsync request
+        | _ ->
             task {
                 do! pending
 
                 match lock gate (fun () -> current) with
-                | Some(w, _) -> do! w.SendAsync request
+                | Some(w, _) ->
+                    for r in restore @ [ request ] do
+                        do! w.SendAsync r
                 | None -> raise (InvalidOperationException "no worker is on duty")
             }
 
     /// Ends the worker on duty, whatever it is doing, and puts the spare in its place. Returns
-    /// once the spare is on duty; it has no figures until it is sent a script.
+    /// once the spare is on duty.
     member _.CancelAsync() : Task = lock gate (fun () -> promote false)
 
     interface IDisposable with

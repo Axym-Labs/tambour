@@ -9,7 +9,8 @@ open System.Text.Json.Serialization
 exception ProtocolException of string
 
 /// A message's bytes: one tag byte, then its body. A body is JSON, except for a scene, a patch or
-/// an export, where it is the figure's index (four bytes, little-endian) and the bytes unchanged.
+/// an export, where it is the figure's index (four bytes), its width and height (eight bytes
+/// each), all little-endian, and then the bytes unchanged.
 module Codec =
 
     let private json =
@@ -22,11 +23,16 @@ module Codec =
         Buffer.BlockCopy(body, 0, bytes, 1, body.Length)
         bytes
 
-    let private binary (tag: byte) (figure: int) (payload: byte[]) =
-        let bytes = Array.zeroCreate (5 + payload.Length)
+    [<Literal>]
+    let private FrameHeader = 21
+
+    let private binary (tag: byte) (frame: Frame) =
+        let bytes = Array.zeroCreate (FrameHeader + frame.Bytes.Length)
         bytes.[0] <- tag
-        BinaryPrimitives.WriteInt32LittleEndian(Span(bytes, 1, 4), figure)
-        Buffer.BlockCopy(payload, 0, bytes, 5, payload.Length)
+        BinaryPrimitives.WriteInt32LittleEndian(Span(bytes, 1, 4), frame.Figure)
+        BinaryPrimitives.WriteDoubleLittleEndian(Span(bytes, 5, 8), frame.Width)
+        BinaryPrimitives.WriteDoubleLittleEndian(Span(bytes, 13, 8), frame.Height)
+        Buffer.BlockCopy(frame.Bytes, 0, bytes, FrameHeader, frame.Bytes.Length)
         bytes
 
     let private body<'a> (bytes: byte[]) : 'a =
@@ -41,11 +47,14 @@ module Codec =
 
         value
 
-    let private figureAndPayload (bytes: byte[]) =
-        if bytes.Length < 5 then
-            raise (ProtocolException $"message {bytes.[0]} is {bytes.Length} bytes, too short for a figure")
+    let private frame (bytes: byte[]) : Frame =
+        if bytes.Length < FrameHeader then
+            raise (ProtocolException $"message {bytes.[0]} is {bytes.Length} bytes, too short for a frame")
 
-        BinaryPrimitives.ReadInt32LittleEndian(ReadOnlySpan(bytes, 1, 4)), bytes.[5..]
+        { Figure = BinaryPrimitives.ReadInt32LittleEndian(ReadOnlySpan(bytes, 1, 4))
+          Width = BinaryPrimitives.ReadDoubleLittleEndian(ReadOnlySpan(bytes, 5, 8))
+          Height = BinaryPrimitives.ReadDoubleLittleEndian(ReadOnlySpan(bytes, 13, 8))
+          Bytes = bytes.[FrameHeader..] }
 
     let private nonEmpty (bytes: byte[]) =
         if isNull bytes || bytes.Length = 0 then
@@ -76,12 +85,12 @@ module Codec =
         match reply with
         | Reply.Ready m -> tagged 64uy m
         | Reply.Evaluated m -> tagged 65uy m
-        | Reply.Scene(figure, payload) -> binary 66uy figure payload
-        | Reply.Patch(figure, payload) -> binary 67uy figure payload
+        | Reply.Scene f -> binary 66uy f
+        | Reply.Patch f -> binary 67uy f
         | Reply.Controls m -> tagged 68uy m
         | Reply.Readout m -> tagged 69uy m
         | Reply.Output m -> tagged 70uy m
-        | Reply.Exported(figure, payload) -> binary 71uy figure payload
+        | Reply.Exported f -> binary 71uy f
         | Reply.Failed message -> tagged 72uy message
 
     let decodeReply (bytes: byte[]) : Reply =
@@ -90,11 +99,11 @@ module Codec =
         match bytes.[0] with
         | 64uy -> Reply.Ready(body bytes)
         | 65uy -> Reply.Evaluated(body bytes)
-        | 66uy -> Reply.Scene(figureAndPayload bytes)
-        | 67uy -> Reply.Patch(figureAndPayload bytes)
+        | 66uy -> Reply.Scene(frame bytes)
+        | 67uy -> Reply.Patch(frame bytes)
         | 68uy -> Reply.Controls(body bytes)
         | 69uy -> Reply.Readout(body bytes)
         | 70uy -> Reply.Output(body bytes)
-        | 71uy -> Reply.Exported(figureAndPayload bytes)
+        | 71uy -> Reply.Exported(frame bytes)
         | 72uy -> Reply.Failed(body bytes)
         | tag -> raise (ProtocolException $"no reply has the tag {tag}")

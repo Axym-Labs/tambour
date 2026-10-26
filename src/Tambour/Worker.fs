@@ -61,6 +61,13 @@ type private Shown =
       mutable Scene: Node
       mutable Readout: ReadoutState option }
 
+/// Bytes for the figure on screen, at the size its state is laid out at.
+let private frameOf (s: Shown) (bytes: byte[]) : Frame =
+    { Figure = s.Index
+      Width = float s.State.Size.Width
+      Height = float s.State.Size.Height
+      Bytes = bytes }
+
 /// A live figure's scene is laid out by `Live` against Marey's own measurer, so its text is
 /// anchored against that one, and the scene carries that measurer's metrics.
 let private measurer = TextMeasure.approx
@@ -135,7 +142,7 @@ type private Worker(send: Reply -> unit, flush: unit -> unit) =
 
     let present (s: Shown) =
         send (Reply.Controls(controlsOf s.Index s.Live s.State))
-        send (Reply.Scene(s.Index, Wire.encodeWith measurer s.Scene))
+        send (Reply.Scene(frameOf s (Wire.encodeWith measurer s.Scene)))
 
     let evaluated ok exn (diagnostics: Diagnostic[]) (timings: Timings) =
         flush ()
@@ -209,7 +216,7 @@ type private Worker(send: Reply -> unit, flush: unit -> unit) =
             match next, scene with
             | Some s, Some bytes ->
                 send (Reply.Controls(controlsOf s.Index s.Live s.State))
-                send (Reply.Scene(s.Index, bytes))
+                send (Reply.Scene(frameOf s bytes))
             | _ -> ()
         | Ok _ -> evaluated false run.Exception run.Diagnostics timings
 
@@ -233,7 +240,7 @@ type private Worker(send: Reply -> unit, flush: unit -> unit) =
                 let node = Live.scene s.Live after
                 let patch = Scene.diff s.Scene node
                 s.Scene <- node
-                send (Reply.Patch(s.Index, Wire.encodePatchWith measurer patch))
+                send (Reply.Patch(frameOf s (Wire.encodePatchWith measurer patch)))
 
             if not (obj.ReferenceEquals(before.Values, after.Values)) then
                 send (Reply.Controls(controlsOf s.Index s.Live after))
@@ -271,10 +278,13 @@ type private Worker(send: Reply -> unit, flush: unit -> unit) =
                     Dpi = skia.Dpi * 1.0<px / mm>
                     FontFiles = List.ofArray skia.FontFiles }
 
+            let exported bytes =
+                send (Reply.Exported { Figure = s.Index; Width = m.Width; Height = m.Height; Bytes = bytes })
+
             match m.Format with
-            | "png" -> send (Reply.Exported(s.Index, SkiaBackend.renderPngWith (options ()) extent (skiaScene ())))
-            | "pdf" -> send (Reply.Exported(s.Index, SkiaBackend.renderPdfWith (options ()) extent (skiaScene ())))
-            | "svg" -> send (Reply.Exported(s.Index, Encoding.UTF8.GetBytes(SvgBackend.render extent (Chart.toScene extent figure))))
+            | "png" -> exported (SkiaBackend.renderPngWith (options ()) extent (skiaScene ()))
+            | "pdf" -> exported (SkiaBackend.renderPdfWith (options ()) extent (skiaScene ()))
+            | "svg" -> exported (Encoding.UTF8.GetBytes(SvgBackend.render extent (Chart.toScene extent figure)))
             | other -> send (Reply.Failed $"no export writes {other}; png, pdf and svg do")
 
     /// Carries out one request. False when the worker cannot go on.

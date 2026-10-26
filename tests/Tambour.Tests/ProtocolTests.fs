@@ -34,8 +34,8 @@ let requests: obj[] list =
 let replies: obj[] list =
     [ Reply.Ready { Elapsed = 2500.0; Heap = 1L <<< 40 }
       Reply.Evaluated evaluated
-      Reply.Scene(0, [| 1uy; 2uy; 3uy |])
-      Reply.Patch(3, [||])
+      Reply.Scene { Figure = 0; Width = 640.0; Height = 400.5; Bytes = [| 1uy; 2uy; 3uy |] }
+      Reply.Patch { Figure = 3; Width = 1.0; Height = 2.0; Bytes = [||] }
       Reply.Controls
           { Figure = 0
             Controls =
@@ -60,7 +60,7 @@ let replies: obj[] list =
             Right = true
             Lines = [| "x 1 s"; "y 2 m" |] }
       Reply.Output { Stream = "err"; Text = "ünïcode\n" }
-      Reply.Exported(1, Array.init 300 byte)
+      Reply.Exported { Figure = 1; Width = 800.0; Height = 500.0; Bytes = Array.init 300 byte }
       Reply.Failed "no" ]
     |> List.map (fun r -> [| box r |])
 
@@ -88,20 +88,20 @@ let ``frames come back in order, and the stream's end is told from a cut frame``
     let messages = [ [| 1uy |]; Array.init 70000 byte; [| 9uy; 9uy |] ]
 
     for m in messages do
-        Frame.write stream m
+        Framing.write stream m
 
     let whole = stream.ToArray()
     stream.Position <- 0L
-    let back = List.init 3 (fun _ -> Frame.read stream |> Option.get)
+    let back = List.init 3 (fun _ -> Framing.read stream |> Option.get)
     Assert.Equal<byte[] list>(messages, back)
-    Assert.Equal(None, Frame.read stream)
+    Assert.Equal(None, Framing.read stream)
 
     use cut = new MemoryStream(whole.[.. whole.Length - 2])
-    Frame.read cut |> ignore
-    Frame.read cut |> ignore
-    Assert.Throws<ProtocolException>(fun () -> Frame.read cut |> ignore) |> ignore
+    Framing.read cut |> ignore
+    Framing.read cut |> ignore
+    Assert.Throws<ProtocolException>(fun () -> Framing.read cut |> ignore) |> ignore
 
 [<Fact>]
 let ``a frame with a length out of range is refused`` () =
     use stream = new MemoryStream([| 0xFFuy; 0xFFuy; 0xFFuy; 0x7Fuy; 0uy |])
-    Assert.Throws<ProtocolException>(fun () -> Frame.read stream |> ignore) |> ignore
+    Assert.Throws<ProtocolException>(fun () -> Framing.read stream |> ignore) |> ignore
