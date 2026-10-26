@@ -10,7 +10,8 @@ source, and the source runs unchanged in plain `dotnet fsi`.
 
 ## Status
 
-Early. What builds today is a window that paints a Marey figure; there is nothing to use yet. The
+Early. What builds today is a window that paints a Marey figure, and the worker that runs a script
+and sends its figures back, with nothing yet joining the two; there is nothing to use yet. The
 first release is planned to be an editor, a worker process that evaluates scripts, and a figure
 pane with Marey's live controls, followed by the table.
 

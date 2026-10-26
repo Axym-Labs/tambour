@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- What the app and its workers say to each other, and the bytes it goes in. No Avalonia, no
+       FCS and no Marey: a scene travels as Marey's wire bytes, unread. -->
+  <PropertyGroup>
+    <RootNamespace>Tambour.Protocol</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Messages.fs" />
+    <Compile Include="Codec.fs" />
+    <Compile Include="Frame.fs" />
+  </ItemGroup>
+
+</Project>

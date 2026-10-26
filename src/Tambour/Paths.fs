@@ -1,0 +1,38 @@
+/// Where the app writes. Never next to the executable, which a package may install read-only:
+/// the XDG directories on Linux, the user's application data on Windows.
+module Tambour.Paths
+
+open System
+open System.IO
+
+/// Unix sockets name a path of at most 108 bytes, its terminator included.
+[<Literal>]
+let private MaxSocketPath = 107
+
+let private privateDirectory (path: string) =
+    if OperatingSystem.IsWindows() then
+        Directory.CreateDirectory path |> ignore
+    else
+        Directory.CreateDirectory(path, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute)
+        |> ignore
+
+    path
+
+/// The directory for this user's sockets: `$XDG_RUNTIME_DIR/tambour`, or a directory of the
+/// user's own under the temporary one where that is unset; `%LOCALAPPDATA%\Tambour\run` on Windows.
+let runtimeDirectory () : string =
+    if OperatingSystem.IsWindows() then
+        privateDirectory (Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.LocalApplicationData, "Tambour", "run"))
+    else
+        match Environment.GetEnvironmentVariable "XDG_RUNTIME_DIR" with
+        | dir when not (String.IsNullOrEmpty dir) && Directory.Exists dir -> privateDirectory (Path.Combine(dir, "tambour"))
+        | _ -> privateDirectory (Path.Combine(Path.GetTempPath(), $"tambour-{Environment.UserName}"))
+
+/// A fresh path for one worker's socket, short enough for the socket to be bound.
+let socketPath (name: string) : string =
+    let path = Path.Combine(runtimeDirectory (), name + ".sock")
+
+    if Text.Encoding.UTF8.GetByteCount path <= MaxSocketPath then
+        path
+    else
+        Path.Combine(Path.GetTempPath(), name + ".sock")
