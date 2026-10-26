@@ -370,8 +370,8 @@ let ``a worker that dies is reported and replaced`` () : Task =
 let ``a worker stuck in a script ends when the app does`` () : Task =
     task {
         // Another worker stands in for the app: a process that lives until it is killed.
-        let! app = WorkerProcess.StartAsync command
-        let! worker = WorkerProcess.StartAsync(command, app.Pid)
+        let! app = WorkerProcess.StartAsync(Role.worker, command)
+        let! worker = WorkerProcess.StartAsync(Role.worker, command, app.Pid)
         do! worker.SendAsync(Request.Init init)
         let! ready = worker.Replies.ReadAsync().AsTask()
         Assert.True(ready.IsReady, sprintf "%A" ready)

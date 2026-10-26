@@ -35,12 +35,33 @@ module Command =
 
             { File = dotnet; Arguments = [ typeof<Command>.Assembly.Location ] }
 
-/// One worker process and the connection to it.
-type WorkerProcess private (proc: Process, connection: Connection, replies: ChannelReader<Reply>, log: StringBuilder) =
+/// A role this app starts itself in, and the messages it takes and gives.
+type Role<'request, 'reply> =
+    { Flag: string
+      Encode: 'request -> byte[]
+      Decode: byte[] -> 'reply }
+
+module Role =
+
+    /// `tambour --worker`, which runs scripts.
+    let worker: Role<Request, Reply> =
+        { Flag = "--worker"
+          Encode = Codec.encodeRequest
+          Decode = Codec.decodeReply }
+
+    /// `tambour --analysis`, the language service.
+    let analysis: Role<AnalysisRequest, AnalysisReply> =
+        { Flag = "--analysis"
+          Encode = Codec.encodeAnalysisRequest
+          Decode = Codec.decodeAnalysisReply }
+
+/// One process of this app in another role, and the connection to it.
+type ChildProcess<'request, 'reply> private
+    (role: Role<'request, 'reply>, proc: Process, connection: Connection, replies: ChannelReader<'reply>, log: StringBuilder) =
 
     let exited = proc.WaitForExitAsync()
 
-    /// How long a worker has to connect before it is given up on.
+    /// How long a process has to connect before it is given up on.
     static member ConnectTimeout = TimeSpan.FromSeconds 60.0
 
     member _.Pid = proc.Id
@@ -52,8 +73,8 @@ type WorkerProcess private (proc: Process, connection: Connection, replies: Chan
     /// message, a runtime's complaint.
     member _.Log = lock log (fun () -> log.ToString())
 
-    member _.SendAsync(request: Request) : Task =
-        connection.SendAsync(Codec.encodeRequest request, CancellationToken.None)
+    member _.SendAsync(request: 'request) : Task =
+        connection.SendAsync(role.Encode request, CancellationToken.None)
 
     /// Ends the process and everything it started. Its replies end with it.
     member _.Kill() =
@@ -67,12 +88,12 @@ type WorkerProcess private (proc: Process, connection: Connection, replies: Chan
     /// Completes when the process has ended.
     member _.Exited: Task = exited
 
-    /// Starts a worker and waits for it to connect. The worker ends when the process `app`
+    /// Starts this app in the role and waits for it to connect. It ends when the process `app`
     /// does, this one unless stated.
-    static member StartAsync(command: Command, ?app: int) : Task<WorkerProcess> =
+    static member StartAsync(role: Role<'request, 'reply>, command: Command, ?app: int) : Task<ChildProcess<'request, 'reply>> =
         task {
             let app = defaultArg app Environment.ProcessId
-            let path = Paths.socketPath $"worker-{Environment.ProcessId}-{Guid.NewGuid().ToString().Substring(0, 8)}"
+            let path = Paths.socketPath $"{role.Flag.TrimStart('-')}-{Environment.ProcessId}-{Guid.NewGuid().ToString().Substring(0, 8)}"
 
             if File.Exists path then
                 File.Delete path
@@ -90,7 +111,7 @@ type WorkerProcess private (proc: Process, connection: Connection, replies: Chan
                     CreateNoWindow = true
                 )
 
-            for a in command.Arguments @ [ "--worker"; path; string app ] do
+            for a in command.Arguments @ [ role.Flag; path; string app ] do
                 info.ArgumentList.Add a
 
             let log = StringBuilder()
@@ -102,7 +123,7 @@ type WorkerProcess private (proc: Process, connection: Connection, replies: Chan
             proc.BeginOutputReadLine()
             proc.BeginErrorReadLine()
 
-            use timeout = new CancellationTokenSource(WorkerProcess.ConnectTimeout)
+            use timeout = new CancellationTokenSource(ChildProcess<'request, 'reply>.ConnectTimeout)
             let accept = listener.AcceptAsync(timeout.Token).AsTask()
             let! first = Task.WhenAny(accept, proc.WaitForExitAsync(timeout.Token))
 
@@ -118,10 +139,10 @@ type WorkerProcess private (proc: Process, connection: Connection, replies: Chan
                     ()
 
                 let said = lock log (fun () -> log.ToString().Trim())
-                return failwith $"the worker did not connect: {said}"
+                return failwith $"the {role.Flag.TrimStart('-')} did not connect: {said}"
             else
                 let connection = new Connection(new NetworkStream(accept.Result, true))
-                let channel = Channel.CreateUnbounded<Reply>(UnboundedChannelOptions(SingleWriter = true))
+                let channel = Channel.CreateUnbounded<'reply>(UnboundedChannelOptions(SingleWriter = true))
 
                 let pump () : Task =
                     task {
@@ -130,7 +151,7 @@ type WorkerProcess private (proc: Process, connection: Connection, replies: Chan
                         try
                             while reading do
                                 match! connection.ReceiveAsync CancellationToken.None with
-                                | Some bytes -> channel.Writer.TryWrite(Codec.decodeReply bytes) |> ignore
+                                | Some bytes -> channel.Writer.TryWrite(role.Decode bytes) |> ignore
                                 | None -> reading <- false
 
                             channel.Writer.TryComplete() |> ignore
@@ -140,8 +161,11 @@ type WorkerProcess private (proc: Process, connection: Connection, replies: Chan
                     }
 
                 Task.Run(Func<Task> pump) |> ignore
-                return new WorkerProcess(proc, connection, channel.Reader, log)
+                return new ChildProcess<'request, 'reply>(role, proc, connection, channel.Reader, log)
         }
+
+/// A worker process.
+type WorkerProcess = ChildProcess<Request, Reply>
 
 /// The worker on duty and a warm spare, with `Init` done, behind it. Cancelling a script ends the
 /// worker running it and puts the spare on duty; a worker whose heap has grown past a limit is
@@ -177,7 +201,7 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
 
     let start () : Task<WorkerProcess * Ready> =
         task {
-            let! w = WorkerProcess.StartAsync command
+            let! w = WorkerProcess.StartAsync(Role.worker, command)
             do! w.SendAsync(Request.Init init)
             let! first = w.Replies.ReadAsync().AsTask()
 
@@ -373,3 +397,144 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
             if not (isNull spare) then
                 spare.ContinueWith(fun (t: Task<WorkerProcess * Ready>) -> if t.IsCompletedSuccessfully then (fst t.Result).Kill())
                 |> ignore
+
+/// The language service, as the editor asks it: one `tambour --analysis` process, started at once
+/// and again if it dies, each request answered by the reply with its id.
+type LanguageService(command: Command, init: AnalysisInit) =
+
+    let gate = obj ()
+    let pending = Collections.Generic.Dictionary<int, TaskCompletionSource<AnalysisReply>>()
+    let mutable next = 0
+    let mutable disposed = false
+
+    let failAll (reason: string) =
+        lock gate (fun () ->
+            for t in pending.Values do
+                t.TrySetException(InvalidOperationException reason) |> ignore
+
+            pending.Clear())
+
+    let start () : Task<ChildProcess<AnalysisRequest, AnalysisReply>> =
+        task {
+            let! p = ChildProcess<AnalysisRequest, AnalysisReply>.StartAsync(Role.analysis, command)
+            do! p.SendAsync(AnalysisRequest.Start init)
+
+            match! p.Replies.ReadAsync().AsTask() with
+            | AnalysisReply.Started _ -> ()
+            | AnalysisReply.Failed(_, message) ->
+                p.Kill()
+                failwith message
+            | other ->
+                p.Kill()
+                failwith $"the language service answered Start with {other}"
+
+            let pump () : Task =
+                task {
+                    let mutable reading = true
+
+                    while reading do
+                        let! more = p.Replies.WaitToReadAsync().AsTask()
+
+                        if not more then
+                            reading <- false
+                        else
+                            let mutable reply = Unchecked.defaultof<AnalysisReply>
+
+                            while p.Replies.TryRead &reply do
+                                let id =
+                                    match reply with
+                                    | AnalysisReply.Checked r -> r.Id
+                                    | AnalysisReply.Completions r -> r.Id
+                                    | AnalysisReply.Hovered r -> r.Id
+                                    | AnalysisReply.Signatures r -> r.Id
+                                    | AnalysisReply.Used r -> r.Id
+                                    | AnalysisReply.Failed(id, _) -> id
+                                    | AnalysisReply.Started _ -> -1
+
+                                let waiting =
+                                    lock gate (fun () ->
+                                        match pending.TryGetValue id with
+                                        | true, t ->
+                                            pending.Remove id |> ignore
+                                            Some t
+                                        | _ -> None)
+
+                                match waiting, reply with
+                                | Some t, AnalysisReply.Failed(_, message) -> t.TrySetException(InvalidOperationException message) |> ignore
+                                | Some t, _ -> t.TrySetResult reply |> ignore
+                                | None, _ -> ()
+
+                    failAll $"the language service stopped. {p.Log.Trim()}"
+                }
+
+            pump () |> ignore
+            return p
+        }
+
+    let mutable child = start ()
+
+    /// The process, started again if the last one stopped.
+    let current () =
+        lock gate (fun () ->
+            if child.IsFaulted || (child.IsCompletedSuccessfully && child.Result.Exited.IsCompleted) then
+                child <- start ()
+
+            child)
+
+    /// Sends a request built around a fresh id, and waits for its reply.
+    member _.AskAsync(make: int -> AnalysisRequest) : Task<AnalysisReply> =
+        task {
+            let! p = current ()
+            let id = Threading.Interlocked.Increment &next
+            let reply = TaskCompletionSource<AnalysisReply>(TaskCreationOptions.RunContinuationsAsynchronously)
+            lock gate (fun () -> pending.[id] <- reply)
+            do! p.SendAsync(make id)
+            return! reply.Task
+        }
+
+    /// Started and ready.
+    member _.Ready: Task = child :> Task
+
+    member this.CheckAsync(text: string, path: string) : Task<Checked> =
+        task {
+            match! this.AskAsync(fun id -> AnalysisRequest.Check { Id = id; Text = text; Path = path }) with
+            | AnalysisReply.Checked c -> return c
+            | other -> return failwith $"a check answered with {other}"
+        }
+
+    member this.CompleteAsync(text: string, path: string, line: int, column: int) : Task<Completions> =
+        task {
+            match! this.AskAsync(fun id -> AnalysisRequest.Complete { Id = id; Text = text; Path = path; Line = line; Column = column }) with
+            | AnalysisReply.Completions c -> return c
+            | other -> return failwith $"a completion answered with {other}"
+        }
+
+    member this.HoverAsync(text: string, path: string, line: int, column: int) : Task<Hovered> =
+        task {
+            match! this.AskAsync(fun id -> AnalysisRequest.Hover { Id = id; Text = text; Path = path; Line = line; Column = column }) with
+            | AnalysisReply.Hovered h -> return h
+            | other -> return failwith $"a hover answered with {other}"
+        }
+
+    member this.SignatureAsync(text: string, path: string, line: int, column: int) : Task<Signatures> =
+        task {
+            match! this.AskAsync(fun id -> AnalysisRequest.Signature { Id = id; Text = text; Path = path; Line = line; Column = column }) with
+            | AnalysisReply.Signatures s -> return s
+            | other -> return failwith $"signature help answered with {other}"
+        }
+
+    member this.UsesAsync(text: string, path: string, line: int, column: int) : Task<Used> =
+        task {
+            match! this.AskAsync(fun id -> AnalysisRequest.Uses { Id = id; Text = text; Path = path; Line = line; Column = column }) with
+            | AnalysisReply.Used u -> return u
+            | other -> return failwith $"uses answered with {other}"
+        }
+
+    interface IDisposable with
+        member _.Dispose() =
+            disposed <- true
+            failAll "the language service was closed"
+
+            child.ContinueWith(fun (t: Task<ChildProcess<AnalysisRequest, AnalysisReply>>) ->
+                if t.IsCompletedSuccessfully then t.Result.Kill())
+            |> ignore

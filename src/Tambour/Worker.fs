@@ -319,7 +319,7 @@ type private Worker(send: Reply -> unit, flush: unit -> unit) =
 
 /// Ends this process when the app's does. A worker stuck in a script never reads its socket
 /// again, so it would not otherwise notice the app had gone.
-let private outlive (app: int) =
+let outlive (app: int) =
     let watch () =
         try
             use p = Process.GetProcessById app

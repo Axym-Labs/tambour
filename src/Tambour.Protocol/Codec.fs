@@ -107,3 +107,52 @@ module Codec =
         | 71uy -> Reply.Exported(frame bytes)
         | 72uy -> Reply.Failed(body bytes)
         | tag -> raise (ProtocolException $"no reply has the tag {tag}")
+
+    // The language service's requests from 16, its replies from 96.
+
+    let encodeAnalysisRequest (request: AnalysisRequest) : byte[] =
+        match request with
+        | AnalysisRequest.Start m -> tagged 16uy m
+        | AnalysisRequest.Check m -> tagged 17uy m
+        | AnalysisRequest.Complete m -> tagged 18uy m
+        | AnalysisRequest.Hover m -> tagged 19uy m
+        | AnalysisRequest.Signature m -> tagged 20uy m
+        | AnalysisRequest.Uses m -> tagged 21uy m
+
+    let decodeAnalysisRequest (bytes: byte[]) : AnalysisRequest =
+        nonEmpty bytes
+
+        match bytes.[0] with
+        | 16uy -> AnalysisRequest.Start(body bytes)
+        | 17uy -> AnalysisRequest.Check(body bytes)
+        | 18uy -> AnalysisRequest.Complete(body bytes)
+        | 19uy -> AnalysisRequest.Hover(body bytes)
+        | 20uy -> AnalysisRequest.Signature(body bytes)
+        | 21uy -> AnalysisRequest.Uses(body bytes)
+        | tag -> raise (ProtocolException $"no analysis request has the tag {tag}")
+
+    let encodeAnalysisReply (reply: AnalysisReply) : byte[] =
+        match reply with
+        | AnalysisReply.Started elapsed -> tagged 96uy elapsed
+        | AnalysisReply.Checked m -> tagged 97uy m
+        | AnalysisReply.Completions m -> tagged 98uy m
+        | AnalysisReply.Hovered m -> tagged 99uy m
+        | AnalysisReply.Signatures m -> tagged 100uy m
+        | AnalysisReply.Used m -> tagged 101uy m
+        | AnalysisReply.Failed(id, message) -> tagged 102uy {| Id = id; Message = message |}
+
+    let decodeAnalysisReply (bytes: byte[]) : AnalysisReply =
+        nonEmpty bytes
+
+        match bytes.[0] with
+        | 96uy -> AnalysisReply.Started(body bytes)
+        | 97uy -> AnalysisReply.Checked(body bytes)
+        | 98uy -> AnalysisReply.Completions(body bytes)
+        | 99uy -> AnalysisReply.Hovered(body bytes)
+        | 100uy -> AnalysisReply.Signatures(body bytes)
+        | 101uy -> AnalysisReply.Used(body bytes)
+        | 102uy ->
+            let f: {| Id: int; Message: string |} = body bytes
+            AnalysisReply.Failed(f.Id, f.Message)
+        | tag -> raise (ProtocolException $"no analysis reply has the tag {tag}")
+

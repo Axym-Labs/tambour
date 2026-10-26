@@ -164,3 +164,75 @@ type Reply =
     | Exported of Frame
     /// A request the worker could not carry out, in a sentence.
     | Failed of message: string
+
+// ---- The language service -------------------------------------------------------------------
+
+/// What the language service is started with: the references and the prelude a script is
+/// checked against, as the worker runs it.
+type AnalysisInit = { References: string[]; Prelude: string }
+
+/// A script as the editor holds it. `Id` numbers requests, so a reply can be matched to its
+/// request and a late one to an older text set aside.
+type Source = { Id: int; Text: string; Path: string }
+
+/// A place in a script: lines from 1, columns from 0, as FCS counts them.
+type At =
+    { Id: int
+      Text: string
+      Path: string
+      Line: int
+      Column: int }
+
+/// A stretch of a script, counted as `At` is.
+type Span =
+    { StartLine: int
+      StartColumn: int
+      EndLine: int
+      EndColumn: int }
+
+/// One completion: what is shown, what is inserted, and what kind of thing it is (`method`,
+/// `property`, `field`, `type`, `module`, `namespace`, `value`, `keyword`, …).
+type Completion = { Name: string; Insert: string; Kind: string }
+
+[<RequireQualifiedAccess>]
+type AnalysisRequest =
+    | Start of AnalysisInit
+    | Check of Source
+    | Complete of At
+    | Hover of At
+    | Signature of At
+    | Uses of At
+
+type Checked = { Id: int; Diagnostics: Diagnostic[] }
+
+type Completions = { Id: int; Items: Completion[] }
+
+/// The tooltip at a place, as text; empty where there is none.
+type Hovered = { Id: int; Text: string }
+
+/// The overloads of the call the place is in, each as one line, the one most likely meant, and
+/// which of its parameters the place is at.
+type Signatures =
+    { Id: int
+      Methods: string[]
+      Active: int
+      Parameter: int }
+
+/// Where the symbol at a place is used in the script, its own name, and whether it can be renamed
+/// there (a symbol the script defines).
+type Used =
+    { Id: int
+      Name: string
+      Spans: Span[]
+      Renamable: bool }
+
+[<RequireQualifiedAccess>]
+type AnalysisReply =
+    /// Started, in this many milliseconds from the process starting.
+    | Started of elapsed: float
+    | Checked of Checked
+    | Completions of Completions
+    | Hovered of Hovered
+    | Signatures of Signatures
+    | Used of Used
+    | Failed of id: int * message: string

@@ -10,6 +10,7 @@
     <Compile Include="Paths.fs" />
     <Compile Include="Evaluation.fs" />
     <Compile Include="Worker.fs" />
+    <Compile Include="Analysis.fs" />
     <Compile Include="Host.fs" />
     <Compile Include="FigurePane.fs" />
     <Compile Include="App.fs" />
