@@ -11,6 +11,8 @@
     <Compile Include="Units.fs" />
     <Compile Include="Csv.fs" />
     <Compile Include="Arrow.fs" />
+    <Compile Include="Bound.fs" />
+    <Compile Include="Prelude.fs" />
   </ItemGroup>
 
   <ItemGroup>

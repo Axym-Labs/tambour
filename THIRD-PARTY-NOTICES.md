@@ -17,6 +17,7 @@ given.
 | Onigwrap, and the Oniguruma it wraps | 1.0.11 | MIT, BSD-2-Clause | https://github.com/aikawayataro/Onigwrap |
 | Avalonia.FuncUI, Avalonia.FuncUI.Elmish | 2.0.0 | MIT | https://github.com/fsprojects/Avalonia.FuncUI |
 | Elmish | 5.0.2 | Apache-2.0 | https://github.com/elmish/elmish |
+| Apache.Arrow, Apache.Arrow.Scalars | 23.0.0 | Apache-2.0 | https://github.com/apache/arrow-dotnet |
 | SkiaSharp, SkiaSharp.HarfBuzz, and Skia | 4.151.1 | MIT; Skia BSD-3-Clause | https://github.com/mono/SkiaSharp |
 | HarfBuzzSharp, and HarfBuzz | 14.2.1.1 | MIT; HarfBuzz "Old MIT" | https://github.com/mono/SkiaSharp |
 | Silk.NET (Core, GLFW, Maths, OpenGL, Windowing) | 2.23.0 | MIT | https://github.com/dotnet/Silk.NET |

@@ -174,7 +174,9 @@ type Model =
       /// someone else's.
       Saved: string
       /// Where the export being made goes.
-      Exporting: string option }
+      Exporting: string option
+      /// The project's tables, and the files they are kept in.
+      Tables: Tambour.Data.Prelude.Source list }
 
 type Msg =
     | Edited of History.TextEdit * string
@@ -228,7 +230,8 @@ let init (script: string) () : Model * Cmd<Msg> =
       Project = None
       Settings = None
       Saved = script
-      Exporting = None },
+      Exporting = None
+      Tables = [] },
     Cmd.none
 
 let private send (env: Env) (request: Request) : Cmd<Msg> =
@@ -439,9 +442,19 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             let opened = Project.resolve path
             let text = if File.Exists opened.Script then File.ReadAllText opened.Script else ""
 
+            // The project's tables, their prelude written if it changed, and their columns sent.
+            let tables, unread =
+                match opened.Project with
+                | Some dir ->
+                    let tables, unread = Tables.load dir
+                    if not tables.IsEmpty then Tables.writePrelude dir tables |> ignore
+                    tables, unread
+                | None -> [], []
+
             let note =
-                match opened.Settings with
-                | Some s when s.Marey <> Project.mareyVersion -> $"last run on Marey {s.Marey}; this is {Project.mareyVersion}"
+                match opened.Settings, unread with
+                | _, why :: _ -> $"a table did not read: {why}"
+                | Some s, [] when s.Marey <> Project.mareyVersion -> $"last run on Marey {s.Marey}; this is {Project.mareyVersion}"
                 | _ -> ""
 
             { model with
@@ -459,8 +472,20 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 Actions = [||]
                 Diagnostics = [||]
                 Output = ""
-                ActionNote = note },
-            Cmd.ofMsg Run
+                ActionNote = note
+                Tables = tables },
+            // In order, then the run, which needs them.
+            Cmd.OfTask.either
+                (fun () ->
+                    task {
+                        do! env.Started
+
+                        for t in tables do
+                            do! env.Workers.SendAsync(Tables.request t.Table)
+                    })
+                ()
+                (fun () -> Run)
+                Failed
         with e ->
             { model with Status = $"{path} did not open: {e.Message}" }, Cmd.none
     | ChooseOpen folder -> model, Cmd.OfTask.either (fun () -> pickOpen env.Window folder) () (Option.map OpenPath >> Option.defaultValue Dismissed) Failed

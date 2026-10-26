@@ -144,7 +144,7 @@ type private Worker(send: Reply -> unit, flush: unit -> unit) =
         send (Reply.Controls(controlsOf s.Index s.Live s.State))
         send (Reply.Scene(frameOf s (Wire.encodeWith measurer s.Scene)))
 
-    let evaluated ok exn (diagnostics: Diagnostic[]) (timings: Timings) =
+    let evaluated ok exn (diagnostics: Diagnostic[]) (timings: Timings) (prelude: bool) =
         flush ()
 
         send (
@@ -155,7 +155,8 @@ type private Worker(send: Reply -> unit, flush: unit -> unit) =
                   Diagnostics = diagnostics
                   Exception = Option.toObj exn
                   Timings = timings
-                  Heap = GC.GetTotalMemory false }
+                  Heap = GC.GetTotalMemory false
+                  Prelude = prelude }
         )
 
     let init (m: Init) =
@@ -207,18 +208,18 @@ type private Worker(send: Reply -> unit, flush: unit -> unit) =
         match laidOut with
         | Error message ->
             // A figure that throws while it is laid out fails the run, as a script that throws does.
-            evaluated false (Some message) run.Diagnostics timings
+            evaluated false (Some message) run.Diagnostics timings run.Prelude
         | Ok next when run.Ok ->
             figures <- run.Found
             shown <- next
-            evaluated true None run.Diagnostics timings
+            evaluated true None run.Diagnostics timings run.Prelude
 
             match next, scene with
             | Some s, Some bytes ->
                 send (Reply.Controls(controlsOf s.Index s.Live s.State))
                 send (Reply.Scene(frameOf s bytes))
             | _ -> ()
-        | Ok _ -> evaluated false run.Exception run.Diagnostics timings
+        | Ok _ -> evaluated false run.Exception run.Diagnostics timings run.Prelude
 
     let select (index: int) =
         match List.tryItem index figures with
@@ -311,6 +312,12 @@ type private Worker(send: Reply -> unit, flush: unit -> unit) =
                 | Request.Select index -> select index
                 | Request.Live m -> live m
                 | Request.Export m -> export m
+                | Request.Table t ->
+                    use stream = new MemoryStream(t.Bytes)
+
+                    match Tambour.Data.Arrow.read t.Name stream with
+                    | Ok table -> Tambour.Data.Bound.set table
+                    | Error why -> send (Reply.Failed $"the table {t.Name} did not arrive whole: {why}")
                 | Request.Init _ -> ()
             with e ->
                 flush ()

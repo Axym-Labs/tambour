@@ -55,6 +55,9 @@ let private referencesFor (stated: string[]) =
                f
        Path.Combine(AppContext.BaseDirectory, "FSharp.Core.dll")
        yield! Directory.GetFiles(AppContext.BaseDirectory, "Marey*.dll") |> Array.sort
+       // The table binder a project's prelude reads its tables with in Tambour.
+       Path.Combine(AppContext.BaseDirectory, "Tambour.Data.dll")
+       Path.Combine(AppContext.BaseDirectory, "Apache.Arrow.dll")
        yield! stated |]
 
 /// A plain identifier: what a theme, a placement or a geom is named by.
@@ -120,7 +123,7 @@ type Service(init: AnalysisInit) =
                     SourceText.ofString full,
                     assumeDotNetFramework = false,
                     useSdkRefs = false,
-                    otherFlags = [| "--targetprofile:netcore"; "--simpleresolution"; "--noframework" |]
+                    otherFlags = [| "--targetprofile:netcore"; "--simpleresolution"; "--noframework"; "--define:TAMBOUR" |]
                 )
                 |> Async.RunSynchronously
 

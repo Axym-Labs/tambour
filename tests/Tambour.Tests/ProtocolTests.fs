@@ -18,7 +18,8 @@ let private evaluated =
              EndColumn = 9 } |]
       Exception = null
       Timings = { Evaluate = 26.5; Layout = 12.25; Encode = 5.0 }
-      Heap = 123456789L }
+      Heap = 123456789L
+      Prelude = true }
 
 let requests: obj[] list =
     [ Request.Init
@@ -28,7 +29,8 @@ let requests: obj[] list =
       Request.Evaluate { Text = "let x = 1\n"; Path = null }
       Request.Select 2
       Request.Live { Kind = "zoom"; Args = [| 1.0; 2.5; nan; infinity |] }
-      Request.Export { Format = "png"; Width = 800.0; Height = 500.0; Skia = { Dpi = 3.0; FontFiles = [||] } } ]
+      Request.Export { Format = "png"; Width = 800.0; Height = 500.0; Skia = { Dpi = 3.0; FontFiles = [||] } }
+      Request.Table { Name = "trials λ"; Bytes = Array.init 1000 byte } ]
     |> List.map (fun r -> [| box r |])
 
 let replies: obj[] list =
