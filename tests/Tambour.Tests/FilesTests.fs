@@ -71,16 +71,24 @@ let ``a project opens, saves, takes a change from disk back, and exports what re
     window.KeyPress(Key.Z, RawInputModifiers.Control, PhysicalKey.Z, null)
     pumpUntil 10.0 "the reload taken back" (fun () -> editor.Text = saved)
 
-    // Exported, the figure is what Marey's own PNG export draws of it.
-    let before = pane.Picture
-    pumpUntil 30.0 "the figure run again" (fun () -> not (obj.ReferenceEquals(pane.Picture, before)))
-    let png = Path.Combine(dir, "decay.png")
-    window.Post(Shell.ExportTo(png, "png", 640.0, 400.0))
-    pumpUntil 30.0 "the export" (fun () -> File.Exists png && (try File.ReadAllBytes(png).Length > 0 with _ -> false))
+    // Exported, the figure is what Marey's own PNG export draws of it, once the run that the undo
+    // started has drawn it: exported until it is, rather than waiting on a scene that may already
+    // have arrived.
     let extent = Chart.size 640.0 400.0
     use measurer = new SkiaTextMeasurer()
     use expected = SKBitmap.Decode(SkiaBackend.renderPng extent (Chart.toSceneWith measurer extent (decayFigure ())))
-    use exported = SKBitmap.Decode(File.ReadAllBytes png)
-    let c = PaneCheck.compare exported expected
-    Assert.Equal(0, c.Worst)
+    let clock = Stopwatch.StartNew()
+    let mutable worst = Int32.MaxValue
+    let mutable attempt = 0
+
+    while worst <> 0 && clock.Elapsed.TotalSeconds < 30.0 do
+        attempt <- attempt + 1
+        let png = Path.Combine(dir, $"decay-{attempt}.png")
+        window.Post(Shell.ExportTo(png, "png", 640.0, 400.0))
+        pumpUntil 30.0 "the export" (fun () -> File.Exists png && (try File.ReadAllBytes(png).Length > 0 with _ -> false))
+        use exported = SKBitmap.Decode(File.ReadAllBytes png)
+        worst <- (PaneCheck.compare exported expected).Worst
+        if worst <> 0 then Thread.Sleep 200
+
+    Assert.Equal(0, worst)
     window.Close()

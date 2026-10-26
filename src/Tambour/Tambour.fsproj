@@ -13,6 +13,7 @@
     <Compile Include="Analysis.fs" />
     <Compile Include="Host.fs" />
     <Compile Include="FigurePane.fs" />
+    <Compile Include="TableGrid.fs" />
     <Compile Include="History.fs" />
     <Compile Include="ScriptEditor.fs" />
     <Compile Include="App.fs" />
