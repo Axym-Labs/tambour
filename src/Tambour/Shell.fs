@@ -109,6 +109,38 @@ module Editor =
     let onEdited f = subscription "Edited" (fun e -> e.Edited) f
     let onProblemsChanged f = subscription "ProblemsChanged" (fun e -> e.ProblemsChanged) f
 
+/// The table grid in FuncUI's terms.
+module Sheet =
+
+    let create (attrs: IAttr<TableGrid> list) : IView<TableGrid> = ViewBuilder.Create<TableGrid>(attrs)
+
+    let table (t: Tambour.Data.Table) : IAttr<TableGrid> =
+        AttrBuilder<TableGrid>.CreateProperty<Tambour.Data.Table option>(
+            "Table",
+            Some t,
+            ValueSome(fun (v: TableGrid) -> v.Table),
+            ValueSome(fun (v: TableGrid, t) -> v.Table <- t),
+            ValueSome(fun (a: obj, b: obj) ->
+                match a, b with
+                | (:? (Tambour.Data.Table option) as x), (:? (Tambour.Data.Table option) as y) ->
+                    match x, y with
+                    | Some x, Some y -> obj.ReferenceEquals(x, y)
+                    | None, None -> true
+                    | _ -> false
+                | _ -> false)
+        )
+
+    let private subscription name (events: TableGrid -> IObservable<'a>) (f: 'a -> unit) : IAttr<TableGrid> =
+        let subscribe (view: AvaloniaObject, handler: 'a -> unit, token: CancellationToken) =
+            let d = (events (view :?> TableGrid)).Subscribe handler
+            token.Register(fun () -> d.Dispose()) |> ignore
+
+        AttrBuilder<TableGrid>.CreateSubscription<'a>(name, subscribe, f)
+
+    let onEdited f = subscription "Edited" (fun g -> g.Edited) f
+    let onRefused f = subscription "Refused" (fun g -> g.Refused) f
+    let onHeaderActivated f = subscription "HeaderActivated" (fun g -> g.HeaderActivated) f
+
 /// The script the window opens with.
 let example =
     """// Ctrl+Enter (or F5) runs the script; Escape cancels a run.
@@ -176,7 +208,16 @@ type Model =
       /// Where the export being made goes.
       Exporting: string option
       /// The project's tables, and the files they are kept in.
-      Tables: Tambour.Data.Prelude.Source list }
+      Tables: Tambour.Data.Prelude.Source list
+      /// The tables as last read or written, to tell what is unsaved.
+      SavedTables: Map<string, Tambour.Data.Table>
+      /// The tables' files when the project was opened or last saved, so a table removed since
+      /// has its file removed on the next save.
+      TableFiles: string list
+      /// The tab on the right: the figure's, then one per table.
+      Tab: int
+      /// The column whose header is being edited, by table and place (-1 for a new column).
+      Header: (string * int) option }
 
 type Msg =
     | Edited of History.TextEdit * string
@@ -205,6 +246,15 @@ type Msg =
     | ExportTo of path: string * format: string * width: float * height: float
     /// A picker closed without a choice.
     | Dismissed
+    | SelectTab of int
+    | TableEdited of Tambour.Data.TableEdit list
+    | EditHeader of table: string * column: int
+    | ApplyHeader
+    | CloseHeader
+    | NewTable
+    | ChooseImport
+    | Import of string
+    | RemoveTable of string
     | Failed of exn
 
 let init (script: string) () : Model * Cmd<Msg> =
@@ -231,7 +281,11 @@ let init (script: string) () : Model * Cmd<Msg> =
       Settings = None
       Saved = script
       Exporting = None
-      Tables = [] },
+      Tables = []
+      SavedTables = Map.empty
+      TableFiles = []
+      Tab = 0
+      Header = None },
     Cmd.none
 
 let private send (env: Env) (request: Request) : Cmd<Msg> =
@@ -301,6 +355,119 @@ let private writeProject (model: Model) =
         Project.write dir { settings with Script = Path.GetFileName path; Marey = Project.mareyVersion }
     | _ -> ()
 
+/// The tables by name, as the history holds them.
+let private tablesOf (model: Model) =
+    model.Tables |> List.map (fun s -> s.Table.Name, s.Table) |> Map.ofList
+
+/// The model with the tables the history gives: a table keeps its file, a new one is kept as CSV
+/// until it is saved, and a removed one goes.
+let private withTables (model: Model) (tables: Map<string, Tambour.Data.Table>) =
+    let kept =
+        model.Tables
+        |> List.choose (fun s -> tables.TryFind s.Table.Name |> Option.map (fun t -> { s with Table = t }))
+
+    let added =
+        tables
+        |> Map.toList
+        |> List.filter (fun (name, _) -> not (kept |> List.exists (fun s -> s.Table.Name = name)))
+        |> List.map (fun (name, t) -> { Tambour.Data.Prelude.Table = t; Tambour.Data.Prelude.File = name + ".csv" })
+
+    { model with Tables = kept @ added }
+
+/// The model and what follows once the script and the tables are `state`: a table that changed
+/// is sent to the worker, the prelude is written again when the columns changed, and the figure
+/// runs again.
+let private toState (env: Env) (model: Model) (state: History.State) (schema: bool) : Model * Cmd<Msg> =
+    let before = tablesOf model
+    let next = withTables { model with Script = state.Script } state.Tables
+
+    let changed =
+        next.Tables
+        |> List.filter (fun s ->
+            match before.TryFind s.Table.Name with
+            | Some t -> not (obj.ReferenceEquals(t, s.Table))
+            | None -> true)
+
+    if schema then
+        match next.Project with
+        | Some dir -> Tables.writePrelude dir next.Tables |> ignore
+        | None -> ()
+
+    next,
+    Cmd.OfTask.either
+        (fun () ->
+            task {
+                do! env.Started
+
+                for s in changed do
+                    do! env.Workers.SendAsync(Tables.request s.Table)
+            })
+        ()
+        (fun () -> Run)
+        Failed
+
+/// A column's values read as another type, through their text: a float that does not read is
+/// missing, any value reads as a string, and an int, bool or date that does not read is refused.
+let private retype (values: Tambour.Data.Values) (kind: string) : Result<Tambour.Data.Values, string> =
+    if values.Kind = kind then
+        Ok values
+    else
+        let read =
+            [| for i in 0 .. values.Length - 1 ->
+                   match CellText.parse kind (CellText.exact values i), kind with
+                   | Ok v, _ -> Ok v
+                   | Error _, "float" -> Ok(Tambour.Data.Floats [| nan |])
+                   | Error why, _ -> Error $"row {i + 1}: {why}" |]
+
+        match read |> Array.tryPick (function Error e -> Some e | Ok _ -> None) with
+        | Some why -> Error why
+        | None ->
+            Ok(
+                read
+                |> Array.fold
+                    (fun (acc: Tambour.Data.Values) r ->
+                        match r with
+                        | Ok v -> Tambour.Data.Values.insert acc.Length v acc
+                        | Error _ -> acc)
+                    (Tambour.Data.Values.blank kind 0)
+            )
+
+/// A name no table has yet: `stem`, or `stem2`, `stem3`, ….
+let private freshName (model: Model) (stem: string) =
+    let taken = model.Tables |> List.map (fun s -> s.Table.Name) |> Set.ofList
+    Seq.initInfinite (fun i -> if i = 0 then stem else $"{stem}{i + 1}") |> Seq.find (taken.Contains >> not)
+
+/// The tables saved: each to `<name>.csv`, or `<name>.arrow` above Arrow's threshold, a file of
+/// a table that moved between the two or was removed taken away, and the prelude written again.
+let private saveTables (model: Model) =
+    match model.Project with
+    | None -> model
+    | Some dir ->
+        let saved =
+            model.Tables
+            |> List.map (fun s ->
+                let file = s.Table.Name + (if s.Table.Rows > Tambour.Data.Arrow.Threshold then ".arrow" else ".csv")
+                let path = Path.Combine(dir, file)
+
+                if file.EndsWith ".arrow" then Tambour.Data.Arrow.writeFile path s.Table
+                else Tambour.Data.Csv.writeFile path s.Table
+
+                if s.File <> file && File.Exists(Path.Combine(dir, s.File)) then File.Delete(Path.Combine(dir, s.File))
+                { s with File = file })
+
+        let files = saved |> List.map (fun s -> s.File)
+
+        for gone in model.TableFiles |> List.filter (fun f -> not (List.contains f files)) do
+            let path = Path.Combine(dir, gone)
+            if File.Exists path then File.Delete path
+
+        if not saved.IsEmpty then Tables.writePrelude dir saved |> ignore
+
+        { model with
+            Tables = saved
+            SavedTables = saved |> List.map (fun s -> s.Table.Name, s.Table) |> Map.ofList
+            TableFiles = files }
+
 let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
     | Edited(edit, text) ->
@@ -312,14 +479,14 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | Undo ->
         match History.undo model.History with
         | Some(entry, history) ->
-            let state = History.Entry.undo { Script = model.Script; Tables = Map.empty } entry
-            { model with Script = state.Script; History = history; ActionNote = "undone" }, Cmd.ofMsg Run
+            let state = History.Entry.undo { Script = model.Script; Tables = tablesOf model } entry
+            toState env { model with History = history; ActionNote = "undone" } state (History.Entry.changesSchema entry)
         | None -> model, Cmd.none
     | Redo ->
         match History.redo model.History with
         | Some(entry, history) ->
-            let state = History.Entry.redo { Script = model.Script; Tables = Map.empty } entry
-            { model with Script = state.Script; History = history; ActionNote = "redone" }, Cmd.ofMsg Run
+            let state = History.Entry.redo { Script = model.Script; Tables = tablesOf model } entry
+            toState env { model with History = history; ActionNote = "redone" } state (History.Entry.changesSchema entry)
         | None -> model, Cmd.none
     | Run ->
         { model with Running = true; Status = "running…"; Playing = Set.empty },
@@ -475,7 +642,11 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 Diagnostics = [||]
                 Output = ""
                 ActionNote = note
-                Tables = tables },
+                Tables = tables
+                SavedTables = tables |> List.map (fun s -> s.Table.Name, s.Table) |> Map.ofList
+                TableFiles = tables |> List.map (fun s -> s.File)
+                Tab = 0
+                Header = None },
             // In order, then the run, which needs them.
             Cmd.OfTask.either
                 (fun () ->
@@ -497,6 +668,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             try
                 File.WriteAllText(path, model.Script)
                 writeProject model
+                let model = saveTables model
                 { model with Saved = model.Script; Status = $"saved {Path.GetFileName path}" }, Cmd.ofMsg Run
             with e ->
                 { model with Status = $"not saved: {e.Message}" }, Cmd.none
@@ -544,6 +716,83 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         send env (Request.Export { Format = format; Width = width; Height = height; Skia = skiaOf model })
     | ExportTo _ -> { model with Status = "there is no figure to export" }, Cmd.none
     | Dismissed -> model, Cmd.none
+    | SelectTab tab -> { model with Tab = tab; Header = None }, Cmd.none
+    | TableEdited edits ->
+        let tables = edits |> List.fold Tambour.Data.TableEdit.apply (tablesOf model)
+        let schema = edits |> List.exists Tambour.Data.TableEdit.changesSchema
+
+        toState
+            env
+            { model with History = History.recordTables edits model.History; ActionNote = "" }
+            { Script = model.Script; Tables = tables }
+            schema
+    | EditHeader(table, column) ->
+        let header =
+            model.Tables
+            |> List.tryFind (fun s -> s.Table.Name = table)
+            |> Option.bind (fun s -> List.tryItem column s.Table.Columns)
+
+        let inputs =
+            match header with
+            | Some c ->
+                model.Inputs
+                    .Add("header name", c.Name)
+                    .Add("header unit", (if isNull c.Unit then "" else c.Unit))
+                    .Add("header type", c.Values.Kind)
+            | None -> model.Inputs.Add("header name", "").Add("header unit", "").Add("header type", "float")
+
+        { model with Header = Some(table, column); Inputs = inputs }, Cmd.none
+    | CloseHeader -> { model with Header = None }, Cmd.none
+    | ApplyHeader ->
+        match model.Header |> Option.bind (fun (name, i) -> model.Tables |> List.tryFind (fun s -> s.Table.Name = name) |> Option.map (fun s -> s.Table, i)) with
+        | None -> { model with Header = None }, Cmd.none
+        | Some(t, i) ->
+            let field f = model.Inputs.TryFind f |> Option.defaultValue ""
+            let kind = field "header type"
+            let unit = if kind = "float" && field "header unit" <> "" then field "header unit" else null
+
+            let edit =
+                if i < 0 then
+                    Ok(Tambour.Data.TableEdit.addColumn t t.Columns.Length (field "header name") kind unit)
+                else
+                    retype t.Columns.[i].Values kind
+                    |> Result.map (fun v -> Tambour.Data.TableEdit.changeColumn t i { Name = field "header name"; Unit = unit; Values = v })
+
+            match edit with
+            | Error why -> { model with ActionNote = $"not done: {why}" }, Cmd.none
+            | Ok e ->
+                let after = (Tambour.Data.TableEdit.apply (Map.ofList [ t.Name, t ]) e).[t.Name]
+
+                match Tambour.Data.Table.create after.Name after.Columns with
+                | Error why -> { model with ActionNote = $"not done: {why}" }, Cmd.none
+                | Ok _ -> { model with Header = None }, Cmd.ofMsg (TableEdited [ e ])
+    | NewTable when model.Project.IsNone -> { model with ActionNote = "a table belongs to a project: open a folder first" }, Cmd.none
+    | NewTable ->
+        let blank = Tambour.Data.Values.blank "float" 10
+        let t: Tambour.Data.Table = { Name = freshName model "table"; Columns = [ { Name = "x"; Unit = null; Values = blank }; { Name = "y"; Unit = null; Values = blank } ] }
+        { model with Tab = model.Tables.Length + 1 }, Cmd.ofMsg (TableEdited [ Tambour.Data.AddTable t ])
+    | ChooseImport when model.Project.IsNone -> { model with ActionNote = "a table belongs to a project: open a folder first" }, Cmd.none
+    | ChooseImport ->
+        let pick () =
+            task {
+                let types = FilePickerFileType("Tables", Patterns = [| "*.csv"; "*.arrow" |])
+                let! picked = env.Window.StorageProvider.OpenFilePickerAsync(FilePickerOpenOptions(Title = "Import a table", FileTypeFilter = [| types |]))
+                return picked |> Seq.tryHead |> Option.bind (fun f -> Option.ofObj (f.TryGetLocalPath()))
+            }
+
+        model, Cmd.OfTask.either pick () (Option.map Import >> Option.defaultValue Dismissed) Failed
+    | Import path ->
+        let read = if path.EndsWith ".arrow" then Tambour.Data.Arrow.readFile path else Tambour.Data.Csv.readFile path
+
+        match read with
+        | Error why -> { model with ActionNote = $"{Path.GetFileName path} did not import: {why}" }, Cmd.none
+        | Ok t ->
+            let named = { t with Name = freshName model (Tambour.Data.Prelude.identifier t.Name |> fun n -> n.Trim('`')) }
+            { model with Tab = model.Tables.Length + 1 }, Cmd.ofMsg (TableEdited [ Tambour.Data.AddTable named ])
+    | RemoveTable name ->
+        match model.Tables |> List.tryFind (fun s -> s.Table.Name = name) with
+        | Some s -> { model with Tab = 0 }, Cmd.ofMsg (TableEdited [ Tambour.Data.RemoveTable s.Table ])
+        | None -> model, Cmd.none
     | Failed e -> { model with Status = e.Message }, Cmd.none
 
 let private label (text: string) : IView =
@@ -707,6 +956,88 @@ let private problemView (dispatch: Msg -> unit) (d: Diagnostic) : IView =
         )
     ]
 
+/// The types a column can be.
+let private columnTypes = [| "float"; "int"; "string"; "bool"; "date" |]
+
+/// The form a column's header opens: its name, its unit (a float column's only) and its type, for
+/// a column there is or one to add.
+let rec private headerView (model: Model) (dispatch: Msg -> unit) (column: int) (shown: bool) : IView =
+    let field f = model.Inputs.TryFind f |> Option.defaultValue ""
+
+    let input name (watermark: string) (width: float) : IView =
+        TextBox.create [
+            TextBox.placeHolderText watermark
+            TextBox.width width
+            TextBox.text (field name)
+            TextBox.onTextChanged ((fun t -> if t <> field name then dispatch (Typed(name, t))), SubPatchOptions.Always)
+        ]
+
+    StackPanel.create [
+        StackPanel.dock Dock.Top
+        StackPanel.isVisible shown
+        StackPanel.orientation Orientation.Horizontal
+        StackPanel.spacing 6.0
+        StackPanel.margin (Thickness(6.0, 4.0))
+        StackPanel.children [
+            label (if column < 0 then "New column" else "Column")
+            input "header name" "name" 140.0
+            ComboBox.create [
+                ComboBox.dataItems columnTypes
+                ComboBox.selectedIndex (columnTypes |> Array.tryFindIndex ((=) (field "header type")) |> Option.defaultValue 0)
+                ComboBox.onSelectedIndexChanged ((fun i -> if i >= 0 then dispatch (Typed("header type", columnTypes.[i]))), SubPatchOptions.Always)
+            ]
+            if field "header type" = "float" then input "header unit" "unit (V/m, km, ppm…)" 150.0
+            Button.create [ Button.content "Apply"; Button.onClick (fun _ -> dispatch ApplyHeader) ]
+            if column >= 0 then
+                Button.create [
+                    Button.content "Remove column"
+                    Button.onClick ((fun _ ->
+                        match model.Header with
+                        | Some(name, i) ->
+                            match model.Tables |> List.tryFind (fun s -> s.Table.Name = name) with
+                            | Some s when s.Table.Columns.Length > 1 ->
+                                dispatch CloseHeader
+                                dispatch (TableEdited [ Tambour.Data.TableEdit.removeColumn s.Table i ])
+                            | _ -> ()
+                        | None -> ()), SubPatchOptions.Always)
+                ]
+            Button.create [ Button.content "Cancel"; Button.onClick (fun _ -> dispatch CloseHeader) ]
+        ]
+    ]
+
+/// A table's tab: what can be done to it, the header's form when one is open, and its grid.
+and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Table) : IView =
+    DockPanel.create [
+        DockPanel.children [
+            StackPanel.create [
+                StackPanel.dock Dock.Top
+                StackPanel.orientation Orientation.Horizontal
+                StackPanel.spacing 6.0
+                StackPanel.margin (Thickness(6.0, 4.0))
+                StackPanel.children [
+                    Button.create [ Button.content "Add column"; Button.onClick ((fun _ -> dispatch (EditHeader(t.Name, -1))), SubPatchOptions.Always) ]
+                    Button.create [
+                        Button.content "Add 10 rows"
+                        Button.onClick ((fun _ -> dispatch (TableEdited [ Tambour.Data.TableEdit.addRows t t.Rows 10 ])), SubPatchOptions.Always)
+                    ]
+                    Button.create [ Button.content "Remove table"; Button.onClick ((fun _ -> dispatch (RemoveTable t.Name)), SubPatchOptions.Always) ]
+                    label $"{t.Rows} rows. Double-click a header to change its column; Ctrl+= adds a row, Ctrl+- removes the selected ones."
+                ]
+            ]
+            // Always there, and hidden when no header is being edited, so the grid after it keeps its
+            // place among the children and is not made again.
+            match model.Header with
+            | Some(name, column) when name = t.Name -> headerView model dispatch column true
+            | _ -> headerView model dispatch -1 false
+            Sheet.create [
+                Sheet.table t
+                Sheet.onEdited (TableEdited >> dispatch)
+                Sheet.onRefused (fun why -> dispatch (Failed(FormatException why)))
+                Sheet.onHeaderActivated (fun column -> dispatch (EditHeader(t.Name, column)))
+            ]
+        ]
+    ]
+
 let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
     let output =
         String.Join("\n", model.Diagnostics |> Array.map diagnosticLine)
@@ -723,7 +1054,9 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                 StackPanel.children [
                     Button.create [ Button.content "Open…"; Button.onClick (fun _ -> dispatch (ChooseOpen false)) ]
                     Button.create [ Button.content "Open folder…"; Button.onClick (fun _ -> dispatch (ChooseOpen true)) ]
-                    Button.create [ Button.content "Save"; Button.isEnabled (model.Script <> model.Saved || model.Path.IsNone); Button.onClick (fun _ -> dispatch Save) ]
+                    Button.create [ Button.content "Save"; Button.onClick (fun _ -> dispatch Save) ]
+                    Button.create [ Button.content "New table"; Button.onClick (fun _ -> dispatch NewTable) ]
+                    Button.create [ Button.content "Import…"; Button.onClick (fun _ -> dispatch ChooseImport) ]
                     Button.create [ Button.content "Run"; Button.onClick (fun _ -> dispatch Run) ]
                     Button.create [ Button.content "Cancel"; Button.isEnabled model.Running; Button.onClick (fun _ -> dispatch Cancel) ]
                     Button.create [ Button.content "Undo"; Button.isEnabled (not model.History.Done.IsEmpty); Button.onClick (fun _ -> dispatch Undo) ]
@@ -785,25 +1118,38 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                         ]
                     ]
                     GridSplitter.create [ Grid.column 1 ]
-                    DockPanel.create [
+                    TabControl.create [
                         Grid.column 2
-                        DockPanel.children [
-                            Expander.create [
-                                Expander.dock Dock.Top
-                                Expander.header "Actions"
-                                Expander.isExpanded true
-                                Expander.horizontalAlignment HorizontalAlignment.Stretch
-                                Expander.content (actionsView model dispatch)
+                        TabControl.selectedIndex model.Tab
+                        TabControl.onSelectedIndexChanged ((fun i -> if i >= 0 && i <> model.Tab then dispatch (SelectTab i)), SubPatchOptions.Always)
+                        TabControl.viewItems [
+                            TabItem.create [
+                                TabItem.header "Figure"
+                                TabItem.content (
+                                    DockPanel.create [
+                                        DockPanel.children [
+                                            Expander.create [
+                                                Expander.dock Dock.Top
+                                                Expander.header "Actions"
+                                                Expander.isExpanded true
+                                                Expander.horizontalAlignment HorizontalAlignment.Stretch
+                                                Expander.content (actionsView model dispatch)
+                                            ]
+                                            StackPanel.create [
+                                                StackPanel.dock Dock.Bottom
+                                                StackPanel.children (model.Controls |> Array.mapi (fun i c -> controlView dispatch i c (model.Playing.Contains i)) |> List.ofArray)
+                                            ]
+                                            Pane.create [
+                                                Pane.picture model.Picture
+                                                Pane.readout model.Readout
+                                                Pane.onInput (Input >> dispatch)
+                                            ]
+                                        ]
+                                    ]
+                                )
                             ]
-                            StackPanel.create [
-                                StackPanel.dock Dock.Bottom
-                                StackPanel.children (model.Controls |> Array.mapi (fun i c -> controlView dispatch i c (model.Playing.Contains i)) |> List.ofArray)
-                            ]
-                            Pane.create [
-                                Pane.picture model.Picture
-                                Pane.readout model.Readout
-                                Pane.onInput (Input >> dispatch)
-                            ]
+                            for source in model.Tables do
+                                TabItem.create [ TabItem.header source.Table.Name; TabItem.content (tableView model dispatch source.Table) ]
                         ]
                     ]
                 ]
@@ -814,7 +1160,11 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
 /// The window's title: the script's name, marked while it has unsaved changes.
 let title (model: Model) =
     let name = model.Path |> Option.map Path.GetFileName |> Option.defaultValue "untitled"
-    let unsaved = if model.Script <> model.Saved then " •" else ""
+    let tablesChanged =
+        model.Tables.Length <> model.SavedTables.Count
+        || model.Tables |> List.exists (fun s -> match model.SavedTables.TryFind s.Table.Name with Some t -> not (obj.ReferenceEquals(t, s.Table)) | None -> true)
+
+    let unsaved = if model.Script <> model.Saved || tablesChanged then " •" else ""
     $"{name}{unsaved} — Tambour"
 
 /// The worker's replies, the keys, the clock of a playing time control, the script's file on

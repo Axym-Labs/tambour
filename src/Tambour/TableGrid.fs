@@ -234,7 +234,7 @@ type TableGrid() as this =
 
     let clampScroll () =
         top <- max 0 (min top (rows () - visibleRows ()))
-        left <- max 0 (min left (columns () - 1))
+        left <- max 0 (min left (columns () - visibleColumns ()))
         vertical.Maximum <- float (max 0 (rows () - visibleRows ()))
         vertical.ViewportSize <- float (visibleRows ())
         vertical.Value <- float top
@@ -249,11 +249,16 @@ type TableGrid() as this =
         Rect(x, y, columnWidth, rowHeight)
 
     let bringIntoView (c: CellRef) =
-        if c.Row < top then top <- c.Row
-        elif c.Row >= top + visibleRows () then top <- c.Row - visibleRows () + 1
-        if c.Column < left then left <- c.Column
-        elif c.Column >= left + visibleColumns () then left <- c.Column - visibleColumns () + 1
-        clampScroll ()
+        // Not before the grid has a size: what fits is not known, and a hidden tab's grid has none.
+        if this.Bounds.Width > 0.0 && this.Bounds.Height > 0.0 then
+            if c.Row < top then top <- c.Row
+            elif c.Row >= top + visibleRows () then top <- c.Row - visibleRows () + 1
+
+            if c.Column < left then left <- c.Column
+            elif c.Column >= left + visibleColumns () then left <- c.Column - visibleColumns () + 1
+
+            clampScroll ()
+
         this.InvalidateVisual()
 
     let selectionBounds () =
@@ -563,6 +568,18 @@ type TableGrid() as this =
             | Key.Enter
             | Key.F2 -> beginEdit None; e.Handled <- true
             | Key.Delete -> clear (); e.Handled <- true
+            | Key.OemPlus when control ->
+                match table with
+                | Some t -> edited.Trigger [ TableEdit.addRows t (if t.Rows = 0 then 0 else focus.Row) 1 ]
+                | None -> ()
+                e.Handled <- true
+            | Key.OemMinus when control ->
+                match table with
+                | Some t when t.Rows > 0 ->
+                    let _, _, r0, r1 = selectionBounds ()
+                    edited.Trigger [ TableEdit.removeRows t r0 (r1 - r0 + 1) ]
+                | _ -> ()
+                e.Handled <- true
             | Key.C when control ->
                 match TopLevel.GetTopLevel(this) with
                 | null -> ()

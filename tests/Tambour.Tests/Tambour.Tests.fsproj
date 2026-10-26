@@ -19,6 +19,7 @@
     <Compile Include="TableTests.fs" />
     <Compile Include="TableScriptTests.fs" />
     <Compile Include="GridTests.fs" />
+    <Compile Include="PreludeAgainTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
