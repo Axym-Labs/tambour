@@ -13,10 +13,11 @@ open Marey
 open Marey.UnitsOfMeasure
 open Tambour.Protocol
 
-/// How far a frame is from its reference: the largest channel difference, the largest where the
-/// reference is flat (its own 5 × 5 neighbourhood within 3/255, so not an edge, where two
-/// rasterisers may cover a pixel differently), and the mean over every channel of every pixel,
-/// all in 255ths.
+/// How far a frame is from its reference: the largest channel difference, the largest away from
+/// an edge, and the mean over every channel of every pixel, all in 255ths. A pixel is away from an
+/// edge where both frames are flat around it, each one's 5 × 5 neighbourhood within 3/255: two
+/// rasterisers cover an edge differently, and a seam between overlapping marks is an edge in
+/// whichever frame draws it more strongly.
 type Comparison =
     { Worst: int
       WorstAwayFromEdge: int
@@ -45,7 +46,7 @@ let compare (shown: SKBitmap) (reference: SKBitmap) : Comparison =
     let difference (p: byte[]) i (q: byte[]) j =
         max (abs (channel p i 0 - channel q j 0)) (max (abs (channel p i 1 - channel q j 1)) (abs (channel p i 2 - channel q j 2)))
 
-    let flat x y =
+    let flatIn (bytes: byte[]) x y =
         let i = y * w + x
         let mutable ok = true
 
@@ -53,10 +54,12 @@ let compare (shown: SKBitmap) (reference: SKBitmap) : Comparison =
             for dx in -2..2 do
                 let nx, ny = x + dx, y + dy
 
-                if ok && nx >= 0 && ny >= 0 && nx < w && ny < h && difference b i b (ny * w + nx) > 3 then
+                if ok && nx >= 0 && ny >= 0 && nx < w && ny < h && difference bytes i bytes (ny * w + nx) > 3 then
                     ok <- false
 
         ok
+
+    let flat x y = flatIn b x y && flatIn a x y
 
     let mutable worst = 0
     let mutable away = 0
