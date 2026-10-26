@@ -95,7 +95,7 @@ module Editor =
 
         AttrBuilder<ScriptEditor>.CreateSubscription<'a>(name, subscribe, f)
 
-    let onTextChanged f = subscription "TextChanged" (fun e -> e.TextChanged) f
+    let onEdited f = subscription "Edited" (fun e -> e.Edited) f
     let onProblemsChanged f = subscription "ProblemsChanged" (fun e -> e.ProblemsChanged) f
 
 /// The script the window opens with.
@@ -149,10 +149,14 @@ type Model =
       Running: bool
       Status: string
       /// What the last GUI action did, shown until the script is next edited.
-      ActionNote: string }
+      ActionNote: string
+      /// Every change to the script, to take back and do again.
+      History: History.History }
 
 type Msg =
-    | Edited of string
+    | Edited of History.TextEdit * string
+    | Undo
+    | Redo
     | Run
     | Cancel
     | Replied of Reply
@@ -186,7 +190,8 @@ let init (script: string) () : Model * Cmd<Msg> =
       Inputs = Map.empty
       Running = false
       Status = "starting a worker…"
-      ActionNote = "" },
+      ActionNote = ""
+      History = History.empty },
     Cmd.none
 
 let private send (env: Env) (request: Request) : Cmd<Msg> =
@@ -221,7 +226,22 @@ let private diagnosticLine (d: Diagnostic) =
 
 let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
-    | Edited text -> { model with Script = text; ActionNote = "" }, Cmd.none
+    | Edited(edit, text) ->
+        { model with
+            Script = text
+            ActionNote = ""
+            History = History.record DateTime.UtcNow true edit model.History },
+        Cmd.none
+    | Undo ->
+        match History.undo model.History with
+        | Some(entry, history) ->
+            { model with Script = History.Entry.undo model.Script entry; History = history; ActionNote = "undone" }, Cmd.ofMsg Run
+        | None -> model, Cmd.none
+    | Redo ->
+        match History.redo model.History with
+        | Some(entry, history) ->
+            { model with Script = History.Entry.redo model.Script entry; History = history; ActionNote = "redone" }, Cmd.ofMsg Run
+        | None -> model, Cmd.none
     | Run ->
         { model with Running = true; Status = "running…"; Playing = Set.empty },
         send env (Request.Evaluate { Text = model.Script; Path = null })
@@ -319,7 +339,11 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             else
                 a.Outcome.Note
 
-        { model with Script = a.Text; ActionNote = note }, Cmd.ofMsg Run
+        { model with
+            Script = a.Text
+            ActionNote = note
+            History = History.record DateTime.UtcNow false (History.TextEdit.between model.Script a.Text) model.History },
+        Cmd.ofMsg Run
     | Failed e -> { model with Status = e.Message }, Cmd.none
 
 let private label (text: string) : IView =
@@ -499,6 +523,8 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                 StackPanel.children [
                     Button.create [ Button.content "Run"; Button.onClick (fun _ -> dispatch Run) ]
                     Button.create [ Button.content "Cancel"; Button.isEnabled model.Running; Button.onClick (fun _ -> dispatch Cancel) ]
+                    Button.create [ Button.content "Undo"; Button.isEnabled (not model.History.Done.IsEmpty); Button.onClick (fun _ -> dispatch Undo) ]
+                    Button.create [ Button.content "Redo"; Button.isEnabled (not model.History.Undone.IsEmpty); Button.onClick (fun _ -> dispatch Redo) ]
                     ComboBox.create [
                         ComboBox.minWidth 140.0
                         ComboBox.isVisible (model.Figures.Length > 1)
@@ -526,7 +552,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                 Editor.text model.Script
                                 Editor.language env.Language
                                 Editor.goTo model.GoTo
-                                Editor.onTextChanged (Edited >> dispatch)
+                                Editor.onEdited (Edited >> dispatch)
                                 Editor.onProblemsChanged (Problems >> dispatch)
                             ]
                             GridSplitter.create [ Grid.row 1 ]
@@ -604,6 +630,16 @@ let private subscriptions (env: Env) (window: Window) (model: Model) : Sub<Msg> 
                 | Key.Escape, _ ->
                     e.Handled <- true
                     dispatch Cancel
+                // The app's history, wherever the focus is.
+                | Key.Z, KeyModifiers.Control ->
+                    e.Handled <- true
+                    dispatch Undo
+                | Key.Y, KeyModifiers.Control ->
+                    e.Handled <- true
+                    dispatch Redo
+                | Key.Z, m when m = (KeyModifiers.Control ||| KeyModifiers.Shift) ->
+                    e.Handled <- true
+                    dispatch Redo
                 | _ -> ())
 
         window.AddHandler(InputElement.KeyDownEvent, handler, RoutingStrategies.Tunnel) |> ignore

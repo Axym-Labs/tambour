@@ -125,7 +125,7 @@ type ScriptEditor() as this =
     let textMate = TextMate.InstallTextMate(editor, registry, true, null)
     let marks = Marks(fun () -> editor.Document)
 
-    let textChanged = Event<string>()
+    let edited = Event<History.TextEdit * string>()
     let problemsChanged = Event<Diagnostic[]>()
 
     let mutable language: LanguageService = Unchecked.defaultof<_>
@@ -282,14 +282,23 @@ type ScriptEditor() as this =
         editor.Options.IndentationSize <- 4
         this.Content <- editor
 
+        // The app keeps the history, so AvaloniaEdit keeps none.
+        editor.Document.UndoStack.SizeLimit <- 0
+
         editor.TextChanged.Add(fun _ ->
             version <- version + 1
             marks.Uses <- [||]
             let edit = version
-            after 250 (fun () -> edit = version) check
+            after 250 (fun () -> edit = version) check)
 
+        editor.Document.Changed.Add(fun e ->
             if not settingText then
-                textChanged.Trigger editor.Text)
+                let edit: History.TextEdit =
+                    { Offset = e.Offset
+                      Removed = e.RemovedText.Text
+                      Inserted = e.InsertedText.Text }
+
+                edited.Trigger(edit, editor.Document.Text))
 
         editor.TextArea.Caret.PositionChanged.Add(fun _ ->
             moves <- moves + 1
@@ -388,9 +397,10 @@ type ScriptEditor() as this =
         editor.ScrollTo(l.LineNumber, column + 1)
         editor.Focus() |> ignore
 
-    /// The text as typed, after each edit.
+    /// Each change typed into the document, and the text after it. A change made through `Text`
+    /// is not one.
     [<CLIEvent>]
-    member _.TextChanged = textChanged.Publish
+    member _.Edited = edited.Publish
 
     /// The language service's problems, after each check.
     [<CLIEvent>]
