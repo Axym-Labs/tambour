@@ -110,3 +110,33 @@ let ``a cold language service reports the unit error within three seconds`` () =
     TestContext.Current.TestOutputHelper.WriteLine $"cold start to the unit error: {elapsed:F2} s"
     Assert.Contains(checkedScript.Diagnostics, fun d -> d.Code = "FS0001")
     Assert.True(elapsed < limit 3.0, $"the unit error took {elapsed:F2} s")
+
+[<Fact>]
+let ``a check classifies the script's names, in the script's own lines`` () =
+    let checkedScript = service.Value.Check { Id = 1; Text = unitError; Path = null }
+    let lines = unitError.Split('\n')
+    let named (t: Token) = lines.[t.Line - 1].Substring(t.StartColumn, t.EndColumn - t.StartColumn)
+    let kindOf (name: string) = checkedScript.Tokens |> Array.filter (fun t -> named t = name) |> Array.map (fun t -> t.Kind) |> Array.distinct
+
+    Assert.Contains("type", Array.append (kindOf "Trial") (kindOf "float"))
+    Assert.Equal<string[]>([| "variable" |], kindOf "trials")
+    Assert.Equal<string[]>([| "property" |], kindOf "Displacement")
+    Assert.Contains("function", kindOf "sprintf")
+
+    // In order, and none overlapping.
+    for a, b in Array.pairwise checkedScript.Tokens do
+        Assert.True((a.Line, a.EndColumn) <= (b.Line, b.StartColumn), $"{a} and {b}")
+
+[<Fact>]
+let ``hover on a library's name shows its documentation`` () =
+    // FSharp.Core's, and Marey's.
+    for marker, shift in [ "Array.init", 7; "x U.second", 0 ] do
+        let line, column = find unitError marker shift
+        let hovered = service.Value.Hover(at unitError line column)
+        TestContext.Current.TestOutputHelper.WriteLine $"{hovered.Text}\n---\n{hovered.Doc}\n"
+        Assert.False(String.IsNullOrWhiteSpace hovered.Doc, $"no documentation for {marker}")
+
+[<Fact>]
+let ``documentation reads as text`` () =
+    let xml = """<summary>Draws <c>points</c>; see <see cref="T:Marey.Plot.Geom"/>.<para>Second   paragraph.</para></summary><param name="x">ignored</param>"""
+    Assert.Equal("Draws points; see Geom.\n\nSecond paragraph.", Analysis.readable xml)

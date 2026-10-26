@@ -10,6 +10,7 @@ open System.Net.Sockets
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Diagnostics
 open FSharp.Compiler.EditorServices
+open FSharp.Compiler.Symbols
 open FSharp.Compiler.Text
 open FSharp.Compiler.Tokenization
 open Tambour.Protocol
@@ -41,6 +42,165 @@ let private kindOf (glyph: FSharpGlyph) =
     | _ -> "other"
 
 let private text (tagged: TaggedText[]) = tagged |> Array.map (fun t -> t.Text) |> String.concat ""
+
+/// The semantic token type a class of FCS's is drawn as, and whether what it names is mutable;
+/// none for a class drawn as the grammar has it.
+let classOf (c: SemanticClassificationType) : (string * bool) option =
+    match c with
+    | SemanticClassificationType.ReferenceType
+    | SemanticClassificationType.ConstructorForReferenceType
+    | SemanticClassificationType.DisposableType -> Some("class", false)
+    | SemanticClassificationType.ValueType
+    | SemanticClassificationType.ConstructorForValueType -> Some("struct", false)
+    | SemanticClassificationType.Type
+    | SemanticClassificationType.TypeDef
+    | SemanticClassificationType.Exception
+    | SemanticClassificationType.Delegate -> Some("type", false)
+    | SemanticClassificationType.Enumeration -> Some("enum", false)
+    | SemanticClassificationType.Interface -> Some("interface", false)
+    | SemanticClassificationType.TypeArgument -> Some("typeParameter", false)
+    | SemanticClassificationType.Module
+    | SemanticClassificationType.Namespace -> Some("namespace", false)
+    | SemanticClassificationType.UnionCase -> Some("enumMember", false)
+    | SemanticClassificationType.Function
+    | SemanticClassificationType.IntrinsicFunction -> Some("function", false)
+    | SemanticClassificationType.Method
+    | SemanticClassificationType.ExtensionMethod -> Some("method", false)
+    | SemanticClassificationType.Property
+    | SemanticClassificationType.Field
+    | SemanticClassificationType.RecordField
+    | SemanticClassificationType.RecordFieldAsFunction
+    | SemanticClassificationType.UnionCaseField -> Some("property", false)
+    | SemanticClassificationType.MutableRecordField -> Some("property", true)
+    | SemanticClassificationType.MutableVar -> Some("variable", true)
+    | SemanticClassificationType.Event -> Some("event", false)
+    | SemanticClassificationType.NamedArgument -> Some("parameter", false)
+    | SemanticClassificationType.Operator -> Some("operator", false)
+    | SemanticClassificationType.ComputationExpression -> Some("keyword", false)
+    | SemanticClassificationType.Literal
+    | SemanticClassificationType.Value
+    | SemanticClassificationType.LocalValue
+    | SemanticClassificationType.DisposableTopLevelValue
+    | SemanticClassificationType.DisposableLocalValue -> Some("variable", false)
+    | _ -> None
+
+/// The script's tokens from FCS's classes: one line each, in the script's own lines, none
+/// overlapping. Where classes overlap, the narrower one is drawn, and of two alike the later.
+let tokensOf (offset: int) (items: SemanticClassificationItem[]) : Token[] =
+    let tokens = ResizeArray()
+
+    items
+    |> Array.choose (fun i ->
+        let r = i.Range
+
+        if r.StartLine > offset && r.StartLine = r.EndLine && r.EndColumn > r.StartColumn then
+            classOf i.Type |> Option.map (fun c -> r.StartLine - offset, r.StartColumn, r.EndColumn, c)
+        else
+            None)
+    |> Array.groupBy (fun (line, _, _, _) -> line)
+    |> Array.sortBy fst
+    |> Array.iter (fun (line, spans) ->
+        let width = spans |> Array.map (fun (_, _, e, _) -> e) |> Array.max
+        let cells: (string * bool) option[] = Array.create width None
+
+        for _, s, e, c in spans |> Array.sortBy (fun (_, s, e, _) -> -(e - s)) do
+            for i in s .. e - 1 do
+                cells.[i] <- Some c
+
+        let mutable i = 0
+
+        while i < width do
+            match cells.[i] with
+            | None -> i <- i + 1
+            | Some(kind, mutable') as c ->
+                let s = i
+
+                while i < width && cells.[i] = c do
+                    i <- i + 1
+
+                tokens.Add
+                    { Line = line
+                      StartColumn = s
+                      EndColumn = i
+                      Kind = kind
+                      Mutable = mutable' })
+
+    tokens.ToArray()
+
+/// Documentation as a reader reads it: the summary's text, a code element or a reference by its
+/// name, paragraphs apart.
+let readable (xml: string) =
+    try
+        let root = Xml.Linq.XElement.Parse("<doc>" + xml + "</doc>", Xml.Linq.LoadOptions.None)
+        let summary = root.Element(Xml.Linq.XName.Get "summary") |> Option.ofObj |> Option.defaultValue root
+        let out = Text.StringBuilder()
+
+        let rec walk (node: Xml.Linq.XNode) =
+            match node with
+            | :? Xml.Linq.XText as t -> out.Append(Text.RegularExpressions.Regex.Replace(t.Value, @"\s+", " ")) |> ignore
+            | :? Xml.Linq.XElement as e ->
+                match e.Name.LocalName with
+                | "see"
+                | "seealso"
+                | "paramref"
+                | "typeparamref" when e.IsEmpty ->
+                    let name =
+                        [ "cref"; "name"; "langword" ]
+                        |> List.tryPick (fun a -> e.Attribute(Xml.Linq.XName.Get a) |> Option.ofObj)
+                        |> Option.map (fun a -> a.Value)
+                        |> Option.defaultValue ""
+
+                    // `T:Marey.Plot.Geom` reads as `Geom`.
+                    let name = if name.Length > 2 && name.[1] = ':' then name.Substring 2 else name
+                    out.Append(name.Split('.') |> Array.last) |> ignore
+                | "para" ->
+                    out.Append "\n\n" |> ignore
+
+                    for n in e.Nodes() do
+                        walk n
+
+                    out.Append "\n\n" |> ignore
+                | _ ->
+                    for n in e.Nodes() do
+                        walk n
+            | _ -> ()
+
+        for n in summary.Nodes() do
+            walk n
+
+        Text.RegularExpressions.Regex.Replace(out.ToString(), @" *\n\s*\n\s*", "\n\n").Trim()
+    with _ ->
+        ""
+
+/// Each library's documentation file, read once, by member signature.
+let private documented = Collections.Concurrent.ConcurrentDictionary<string, Map<string, string>>()
+
+let private docOf (doc: FSharpXmlDoc) =
+    match doc with
+    | FSharpXmlDoc.FromXmlText x -> readable (String.concat "\n" (x.GetElaboratedXmlLines()))
+    | FSharpXmlDoc.FromXmlFile(dll, signature) ->
+        let file = Path.ChangeExtension(dll, ".xml")
+
+        let members =
+            documented.GetOrAdd(
+                file,
+                fun file ->
+                    try
+                        Xml.Linq.XDocument.Load(file).Descendants(Xml.Linq.XName.Get "member")
+                        |> Seq.choose (fun m ->
+                            m.Attribute(Xml.Linq.XName.Get "name")
+                            |> Option.ofObj
+                            |> Option.map (fun n -> n.Value, String.concat "" (m.Nodes() |> Seq.map string)))
+                        |> Seq.distinctBy fst
+                        |> Map.ofSeq
+                    with _ ->
+                        Map.empty
+            )
+
+        members.TryFind signature |> Option.map readable |> Option.defaultValue ""
+    | FSharpXmlDoc.None -> ""
+
+let private glyphOf (glyph: FSharpGlyph) = string glyph
 
 /// The assemblies a script is checked against: the runtime's own, FSharp.Core and Marey from
 /// this app's directory, and whatever else the app states. The runtime's are its implementation
@@ -177,7 +337,9 @@ type Service(init: AnalysisInit) =
                   EndLine = (if inPrelude then 1 else d.EndLine - offset)
                   EndColumn = (if inPrelude then 0 else d.EndColumn) })
 
-        { Id = source.Id; Diagnostics = diagnostics }
+        { Id = source.Id
+          Diagnostics = diagnostics
+          Tokens = tokensOf offset (results.GetSemanticClassification None) }
 
     member _.Complete(at: At) : Completions =
         let _, full, parse, results = check at.Path at.Text
@@ -189,27 +351,43 @@ type Service(init: AnalysisInit) =
         { Id = at.Id
           Items =
             decls.Items
-            |> Array.map (fun i -> { Name = i.NameInList; Insert = i.NameInCode; Kind = kindOf i.Glyph }) }
+            |> Array.map (fun i ->
+                { Name = i.NameInList
+                  Insert = i.NameInCode
+                  Kind = kindOf i.Glyph
+                  Glyph = glyphOf i.Glyph }) }
 
     member _.Hover(at: At) : Hovered =
         let _, full, _, results = check at.Path at.Text
         let line = at.Line + offset
         let lineText = lineOf full line
 
-        let shown =
+        let elements =
             match island lineText at.Column with
-            | None -> ""
+            | None -> []
             | Some(names, columnEnd) ->
                 let (ToolTipText elements) = results.GetToolTip(line, columnEnd, lineText, names, FSharpTokenTag.Identifier)
-
                 elements
-                |> List.collect (function
-                    | ToolTipElement.Group items -> items |> List.map (fun i -> text i.MainDescription)
-                    | ToolTipElement.CompositionError e -> [ e ]
-                    | ToolTipElement.None -> [])
-                |> String.concat "\n"
 
-        { Id = at.Id; Text = shorten shown }
+        let shown =
+            elements
+            |> List.collect (function
+                | ToolTipElement.Group items -> items |> List.map (fun i -> text i.MainDescription)
+                | ToolTipElement.CompositionError e -> [ e ]
+                | ToolTipElement.None -> [])
+            |> String.concat "\n"
+
+        // The first overload's documentation; the others are listed by their signatures alone.
+        let doc =
+            elements
+            |> List.tryPick (function
+                | ToolTipElement.Group(i :: _) -> Some(docOf i.XmlDoc)
+                | _ -> None)
+            |> Option.defaultValue ""
+
+        { Id = at.Id
+          Text = shorten shown
+          Doc = doc }
 
     member _.Signature(at: At) : Signatures =
         let _, full, _, results = check at.Path at.Text

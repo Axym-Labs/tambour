@@ -5,4 +5,17 @@
        its target, so no build of Tambour reports, wherever it runs. -->
   <Target Name="AvaloniaStats" />
 
+  <!-- A script's hover shows the documentation of what it names, so Marey's and FSharp.Core's
+       documentation files go beside their assemblies wherever the language service runs, and no
+       other package's. -->
+  <PropertyGroup>
+    <CopyDocumentationFilesFromPackages>true</CopyDocumentationFilesFromPackages>
+  </PropertyGroup>
+
+  <Target Name="KeepScriptDocumentationOnly" AfterTargets="ResolvePackageAssets">
+    <ItemGroup>
+      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" Condition="'%(Extension)' == '.xml' and !$([System.String]::Copy('%(Filename)').StartsWith('Marey')) and '%(Filename)' != 'FSharp.Core'" />
+    </ItemGroup>
+  </Target>
+
 </Project>
