@@ -110,4 +110,19 @@ let ``an action writes the script, and the figure is run again`` () =
     Assert.True(window.GetVisualDescendants().OfType<TextBlock>().Any(fun t -> t.Text = "added Chart.withTitle"), "the action's note is not shown")
     window.CaptureRenderedFrame().Dispose()
     save window "shell-action.png"
+
+    // Typed text and the action are both the app's history: Ctrl+Z takes back the word, then the
+    // action, and runs the figure again; Ctrl+Y does the action again.
+    editor.Editor.CaretOffset <- editor.Text.Length
+    editor.Editor.TextArea.PerformTextInput "// typed"
+    let typed = editor.Text
+    let titled = typed.Replace("// typed", "")
+    window.KeyPress(Key.Z, RawInputModifiers.Control, PhysicalKey.Z, null)
+    pumpUntil 10.0 "the word taken back" (fun () -> editor.Text = titled)
+    let shown = pane.Picture
+    window.KeyPress(Key.Z, RawInputModifiers.Control, PhysicalKey.Z, null)
+    pumpUntil 10.0 "the action taken back" (fun () -> editor.Text = script)
+    pumpUntil 30.0 "the figure run again" (fun () -> not (obj.ReferenceEquals(pane.Picture, shown)))
+    window.KeyPress(Key.Y, RawInputModifiers.Control, PhysicalKey.Y, null)
+    pumpUntil 10.0 "the action done again" (fun () -> editor.Text = titled)
     window.Close()
