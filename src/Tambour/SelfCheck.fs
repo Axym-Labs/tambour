@@ -29,10 +29,10 @@ let run () : int =
     eprintfn "SkiaSharp %s, HarfBuzzSharp %s" (versionOf typeof<SkiaSharp.SKCanvas>) (versionOf typeof<HarfBuzzSharp.Buffer>)
     let exitCode = ref 1
     try
-        let measurer = new SkiaTextMeasurer()
+        use measurer = new SkiaTextMeasurer()
         let node = Chart.toSceneWith measurer extent (figure ())
         App.builder().SetupWithoutStarting() |> ignore
-        let view = FigureView(node, extent, measurer)
+        let view = new FigurePane(Picture = Picture(node, extent, 0))
         let window = Window(Title = "Tambour self-check", SizeToContent = SizeToContent.WidthAndHeight, Content = view)
         let finish code message =
             Dispatcher.UIThread.Post(fun () ->

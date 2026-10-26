@@ -1,4 +1,4 @@
-module Tambour.Tests.FigureViewTests
+module Tambour.Tests.FigurePaneTests
 
 open System.IO
 open Avalonia.Controls
@@ -31,9 +31,9 @@ let private compare (a: SKBitmap) (b: SKBitmap) =
 
 [<AvaloniaFact>]
 let ``the figure pane paints what Marey's PNG export writes`` () =
-    let measurer = new SkiaTextMeasurer()
+    use measurer = new SkiaTextMeasurer()
     let node = Chart.toSceneWith measurer SelfCheck.extent (SelfCheck.figure ())
-    let view = FigureView(node, SelfCheck.extent, measurer)
+    let view = new FigurePane(Picture = Picture(node, SelfCheck.extent, 0))
     let painted = ResizeArray()
     view.Painted.Add painted.Add
     let window = Window(SizeToContent = SizeToContent.WidthAndHeight, Content = view)
