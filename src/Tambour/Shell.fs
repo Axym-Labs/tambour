@@ -141,8 +141,15 @@ type Model =
       Problems: Diagnostic[]
       /// A place to move the caret to, with a serial so the same place can be asked for twice.
       GoTo: (int * int * int) option
+      /// What each GUI action would come to for the figure on screen, and its rows' columns.
+      Actions: ActionOutcome[]
+      Columns: string[]
+      /// What is typed into the actions panel, by field.
+      Inputs: Map<string, string>
       Running: bool
-      Status: string }
+      Status: string
+      /// What the last GUI action did, shown until the script is next edited.
+      ActionNote: string }
 
 type Msg =
     | Edited of string
@@ -156,6 +163,10 @@ type Msg =
     | Tick of seconds: float
     | Problems of Diagnostic[]
     | GoTo of line: int * column: int
+    | ActionsLoaded of script: string * ActionsFor
+    | Typed of field: string * text: string
+    | Act of ActionSpec
+    | Acted of Acted
     | Failed of exn
 
 let init (script: string) () : Model * Cmd<Msg> =
@@ -170,8 +181,12 @@ let init (script: string) () : Model * Cmd<Msg> =
       Diagnostics = [||]
       Problems = [||]
       GoTo = None
+      Actions = [||]
+      Columns = [||]
+      Inputs = Map.empty
       Running = false
-      Status = "starting a worker…" },
+      Status = "starting a worker…"
+      ActionNote = "" },
     Cmd.none
 
 let private send (env: Env) (request: Request) : Cmd<Msg> =
@@ -183,6 +198,20 @@ let private send (env: Env) (request: Request) : Cmd<Msg> =
 
     Cmd.OfTask.attempt go request Failed
 
+/// The figure on screen, by the name the worker gave it, when it is one the actions can edit.
+let private editable (model: Model) =
+    match Array.tryItem model.Selected model.Figures with
+    | Some f when f.Controls = 0 -> Some f.Name
+    | _ -> None
+
+/// Asks what the actions would do to the figure on screen.
+let private loadActions (env: Env) (model: Model) : Cmd<Msg> =
+    match editable model with
+    | Some name ->
+        let script = model.Script
+        Cmd.OfTask.either (fun () -> env.Language.ActionsAsync(script, null, name)) () (fun a -> ActionsLoaded(script, a)) Failed
+    | None -> Cmd.none
+
 let private appendOutput (model: Model) (text: string) =
     let all = model.Output + text
     if all.Length > MaxOutput then all.Substring(all.Length - MaxOutput) else all
@@ -192,7 +221,7 @@ let private diagnosticLine (d: Diagnostic) =
 
 let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
-    | Edited text -> { model with Script = text }, Cmd.none
+    | Edited text -> { model with Script = text; ActionNote = "" }, Cmd.none
     | Run ->
         { model with Running = true; Status = "running…"; Playing = Set.empty },
         send env (Request.Evaluate { Text = model.Script; Path = null })
@@ -209,15 +238,18 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 | false, null -> "the script does not compile"
                 | false, ex -> $"the script threw: {ex}"
 
-            { model with
-                Running = false
-                Figures = e.Figures
-                Selected = e.Selected
-                Picture = (if e.Selected < 0 then null else model.Picture)
-                Controls = (if e.Selected < 0 then [||] else model.Controls)
-                Diagnostics = e.Diagnostics
-                Status = status },
-            Cmd.none
+            let next =
+                { model with
+                    Running = false
+                    Figures = e.Figures
+                    Selected = e.Selected
+                    Picture = (if e.Selected < 0 then null else model.Picture)
+                    Controls = (if e.Selected < 0 then [||] else model.Controls)
+                    Diagnostics = e.Diagnostics
+                    Actions = (if e.Selected < 0 then [||] else model.Actions)
+                    Status = status }
+
+            next, (if e.Ok then loadActions env next else Cmd.none)
         | Reply.Scene frame ->
             match Picture.Decode frame with
             | Ok p -> { model with Picture = p; Readout = None }, Cmd.none
@@ -233,7 +265,8 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         | Reply.Exported _ -> model, Cmd.none
         | Reply.Failed message -> { model with Running = false; Status = message }, Cmd.none
     | Select index when index <> model.Selected && index >= 0 ->
-        { model with Selected = index; Playing = Set.empty }, send env (Request.Select index)
+        let next = { model with Selected = index; Playing = Set.empty; Actions = [||] }
+        next, Cmd.batch [ send env (Request.Select index); loadActions env next ]
     | Select _ -> model, Cmd.none
     | Input input -> model, send env (Request.Live input)
     | SetControl(index, value) ->
@@ -269,6 +302,24 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | GoTo(line, column) ->
         let serial = match model.GoTo with Some(s, _, _) -> s + 1 | None -> 0
         { model with GoTo = Some(serial, line, column) }, Cmd.none
+    | ActionsLoaded(script, a) when script = model.Script -> { model with Actions = a.Outcomes; Columns = a.Columns }, Cmd.none
+    | ActionsLoaded _ -> model, Cmd.none
+    | Typed(field, text) -> { model with Inputs = model.Inputs.Add(field, text) }, Cmd.none
+    | Act spec ->
+        match editable model with
+        | Some name ->
+            let script = model.Script
+            model, Cmd.OfTask.either (fun () -> env.Language.ActAsync(script, null, name, spec)) () Acted Failed
+        | None -> model, Cmd.none
+    | Acted a when a.Outcome.Outcome = "refused" -> { model with ActionNote = $"not done: {a.Outcome.Note}" }, Cmd.none
+    | Acted a ->
+        let note =
+            if a.Outcome.Outcome = "fallback" then
+                $"{a.Outcome.Note}: the stage applies to the whole expression above it"
+            else
+                a.Outcome.Note
+
+        { model with Script = a.Text; ActionNote = note }, Cmd.ofMsg Run
     | Failed e -> { model with Status = e.Message }, Cmd.none
 
 let private label (text: string) : IView =
@@ -318,13 +369,108 @@ let private controlView (dispatch: Msg -> unit) (index: int) (c: ControlInfo) (p
             ]
         ]
 
+/// The themes, legend placements and geoms the panel offers.
+let private themes = [| "publication"; "modern"; "presentation"; "notebook"; "dark"; "tikz" |]
+
+let private placements =
+    [| "LegendTopRight"; "LegendTopLeft"; "LegendBottomRight"; "LegendBottomLeft"; "LegendOutsideRight"; "LegendOutsideBottom"; "LegendBest"; "LegendNone" |]
+
+let private geoms = [| "GeomPoint"; "GeomLine" |]
+
+/// The GUI actions for the figure on screen. One the figure's shape refuses is greyed out with its
+/// reason; one that would fall back says so.
+let private actionsView (model: Model) (dispatch: Msg -> unit) : IView =
+    let outcome kind = model.Actions |> Array.tryFind (fun o -> o.Kind = kind)
+    let enabled kind = match outcome kind with Some o -> o.Outcome <> "refused" | None -> false
+
+    let tip kind =
+        match outcome kind with
+        | Some o when o.Outcome = "refused" -> o.Note
+        | Some o when o.Outcome = "fallback" -> o.Note + "; it will apply to the whole expression"
+        | Some _ -> "writes the script"
+        | None -> ""
+
+    let input field (watermark: string) (width: float) : IView =
+        TextBox.create [
+            TextBox.placeHolderText watermark
+            TextBox.width width
+            TextBox.text (model.Inputs.TryFind field |> Option.defaultValue "")
+            TextBox.onTextChanged (fun t -> if Some t <> model.Inputs.TryFind field then dispatch (Typed(field, t)))
+        ]
+
+    let button kind (label: string) (spec: unit -> ActionSpec option) : IView =
+        Button.create [
+            Button.content label
+            Button.isEnabled (enabled kind)
+            Button.tip (tip kind)
+            // Every render's handler, since it reads what is typed now.
+            Button.onClick ((fun _ -> spec () |> Option.iter (Act >> dispatch)), SubPatchOptions.Always)
+        ]
+
+    /// A menu that acts on a choice and then shows its label again.
+    let menu kind (label: string) (items: string[]) : IView =
+        ComboBox.create [
+            ComboBox.placeholderText label
+            ComboBox.minWidth 120.0
+            ComboBox.dataItems items
+            ComboBox.selectedIndex -1
+            ComboBox.isEnabled (enabled kind && items.Length > 0)
+            ComboBox.tip (tip kind)
+            ComboBox.onSelectedIndexChanged (
+                (fun i ->
+                    if i >= 0 && i < items.Length then
+                        dispatch (Act { Kind = kind; Text = items.[i]; Lo = 0.0; Hi = 0.0 })),
+                SubPatchOptions.Always
+            )
+        ]
+
+    let text kind field = fun () -> Some { Kind = kind; Text = model.Inputs.TryFind field |> Option.defaultValue ""; Lo = 0.0; Hi = 0.0 }
+
+    let domain () =
+        let parse field =
+            match Double.TryParse(model.Inputs.TryFind field |> Option.defaultValue "", Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
+            | true, v -> Some v
+            | _ -> None
+
+        match parse "lo", parse "hi" with
+        | Some lo, Some hi -> Some { Kind = "y domain"; Text = ""; Lo = lo; Hi = hi }
+        | _ ->
+            dispatch (Failed(FormatException "a y domain wants two numbers"))
+            None
+
+    let group (children: IView list) : IView =
+        StackPanel.create [ StackPanel.orientation Orientation.Horizontal; StackPanel.spacing 4.0; StackPanel.margin (Thickness(0.0, 0.0, 10.0, 4.0)); StackPanel.children children ]
+
+    match Array.tryItem model.Selected model.Figures with
+    | Some f when f.Controls > 0 ->
+        TextBlock.create [
+            TextBlock.margin (Thickness(8.0, 4.0))
+            TextBlock.textWrapping TextWrapping.Wrap
+            TextBlock.text "This figure is inside interact { }: it is shown and driven, but the actions edit plot { } blocks and Chart.* pipelines only."
+        ]
+    | Some _ ->
+        WrapPanel.create [
+            WrapPanel.margin (Thickness(6.0, 4.0))
+            WrapPanel.children [
+                group [ input "title" "title" 140.0; button "title" "Title" (text "title" "title") ]
+                group [ input "x label" "x label" 100.0; button "x label" "X label" (text "x label" "x label") ]
+                group [ input "y label" "y label" 100.0; button "y label" "Y label" (text "y label" "y label") ]
+                group [ button "log y" "Log y" (fun () -> Some { Kind = "log y"; Text = ""; Lo = 0.0; Hi = 0.0 }) ]
+                group [ input "lo" "from" 60.0; input "hi" "to" 60.0; button "y domain" "Y domain" domain ]
+                group [ menu "theme" "Theme" themes; menu "legend" "Legend" placements ]
+                group [ menu "colour by" "Colour by" model.Columns; menu "facet" "Facet by" model.Columns ]
+                group [ button "fit" "Fit" (fun () -> Some { Kind = "fit"; Text = ""; Lo = 0.0; Hi = 0.0 }); menu "layer" "Add layer" geoms ]
+            ]
+        ]
+    | None -> TextBlock.create [ TextBlock.margin (Thickness(8.0, 4.0)); TextBlock.text "Run a script that binds a figure to edit it here." ]
+
 let private problemView (dispatch: Msg -> unit) (d: Diagnostic) : IView =
     Button.create [
         Button.background Brushes.Transparent
         Button.horizontalAlignment HorizontalAlignment.Stretch
         Button.horizontalContentAlignment HorizontalAlignment.Left
         Button.padding (Thickness(6.0, 1.0))
-        Button.onClick (fun _ -> dispatch (GoTo(d.StartLine, d.StartColumn)))
+        Button.onClick ((fun _ -> dispatch (GoTo(d.StartLine, d.StartColumn))), SubPatchOptions.Always)
         Button.tip (diagnosticLine d)
         Button.content (
             TextBlock.create [
@@ -361,6 +507,11 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                         ComboBox.onSelectedIndexChanged (fun i -> dispatch (Select i))
                     ]
                     label model.Status
+                    TextBlock.create [
+                        TextBlock.text model.ActionNote
+                        TextBlock.verticalAlignment VerticalAlignment.Center
+                        TextBlock.foreground (if model.ActionNote.Contains "whole expression" || model.ActionNote.StartsWith "not done" then Brushes.DarkGoldenrod else Brushes.DimGray)
+                    ]
                 ]
             ]
             Grid.create [
@@ -401,6 +552,13 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                     DockPanel.create [
                         Grid.column 2
                         DockPanel.children [
+                            Expander.create [
+                                Expander.dock Dock.Top
+                                Expander.header "Actions"
+                                Expander.isExpanded true
+                                Expander.horizontalAlignment HorizontalAlignment.Stretch
+                                Expander.content (actionsView model dispatch)
+                            ]
                             StackPanel.create [
                                 StackPanel.dock Dock.Bottom
                                 StackPanel.children (model.Controls |> Array.mapi (fun i c -> controlView dispatch i c (model.Playing.Contains i)) |> List.ofArray)

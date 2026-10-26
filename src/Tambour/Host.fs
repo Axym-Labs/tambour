@@ -448,6 +448,8 @@ type LanguageService(command: Command, init: AnalysisInit) =
                                     | AnalysisReply.Hovered r -> r.Id
                                     | AnalysisReply.Signatures r -> r.Id
                                     | AnalysisReply.Used r -> r.Id
+                                    | AnalysisReply.Actions r -> r.Id
+                                    | AnalysisReply.Acted r -> r.Id
                                     | AnalysisReply.Failed(id, _) -> id
                                     | AnalysisReply.Started _ -> -1
 
@@ -528,6 +530,20 @@ type LanguageService(command: Command, init: AnalysisInit) =
             match! this.AskAsync(fun id -> AnalysisRequest.Uses { Id = id; Text = text; Path = path; Line = line; Column = column }) with
             | AnalysisReply.Used u -> return u
             | other -> return failwith $"uses answered with {other}"
+        }
+
+    member this.ActionsAsync(text: string, path: string, figure: string) : Task<ActionsFor> =
+        task {
+            match! this.AskAsync(fun id -> AnalysisRequest.Actions { Id = id; Text = text; Path = path; Figure = figure }) with
+            | AnalysisReply.Actions a -> return a
+            | other -> return failwith $"the actions answered with {other}"
+        }
+
+    member this.ActAsync(text: string, path: string, figure: string, action: ActionSpec) : Task<Acted> =
+        task {
+            match! this.AskAsync(fun id -> AnalysisRequest.Act { Id = id; Text = text; Path = path; Figure = figure; Action = action }) with
+            | AnalysisReply.Acted a -> return a
+            | other -> return failwith $"an action answered with {other}"
         }
 
     interface IDisposable with
