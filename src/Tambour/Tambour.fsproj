@@ -10,10 +10,13 @@
     <Compile Include="Paths.fs" />
     <Compile Include="Evaluation.fs" />
     <Compile Include="Worker.fs" />
+    <Compile Include="Analysis.fs" />
     <Compile Include="Host.fs" />
     <Compile Include="FigurePane.fs" />
+    <Compile Include="ScriptEditor.fs" />
     <Compile Include="App.fs" />
     <Compile Include="Shell.fs" />
+    <Compile Include="AnalysisCheck.fs" />
     <Compile Include="SelfCheck.fs" />
     <Compile Include="PaneCheck.fs" />
     <Compile Include="Program.fs" />
@@ -33,6 +36,9 @@
     <PackageReference Include="Avalonia.Skia" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
     <PackageReference Include="Avalonia.FuncUI" />
+    <PackageReference Include="Avalonia.AvaloniaEdit" />
+    <PackageReference Include="AvaloniaEdit.TextMate" />
+    <PackageReference Include="TextMateSharp.Grammars" />
     <PackageReference Include="Avalonia.FuncUI.Elmish" />
     <PackageReference Include="Elmish" />
     <PackageReference Include="SkiaSharp" />

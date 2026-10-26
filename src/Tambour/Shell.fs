@@ -52,6 +52,52 @@ module Pane =
 
         AttrBuilder<FigurePane>.CreateSubscription<LiveInput>("Input", subscribe, f)
 
+/// The script editor in FuncUI's terms.
+module Editor =
+
+    let create (attrs: IAttr<ScriptEditor> list) : IView<ScriptEditor> = ViewBuilder.Create<ScriptEditor>(attrs)
+
+    let text (t: string) : IAttr<ScriptEditor> =
+        AttrBuilder<ScriptEditor>.CreateProperty<string>(
+            "Text",
+            t,
+            ValueSome(fun (v: ScriptEditor) -> v.Text),
+            ValueSome(fun (v: ScriptEditor, t) -> v.Text <- t),
+            ValueNone
+        )
+
+    let language (l: LanguageService) : IAttr<ScriptEditor> =
+        AttrBuilder<ScriptEditor>.CreateProperty<LanguageService>(
+            "Language",
+            l,
+            ValueSome(fun (v: ScriptEditor) -> v.Language),
+            ValueSome(fun (v: ScriptEditor, l) -> v.Language <- l),
+            ValueSome(fun (a: obj, b: obj) -> obj.ReferenceEquals(a, b))
+        )
+
+    /// Moves the caret when the request's serial changes.
+    let goTo (request: (int * int * int) option) : IAttr<ScriptEditor> =
+        AttrBuilder<ScriptEditor>.CreateProperty<(int * int * int) option>(
+            "GoTo",
+            request,
+            ValueNone,
+            ValueSome(fun (v: ScriptEditor, r) ->
+                match r with
+                | Some(_, line, column) -> v.GoTo(line, column)
+                | None -> ()),
+            ValueNone
+        )
+
+    let private subscription name (events: ScriptEditor -> IObservable<'a>) (f: 'a -> unit) : IAttr<ScriptEditor> =
+        let subscribe (view: AvaloniaObject, handler: 'a -> unit, token: CancellationToken) =
+            let d = (events (view :?> ScriptEditor)).Subscribe handler
+            token.Register(fun () -> d.Dispose()) |> ignore
+
+        AttrBuilder<ScriptEditor>.CreateSubscription<'a>(name, subscribe, f)
+
+    let onTextChanged f = subscription "TextChanged" (fun e -> e.TextChanged) f
+    let onProblemsChanged f = subscription "ProblemsChanged" (fun e -> e.ProblemsChanged) f
+
 /// The script the window opens with.
 let example =
     """// Ctrl+Enter (or F5) runs the script; Escape cancels a run.
@@ -70,8 +116,11 @@ let fall =
 let prelude =
     "open Marey\nopen Marey.UnitsOfMeasure\nopen Microsoft.FSharp.Data.UnitSystems.SI.UnitSymbols\n"
 
-/// The workers and the task that has them started.
-type Env = { Workers: Workers; Started: Task }
+/// The workers, the task that has them started, and the language service.
+type Env =
+    { Workers: Workers
+      Started: Task
+      Language: LanguageService }
 
 /// The most output kept, in characters; older text goes first.
 [<Literal>]
@@ -88,6 +137,10 @@ type Model =
       Playing: Set<int>
       Output: string
       Diagnostics: Diagnostic[]
+      /// What the language service finds in the script as it is typed.
+      Problems: Diagnostic[]
+      /// A place to move the caret to, with a serial so the same place can be asked for twice.
+      GoTo: (int * int * int) option
       Running: bool
       Status: string }
 
@@ -101,6 +154,8 @@ type Msg =
     | SetControl of index: int * value: float
     | TogglePlay of int
     | Tick of seconds: float
+    | Problems of Diagnostic[]
+    | GoTo of line: int * column: int
     | Failed of exn
 
 let init (script: string) () : Model * Cmd<Msg> =
@@ -113,6 +168,8 @@ let init (script: string) () : Model * Cmd<Msg> =
       Playing = Set.empty
       Output = ""
       Diagnostics = [||]
+      Problems = [||]
+      GoTo = None
       Running = false
       Status = "starting a worker…" },
     Cmd.none
@@ -131,7 +188,7 @@ let private appendOutput (model: Model) (text: string) =
     if all.Length > MaxOutput then all.Substring(all.Length - MaxOutput) else all
 
 let private diagnosticLine (d: Diagnostic) =
-    $"{d.StartLine}:{d.StartColumn + 1} {d.Severity} FS{d.Code}: {d.Message}"
+    $"{d.StartLine}:{d.StartColumn + 1} {d.Severity} {d.Code}: {d.Message}"
 
 let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
@@ -208,6 +265,10 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                   | _ -> playing <- playing.Remove index ]
 
         { model with Playing = playing }, moves |> List.map Cmd.ofMsg |> Cmd.batch
+    | Problems problems -> { model with Problems = problems }, Cmd.none
+    | GoTo(line, column) ->
+        let serial = match model.GoTo with Some(s, _, _) -> s + 1 | None -> 0
+        { model with GoTo = Some(serial, line, column) }, Cmd.none
     | Failed e -> { model with Status = e.Message }, Cmd.none
 
 let private label (text: string) : IView =
@@ -257,7 +318,26 @@ let private controlView (dispatch: Msg -> unit) (index: int) (c: ControlInfo) (p
             ]
         ]
 
-let view (model: Model) (dispatch: Msg -> unit) : IView =
+let private problemView (dispatch: Msg -> unit) (d: Diagnostic) : IView =
+    Button.create [
+        Button.background Brushes.Transparent
+        Button.horizontalAlignment HorizontalAlignment.Stretch
+        Button.horizontalContentAlignment HorizontalAlignment.Left
+        Button.padding (Thickness(6.0, 1.0))
+        Button.onClick (fun _ -> dispatch (GoTo(d.StartLine, d.StartColumn)))
+        Button.tip (diagnosticLine d)
+        Button.content (
+            TextBlock.create [
+                // One line each; the whole message is the tip.
+                TextBlock.text (Text.RegularExpressions.Regex.Replace(diagnosticLine d, @"\s+", " "))
+                TextBlock.textWrapping TextWrapping.NoWrap
+                TextBlock.textTrimming TextTrimming.CharacterEllipsis
+                TextBlock.foreground (if d.Severity = "error" then Brushes.DarkRed else Brushes.DarkGoldenrod)
+            ]
+        )
+    ]
+
+let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
     let output =
         String.Join("\n", model.Diagnostics |> Array.map diagnosticLine)
         + (if model.Diagnostics.Length > 0 && model.Output.Length > 0 then "\n" else "")
@@ -288,19 +368,28 @@ let view (model: Model) (dispatch: Msg -> unit) : IView =
                 Grid.children [
                     Grid.create [
                         Grid.column 0
-                        Grid.rowDefinitions "*,4,160"
+                        Grid.rowDefinitions "*,4,Auto,160"
                         Grid.children [
-                            TextBox.create [
+                            Editor.create [
                                 Grid.row 0
-                                TextBox.text model.Script
-                                TextBox.acceptsReturn true
-                                TextBox.acceptsTab true
-                                TextBox.fontFamily (FontFamily "monospace")
-                                TextBox.onTextChanged (fun text -> if text <> model.Script then dispatch (Edited text))
+                                Editor.text model.Script
+                                Editor.language env.Language
+                                Editor.goTo model.GoTo
+                                Editor.onTextChanged (Edited >> dispatch)
+                                Editor.onProblemsChanged (Problems >> dispatch)
                             ]
                             GridSplitter.create [ Grid.row 1 ]
-                            TextBox.create [
+                            ScrollViewer.create [
                                 Grid.row 2
+                                ScrollViewer.maxHeight 110.0
+                                ScrollViewer.content (
+                                    StackPanel.create [
+                                        StackPanel.children (model.Problems |> Array.map (problemView dispatch) |> List.ofArray)
+                                    ]
+                                )
+                            ]
+                            TextBox.create [
+                                Grid.row 3
                                 TextBox.text output
                                 TextBox.isReadOnly true
                                 TextBox.fontFamily (FontFamily "monospace")
@@ -391,15 +480,23 @@ type MainWindow(script: string) as this =
     let workers =
         new Workers(Command.ofThisApp (), { References = [||]; Prelude = prelude; Skia = { Dpi = float Marey.Space.screenDpi; FontFiles = [||] } })
 
-    let env = { Workers = workers; Started = workers.StartAsync() }
+    let language = new LanguageService(Command.ofThisApp (), { References = [||]; Prelude = prelude })
+
+    let env =
+        { Workers = workers
+          Started = workers.StartAsync()
+          Language = language }
 
     do
         this.Title <- "Tambour"
         this.Width <- 1280.0
         this.Height <- 800.0
-        this.Closed.Add(fun _ -> (workers :> IDisposable).Dispose())
 
-        Program.mkProgram (init script) (update env) view
+        this.Closed.Add(fun _ ->
+            (workers :> IDisposable).Dispose()
+            (language :> IDisposable).Dispose())
+
+        Program.mkProgram (init script) (update env) (view env)
         |> Program.withHost this
         |> Program.withSubscription (subscriptions env this)
         |> Program.runWithAvaloniaSyncDispatch ()
@@ -408,3 +505,6 @@ type MainWindow(script: string) as this =
 
     /// The workers' start, for whoever waits on it.
     member _.Started = env.Started
+
+    /// The language service's start.
+    member _.LanguageReady = language.Ready

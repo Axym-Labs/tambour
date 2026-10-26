@@ -25,6 +25,13 @@ type Run =
       Ok: bool
       Elapsed: TimeSpan }
 
+/// The path F# spells a unit of the SI by, which a reader does not need: `float<m>` rather than
+/// `float<Data.UnitSystems.SI.UnitSymbols.m>`.
+let private unitPath = Regex(@"(Microsoft\.FSharp\.)?Data\.UnitSystems\.SI\.Unit(Symbols|Names)\.")
+
+/// A message with its SI unit paths taken out.
+let shorten (text: string) = if isNull text then text else unitPath.Replace(text, "")
+
 let private diagnostic (d: FSharpDiagnostic) : Diagnostic =
     { Severity =
         match d.Severity with
@@ -32,7 +39,7 @@ let private diagnostic (d: FSharpDiagnostic) : Diagnostic =
         | FSharpDiagnosticSeverity.Warning -> "warning"
         | _ -> "info"
       Code = d.ErrorNumberText
-      Message = d.Message
+      Message = shorten d.Message
       StartLine = d.StartLine
       StartColumn = d.StartColumn
       EndLine = d.EndLine

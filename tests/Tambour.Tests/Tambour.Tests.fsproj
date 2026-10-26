@@ -11,6 +11,12 @@
     <Compile Include="ProtocolTests.fs" />
     <Compile Include="WorkerTests.fs" />
     <Compile Include="ShellTests.fs" />
+    <Compile Include="AnalysisTests.fs" />
+    <Compile Include="EditorTests.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="scripts/*.fsx" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

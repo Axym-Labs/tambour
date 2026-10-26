@@ -126,3 +126,36 @@ jobs:
         continue-on-error: true
         timeout-minutes: 5
         run: xvfb-run -a dotnet src/Tambour/bin/Release/net10.0/tambour.dll --check-pane --scaling 2
+
+  # The language service on a machine with no .NET: a self-contained publish, run in a bubblewrap
+  # sandbox that hides every .NET installation and the network, reports a script's unit error
+  # within 3 s of starting cold (9 s on a shared runner, as the other timed checks).
+  no-dotnet:
+    needs: marey-feed
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: marey-feed
+          path: artifacts/marey-feed
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Publish self-contained
+        run: dotnet publish src/Tambour -c Release -r linux-x64 --self-contained -o artifacts/publish/linux-x64
+
+      # Ubuntu's AppArmor refuses unprivileged user namespaces, which bubblewrap needs.
+      - name: Install bubblewrap
+        timeout-minutes: 5
+        run: |
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: The unit error, with no .NET
+        timeout-minutes: 3
+        run: tools/no-dotnet.sh artifacts/publish/linux-x64/tambour --check-analysis tests/Tambour.Tests/scripts/unit-error.fsx
