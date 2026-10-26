@@ -7,7 +7,7 @@ open System.Threading
 open System.Threading.Tasks
 
 /// Messages on a stream: each one its length (four bytes, little-endian), then its bytes.
-module Frame =
+module Framing =
 
     /// The largest message either side accepts. A scene of a million points is some tens of MB.
     [<Literal>]
@@ -110,7 +110,7 @@ type Connection(stream: Stream) =
         gate.Wait()
 
         try
-            Frame.write stream message
+            Framing.write stream message
         finally
             gate.Release() |> ignore
 
@@ -119,14 +119,14 @@ type Connection(stream: Stream) =
             do! gate.WaitAsync ct
 
             try
-                do! Frame.writeAsync stream message ct
+                do! Framing.writeAsync stream message ct
             finally
                 gate.Release() |> ignore
         }
 
-    member _.Receive() : byte[] option = Frame.read stream
+    member _.Receive() : byte[] option = Framing.read stream
 
-    member _.ReceiveAsync(ct: CancellationToken) : Task<byte[] option> = Frame.readAsync stream ct
+    member _.ReceiveAsync(ct: CancellationToken) : Task<byte[] option> = Framing.readAsync stream ct
 
     interface IDisposable with
         member _.Dispose() =

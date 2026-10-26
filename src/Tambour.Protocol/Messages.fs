@@ -128,19 +128,39 @@ type Output =
       Stream: string
       Text: string }
 
+/// Bytes for one figure, with the size in px they were laid out at: a scene a resize crossed
+/// on its way is drawn at the size it was made for.
+[<NoComparison; CustomEquality>]
+type Frame =
+    { Figure: int
+      Width: float
+      Height: float
+      Bytes: byte[] }
+
+    override this.Equals(other) =
+        match other with
+        | :? Frame as f ->
+            f.Figure = this.Figure
+            && f.Width.Equals this.Width
+            && f.Height.Equals this.Height
+            && System.Linq.Enumerable.SequenceEqual(f.Bytes, this.Bytes)
+        | _ -> false
+
+    override this.GetHashCode() = hash (this.Figure, this.Width, this.Height, this.Bytes.Length)
+
 /// What a worker sends back.
 [<RequireQualifiedAccess>]
 type Reply =
     | Ready of Ready
     | Evaluated of Evaluated
     /// A whole scene, as Marey's `Wire.encodeWith` writes it.
-    | Scene of figure: int * bytes: byte[]
+    | Scene of Frame
     /// A change to the last scene sent, as `Wire.encodePatchWith` writes it.
-    | Patch of figure: int * bytes: byte[]
+    | Patch of Frame
     | Controls of ControlsState
     | Readout of ReadoutState
     | Output of Output
-    /// The bytes of an export, in the format asked for.
-    | Exported of figure: int * bytes: byte[]
+    /// The bytes of an export, in the format asked for, at the size asked for.
+    | Exported of Frame
     /// A request the worker could not carry out, in a sentence.
     | Failed of message: string

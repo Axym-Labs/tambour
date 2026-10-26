@@ -65,7 +65,7 @@ let private evaluated =
 
 let private scene =
     function
-    | Reply.Scene(i, bytes) -> Some(i, bytes)
+    | Reply.Scene f -> Some f
     | _ -> None
 
 /// Throws away whatever an earlier test left unread.
@@ -115,8 +115,10 @@ let ``a run's figure arrives as a scene Marey's wire format reads back`` () : Ta
         let! e, _ = run workers twoThousand
         Assert.True(e.Ok, sprintf "%A" e)
         Assert.Equal<string list>([ "fig" ], names e)
-        let! (index, bytes), _ = until workers 30.0 scene
-        Assert.Equal(0, index)
+        let! frame, _ = until workers 30.0 scene
+        Assert.Equal(0, frame.Figure)
+        Assert.Equal((640.0, 400.0), (frame.Width, frame.Height))
+        let bytes = frame.Bytes
 
         match Wire.decodeWith bytes with
         | Ok(node, _) ->
@@ -198,7 +200,7 @@ let ``a live figure answers a control, a zoom and the pointer`` () : Task =
 
         let! _ =
             until workers 30.0 (function
-                | Reply.Patch(0, bytes) -> Some bytes
+                | Reply.Patch f when f.Figure = 0 -> Some f.Bytes
                 | _ -> None)
 
         // The pointer reads the figure without changing it: a readout, and no patch.
@@ -217,7 +219,7 @@ let ``a live figure answers a control, a zoom and the pointer`` () : Task =
 
         let! png, _ =
             until workers 30.0 (function
-                | Reply.Exported(0, bytes) -> Some bytes
+                | Reply.Exported f when f.Figure = 0 -> Some f.Bytes
                 | _ -> None)
 
         Assert.Equal<byte[]>([| 0x89uy; byte 'P'; byte 'N'; byte 'G' |], png.[0..3])
