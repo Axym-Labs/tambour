@@ -273,17 +273,77 @@ let ``cancel returns a usable worker within half a second`` () : Task =
         Assert.True(elapsed < limit 500.0, $"the worker came back in {elapsed:F1} ms")
     }
 
+let private printed (seen: Reply list) =
+    seen
+    |> List.choose (function
+        | Reply.Output o -> Some o.Text
+        | _ -> None)
+
 [<Fact>]
-let ``a worker past its heap limit is replaced while idle, and its script runs again`` () : Task =
+let ``a worker past its heap limit is replaced while idle, and its script runs again unheard`` () : Task =
     task {
         use workers = started (new Workers(command, init, 0L))
         let first = workers.Pid
         // The spare is ready by the time the first run is reported, so the replacement follows.
         do! Task.Delay 3000
-        let! e, _ = run workers "let again = Chart.lineIn U.second U.metre [ 0.0<s>; 1.0<s> ] [ 0.0<m>; 1.0<m> ]\n"
-        let! replayed, _ = until workers 60.0 evaluated
+        let! e, seen = run workers "printfn \"drawn\"\nlet again = Chart.lineIn U.second U.metre [ 0.0<s>; 1.0<s> ] [ 0.0<m>; 1.0<m> ]\n"
+        Assert.Equal<string list>([ "drawn\n" ], printed seen)
+        let! replayed, between = until workers 60.0 evaluated
         Assert.Equal<string list>(names e, names replayed)
+        Assert.Empty(printed between)
         Assert.NotEqual(first, workers.Pid)
+    }
+
+/// The live figure, then a script stuck in a loop, cancelled.
+let private cancelledAfterLive (workers: Workers) =
+    task {
+        let! e, _ = run workers ("printfn \"drawn\"\n" + live)
+        Assert.True e.Ok
+        let! _ = until workers 30.0 scene
+        do! workers.SendAsync(Request.Evaluate { Text = "while true do ()\n"; Path = null })
+        do! Task.Delay 300
+        do! workers.CancelAsync()
+        drain workers
+    }
+
+[<Fact>]
+let ``after a cancel, the figure on screen answers again, its script run unheard first`` () : Task =
+    task {
+        use workers = started (new Workers(command, init))
+        do! cancelledAfterLive workers
+        do! workers.SendAsync(Request.Live { Kind = "set"; Args = [| 0.0; 5.0 |] })
+
+        let! controls, seen =
+            until workers 30.0 (function
+                | Reply.Controls c when c.Controls.[0].Value = 5.0 -> Some c
+                | _ -> None)
+
+        let restored = seen |> List.pick evaluated
+        Assert.True restored.Ok
+        Assert.Equal<string list>([ "explorer" ], names restored)
+        Assert.Contains(seen, (function Reply.Scene _ -> true | _ -> false))
+        Assert.Empty(printed seen)
+        Assert.Equal("explorer", restored.Figures.[controls.Figure].Name)
+    }
+
+[<Fact>]
+let ``after a cancel, a new script makes running the old one again unnecessary`` () : Task =
+    task {
+        use workers = started (new Workers(command, init))
+        do! cancelledAfterLive workers
+        let! e, seen = run workers "let z = 1\n"
+        Assert.Empty(e.Figures)
+        Assert.Equal(1, seen |> List.choose evaluated |> List.length)
+        // The worker has no figure now, so the pointer reaches nothing, and nothing is run for it.
+        do! workers.SendAsync(Request.Live { Kind = "hover"; Args = [| 320.0; 200.0 |] })
+        do! Task.Delay 1000
+        let mutable r = Unchecked.defaultof<Reply>
+        let later = ResizeArray()
+
+        while workers.Replies.TryRead &r do
+            later.Add r
+
+        Assert.Empty later
     }
 
 [<Fact>]
