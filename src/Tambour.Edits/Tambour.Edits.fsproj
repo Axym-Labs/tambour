@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- GUI actions as edits to a figure's script: FCS's untyped tree finds the figure, and text is
+       spliced only at the ranges the tree names. -->
+  <PropertyGroup>
+    <RootNamespace>Tambour.Edits</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Edits.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FSharp.Compiler.Service" />
+  </ItemGroup>
+
+</Project>

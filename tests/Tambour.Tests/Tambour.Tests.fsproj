@@ -13,10 +13,11 @@
     <Compile Include="ShellTests.fs" />
     <Compile Include="AnalysisTests.fs" />
     <Compile Include="EditorTests.fs" />
+    <Compile Include="EditsTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="scripts/*.fsx" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="scripts/**/*.fsx" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
