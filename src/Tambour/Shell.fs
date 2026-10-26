@@ -312,12 +312,14 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | Undo ->
         match History.undo model.History with
         | Some(entry, history) ->
-            { model with Script = History.Entry.undo model.Script entry; History = history; ActionNote = "undone" }, Cmd.ofMsg Run
+            let state = History.Entry.undo { Script = model.Script; Tables = Map.empty } entry
+            { model with Script = state.Script; History = history; ActionNote = "undone" }, Cmd.ofMsg Run
         | None -> model, Cmd.none
     | Redo ->
         match History.redo model.History with
         | Some(entry, history) ->
-            { model with Script = History.Entry.redo model.Script entry; History = history; ActionNote = "redone" }, Cmd.ofMsg Run
+            let state = History.Entry.redo { Script = model.Script; Tables = Map.empty } entry
+            { model with Script = state.Script; History = history; ActionNote = "redone" }, Cmd.ofMsg Run
         | None -> model, Cmd.none
     | Run ->
         { model with Running = true; Status = "running…"; Playing = Set.empty },
