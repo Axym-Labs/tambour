@@ -379,6 +379,11 @@ type ScriptEditor() as this =
     let marks = Marks(fun () -> editor.Document)
     let classes = Classes()
 
+    /// The UI thread's dispatcher when the editor was made. A reply posted after it is gone (a
+    /// headless test's application torn down) goes nowhere, rather than reading
+    /// `Dispatcher.UIThread`, which off the UI thread would make a new one on the calling thread.
+    let ui = Dispatcher.UIThread
+
     let edited = Event<History.TextEdit * string>()
     let problemsChanged = Event<Diagnostic[]>()
 
@@ -406,7 +411,7 @@ type ScriptEditor() as this =
 
     /// Runs `f` on the UI thread after `ms`, unless `still` no longer holds by then.
     let after (ms: int) (still: unit -> bool) (f: unit -> unit) =
-        Task.Delay(ms).ContinueWith(fun (_: Task) -> Dispatcher.UIThread.Post(fun () -> if still () then f ())) |> ignore
+        Task.Delay(ms).ContinueWith(fun (_: Task) -> ui.Post(fun () -> if still () then f ())) |> ignore
 
     let redraw () = editor.TextArea.TextView.InvalidateLayer KnownLayer.Selection
 
@@ -424,7 +429,7 @@ type ScriptEditor() as this =
             (question language)
                 .ContinueWith(fun (t: Task<'a>) ->
                     if t.IsCompletedSuccessfully then
-                        Dispatcher.UIThread.Post(fun () -> if asked = version then answer t.Result))
+                        ui.Post(fun () -> if asked = version then answer t.Result))
             |> ignore
 
     /// The tokens of a check as stretches of the document, in order.
@@ -534,7 +539,7 @@ type ScriptEditor() as this =
             language
                 .UsesAsync(text, path, line, column)
                 .ContinueWith(fun (t: Task<Used>) ->
-                    Dispatcher.UIThread.Post(fun () ->
+                    ui.Post(fun () ->
                         if not t.IsCompletedSuccessfully || asked <> version || not t.Result.Renamable || t.Result.Spans.Length = 0 then
                             result.TrySetResult false |> ignore
                         else
