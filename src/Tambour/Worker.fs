@@ -289,6 +289,43 @@ type private Worker(send: Reply -> unit, flush: unit -> unit) =
             | "svg" -> exported (Encoding.UTF8.GetBytes(SvgBackend.render extent (Chart.toScene extent figure)))
             | other -> send (Reply.Failed $"no export writes {other}; png, pdf and svg do")
 
+    /// Points read back as data on the plot each falls in, or placed from data on the figure's
+    /// first plot, through the panels as the figure on screen is laid out.
+    let locate (m: Points) (toData: bool) =
+        match shown with
+        | None -> send (Reply.Failed "there is no figure on screen")
+        | Some s ->
+            let panels = Live.panels s.Live s.State
+            let values = Array.create m.Values.Length nan
+
+            for i in 0 .. m.Values.Length / 2 - 1 do
+                let a, b = m.Values.[2 * i], m.Values.[2 * i + 1]
+
+                if toData then
+                    let p: Vec2<px> = { X = a * 1.0<px>; Y = b * 1.0<px> }
+
+                    let p =
+                        match panels |> Array.tryFind (PanelView.contains p), Array.tryHead panels with
+                        | None, Some v when m.Clamp ->
+                            { X = max v.Plot.X0 (min v.Plot.X1 p.X); Y = max v.Plot.Y0 (min v.Plot.Y1 p.Y) }
+                        | _ -> p
+
+                    match panels |> Array.tryFind (PanelView.contains p) |> Option.bind (PanelView.toData p) with
+                    | Some(x, y) ->
+                        values.[2 * i] <- x
+                        values.[2 * i + 1] <- y
+                    | None -> ()
+                else
+                    match Array.tryHead panels with
+                    | Some v when Double.IsFinite a && Double.IsFinite b ->
+                        let u = v.Coord.ToPanel { X = v.X.Project a; Y = v.Y.Project b }
+                        values.[2 * i] <- float v.Plot.X0 + float u.X * float (v.Plot.X1 - v.Plot.X0)
+                        values.[2 * i + 1] <- float v.Plot.Y1 - float u.Y * float (v.Plot.Y1 - v.Plot.Y0)
+                    | _ -> ()
+
+            let located = { Figure = s.Index; Values = values }
+            send (if toData then Reply.Picked located else Reply.Placed located)
+
     /// Carries out one request. False when the worker cannot go on.
     member _.Handle(request: Request) : bool =
         match request, session with
@@ -318,6 +355,8 @@ type private Worker(send: Reply -> unit, flush: unit -> unit) =
                     match Tambour.Data.Arrow.read t.Name stream with
                     | Ok table -> Tambour.Data.Bound.set table
                     | Error why -> send (Reply.Failed $"the table {t.Name} did not arrive whole: {why}")
+                | Request.Pick m -> locate m true
+                | Request.Place m -> locate m false
                 | Request.Init _ -> ()
             with e ->
                 flush ()

@@ -127,6 +127,9 @@ type FigurePane() as this =
     let painted = Event<PaintResult>()
     let presented = Event<Picture>()
     let input = Event<LiveInput>()
+    let picked = Event<Rect>()
+    let mutable marks: Point[] = [||]
+    let mutable picking = false
 
     let mutable picture: Picture = null
     let mutable readout: ReadoutState option = None
@@ -184,6 +187,18 @@ type FigurePane() as this =
     /// Raised on the render thread when a picture's frame has been drawn and the GPU has finished it.
     [<CLIEvent>]
     member _.Presented = presented.Publish
+
+    /// A point picked (Ctrl+click), as a rectangle of no size, or an area (Alt+drag), in the
+    /// figure's px.
+    [<CLIEvent>]
+    member _.Picked = picked.Publish
+
+    /// Points marked in the figure, in its px, as picked rows are.
+    member _.Marks
+        with get () = marks
+        and set (value: Point[]) =
+            marks <- value
+            this.InvalidateVisual()
 
     /// A reader's message for the worker.
     [<CLIEvent>]
@@ -248,6 +263,12 @@ type FigurePane() as this =
                 dc.DrawRectangle(SolidColorBrush(Color.FromArgb(40uy, 30uy, 90uy, 200uy)), Pen(SolidColorBrush(Color.FromArgb(160uy, 30uy, 90uy, 200uy)), 1.0), r)
             | None -> ()
 
+            let ring = Pen(SolidColorBrush(Color.FromRgb(230uy, 120uy, 0uy)), 2.0)
+
+            for m in marks do
+                if Double.IsFinite m.X && Double.IsFinite m.Y then
+                    dc.DrawEllipse(null, ring, m, 7.0, 7.0)
+
             match readout with
             | Some r when r.Visible && r.Figure = p.Figure && r.Lines.Length > 0 ->
                 let text =
@@ -268,11 +289,14 @@ type FigurePane() as this =
         let point = e.GetCurrentPoint this
 
         if point.Properties.IsLeftButtonPressed then
-            if e.ClickCount = 2 then
+            if e.KeyModifiers.HasFlag KeyModifiers.Control then
+                picked.Trigger(Rect(point.Position, Size(0.0, 0.0)))
+            elif e.ClickCount = 2 then
                 pressed <- None
                 band <- None
                 send "reset" [||]
             else
+                picking <- e.KeyModifiers.HasFlag KeyModifiers.Alt
                 pressed <- Some point.Position
                 last <- point.Position
                 panning <- e.KeyModifiers.HasFlag KeyModifiers.Shift
@@ -296,9 +320,12 @@ type FigurePane() as this =
         let p = e.GetPosition this
 
         match pressed with
+        | Some start when picking -> picked.Trigger(Rect(start, p).Normalize())
         | Some start when not panning && (abs (p.X - start.X) >= 3.0 || abs (p.Y - start.Y) >= 3.0) ->
             send "zoom" [| start.X; start.Y; p.X; p.Y |]
         | _ -> ()
+
+        picking <- false
 
         pressed <- None
         band <- None

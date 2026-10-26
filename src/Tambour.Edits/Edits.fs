@@ -317,3 +317,34 @@ let columns (results: FSharpCheckFileResults) (block: range) : string list =
         | _ -> None)
     |> Option.map (fun e -> e.FSharpFields |> Seq.map (fun f -> f.Name) |> List.ofSeq)
     |> Option.defaultValue []
+
+// ---- What a block plots ---------------------------------------------------------------------------
+
+/// The field a row's accessor reads: `fun r -> r.Field`, or `float r.Field`, or in parentheses.
+let rec private fieldOf (e: SynExpr) =
+    match e with
+    | SynExpr.Lambda(body = body) -> fieldOf body
+    | SynExpr.Paren(expr = inner) -> fieldOf inner
+    | SynExpr.App(argExpr = arg) -> fieldOf arg
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 -> Some (List.last ids).idText
+    | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) -> ids |> List.tryLast |> Option.map (fun i -> i.idText)
+    | _ -> None
+
+/// What a figure's `plot <rows> { x …; y … }` block plots: the rows' binding and the fields its x
+/// and y accessors read. None for a figure that is not such a block.
+let plotted (path: string) (figure: string) (source: string) : (string * string * string) option =
+    let path = if String.IsNullOrEmpty path then "script.fsx" else path
+
+    match find figure (parse path source) with
+    | Some { Head = SynExpr.App(funcExpr = SynExpr.App(argExpr = rows)); Ops = Some ops } ->
+        let accessor name =
+            ops
+            |> List.tryFind (fun o -> headName o = Some name)
+            |> Option.bind (function
+                | SynExpr.App(argExpr = lambda) -> fieldOf lambda
+                | _ -> None)
+
+        match headName rows, accessor "x", accessor "y" with
+        | Some r, Some x, Some y -> Some(r, x, y)
+        | _ -> None
+    | _ -> None

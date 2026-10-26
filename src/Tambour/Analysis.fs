@@ -354,6 +354,7 @@ let run (socketPath: string) (app: int) : int =
         | AnalysisRequest.Uses a -> a.Id
         | AnalysisRequest.Actions f -> f.Id
         | AnalysisRequest.Act a -> a.Id
+        | AnalysisRequest.Plotted f -> f.Id
 
     let handle (request: AnalysisRequest) =
         match request, service with
@@ -371,6 +372,9 @@ let run (socketPath: string) (app: int) : int =
         | AnalysisRequest.Uses a, Some service -> send (AnalysisReply.Used(service.Uses a))
         | AnalysisRequest.Actions f, Some service -> send (AnalysisReply.Actions(service.Actions f))
         | AnalysisRequest.Act a, Some service -> send (AnalysisReply.Acted(service.Act a))
+        | AnalysisRequest.Plotted f, Some _ ->
+            let rows, x, y = Tambour.Edits.Edits.plotted f.Path f.Figure f.Text |> Option.defaultValue ("", "", "")
+            send (AnalysisReply.Plotted { Id = f.Id; Rows = rows; X = x; Y = y })
 
     let rec loop () =
         match connection.Receive() with

@@ -47,6 +47,22 @@ module Pane =
             ValueNone
         )
 
+    let marks (points: Point[]) : IAttr<FigurePane> =
+        AttrBuilder<FigurePane>.CreateProperty<Point[]>(
+            "Marks",
+            points,
+            ValueSome(fun (v: FigurePane) -> v.Marks),
+            ValueSome(fun (v: FigurePane, p) -> v.Marks <- p),
+            ValueSome(fun (a: obj, b: obj) -> obj.ReferenceEquals(a, b))
+        )
+
+    let onPicked (f: Rect -> unit) : IAttr<FigurePane> =
+        let subscribe (view: AvaloniaObject, handler: Rect -> unit, token: CancellationToken) =
+            let d = (view :?> FigurePane).Picked.Subscribe handler
+            token.Register(fun () -> d.Dispose()) |> ignore
+
+        AttrBuilder<FigurePane>.CreateSubscription<Rect>("Picked", subscribe, f)
+
     let onInput (f: LiveInput -> unit) : IAttr<FigurePane> =
         let subscribe (view: AvaloniaObject, handler: LiveInput -> unit, token: CancellationToken) =
             let d = (view :?> FigurePane).Input.Subscribe handler
@@ -137,7 +153,17 @@ module Sheet =
 
         AttrBuilder<TableGrid>.CreateSubscription<'a>(name, subscribe, f)
 
+    let marked (rows: Set<int>) : IAttr<TableGrid> =
+        AttrBuilder<TableGrid>.CreateProperty<Set<int>>(
+            "Marked",
+            rows,
+            ValueSome(fun (v: TableGrid) -> v.Marked),
+            ValueSome(fun (v: TableGrid, r) -> v.Marked <- r),
+            ValueNone
+        )
+
     let onEdited f = subscription "Edited" (fun g -> g.Edited) f
+    let onSelectionChanged f = subscription "SelectionChanged" (fun g -> g.SelectionChanged) f
     let onRefused f = subscription "Refused" (fun g -> g.Refused) f
     let onHeaderActivated f = subscription "HeaderActivated" (fun g -> g.HeaderActivated) f
 
@@ -217,7 +243,16 @@ type Model =
       /// The tab on the right: the figure's, then one per table.
       Tab: int
       /// The column whose header is being edited, by table and place (-1 for a new column).
-      Header: (string * int) option }
+      Header: (string * int) option
+      /// The columns selected in a table's grid.
+      TableSelection: (string * int list) option
+      /// A figure to show once a run binds it, as one just written for the selected columns.
+      ShowFigure: string option
+      /// A pick on its way to the worker: what the figure plots, and where it was made.
+      Picking: (PlottedFields * Rect) option
+      /// Rows picked in the figure, by table, marked in its grid; and their points in the figure.
+      Marked: (string * Set<int>) option
+      Marks: Point[] }
 
 type Msg =
     | Edited of History.TextEdit * string
@@ -255,6 +290,10 @@ type Msg =
     | ChooseImport
     | Import of string
     | RemoveTable of string
+    | TableSelected of table: string * columns: int list
+    | PlotSelected
+    | Pick of Rect
+    | PickFor of PlottedFields * Rect
     | Failed of exn
 
 let init (script: string) () : Model * Cmd<Msg> =
@@ -285,7 +324,12 @@ let init (script: string) () : Model * Cmd<Msg> =
       SavedTables = Map.empty
       TableFiles = []
       Tab = 0
-      Header = None },
+      Header = None
+      TableSelection = None
+      ShowFigure = None
+      Picking = None
+      Marked = None
+      Marks = [||] },
     Cmd.none
 
 let private send (env: Env) (request: Request) : Cmd<Msg> =
@@ -523,10 +567,14 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     Actions = (if e.Selected < 0 then [||] else model.Actions)
                     Status = status }
 
-            next, (if e.Ok then loadActions env next else Cmd.none)
+            // A figure just written for the selected columns is the one to show.
+            match next.ShowFigure |> Option.bind (fun name -> e.Figures |> Array.tryFindIndex (fun f -> f.Name = name)) with
+            | Some i when e.Ok ->
+                { next with ShowFigure = None }, (if i <> e.Selected then Cmd.ofMsg (Select i) else loadActions env next)
+            | _ -> next, (if e.Ok then loadActions env next else Cmd.none)
         | Reply.Scene frame ->
             match Picture.Decode frame with
-            | Ok p -> { model with Picture = p; Readout = None }, Cmd.none
+            | Ok p -> { model with Picture = p; Readout = None; Marks = [||] }, Cmd.none
             | Error e -> { model with Status = $"a scene did not decode: {e}" }, Cmd.none
         | Reply.Patch frame when not (isNull model.Picture) && frame.Figure = model.Picture.Figure ->
             match model.Picture.Apply frame with
@@ -546,6 +594,35 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     { model with Exporting = None; Status = $"the export was not written: {e.Message}" }, Cmd.none
             | None -> model, Cmd.none
         | Reply.Failed message -> { model with Running = false; Status = message }, Cmd.none
+        | Reply.Picked located ->
+            match model.Picking with
+            | Some(plotted, area) ->
+                match model.Tables |> List.tryFind (fun s -> Tambour.Data.Prelude.identifier s.Table.Name = plotted.Rows || s.Table.Name = plotted.Rows) with
+                | None -> { model with Picking = None; ActionNote = $"no table binds {plotted.Rows}" }, Cmd.none
+                | Some source ->
+                    let rows =
+                        if area.Width = 0.0 && area.Height = 0.0 then
+                            Plotting.nearest source.Table plotted.X plotted.Y [| located.Values.[0], located.Values.[1] |]
+                            |> Array.choose id
+                            |> List.ofArray
+                        elif located.Values |> Array.exists Double.IsNaN then
+                            []
+                        else
+                            Plotting.inside source.Table plotted.X plotted.Y (located.Values.[0], located.Values.[1]) (located.Values.[2], located.Values.[3])
+
+                    let note =
+                        match rows with
+                        | [] -> "no row picked there"
+                        | [ r ] -> $"picked row {r + 1} of {source.Table.Name}"
+                        | rs -> $"picked {rs.Length} rows of {source.Table.Name}"
+
+                    let data = Plotting.dataOf source.Table plotted.X plotted.Y (List.truncate 10_000 rows) |> List.collect (fun (x, y) -> [ x; y ]) |> Array.ofList
+
+                    { model with Picking = None; Marked = Some(source.Table.Name, Set.ofList rows); ActionNote = note },
+                    (if data.Length > 0 then send env (Request.Place { Values = data; Clamp = false }) else Cmd.none)
+            | None -> model, Cmd.none
+        | Reply.Placed located ->
+            { model with Marks = Array.init (located.Values.Length / 2) (fun i -> Point(located.Values.[2 * i], located.Values.[2 * i + 1])) }, Cmd.none
     | Select index when index <> model.Selected && index >= 0 ->
         let next = { model with Selected = index; Playing = Set.empty; Actions = [||] }
         next, Cmd.batch [ send env (Request.Select index); loadActions env next ]
@@ -793,6 +870,34 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         match model.Tables |> List.tryFind (fun s -> s.Table.Name = name) with
         | Some s -> { model with Tab = 0 }, Cmd.ofMsg (TableEdited [ Tambour.Data.RemoveTable s.Table ])
         | None -> model, Cmd.none
+    | TableSelected(table, columns) -> { model with TableSelection = Some(table, columns) }, Cmd.none
+    | PlotSelected ->
+        match model.TableSelection |> Option.bind (fun (name, columns) -> model.Tables |> List.tryFind (fun s -> s.Table.Name = name) |> Option.map (fun s -> s.Table, columns)) with
+        | None -> { model with ActionNote = "select two columns of a table first, the x and then the y" }, Cmd.none
+        | Some(table, columns) ->
+            match Plotting.plotColumns model.Script table columns with
+            | Error why -> { model with ActionNote = $"not done: {why}" }, Cmd.none
+            | Ok(text, name) ->
+                { model with
+                    Script = text
+                    Tab = 0
+                    ShowFigure = Some name
+                    ActionNote = $"wrote {name}, a plot of {table.Name}"
+                    History = History.record DateTime.UtcNow false (History.TextEdit.between model.Script text) model.History },
+                Cmd.ofMsg Run
+    | Pick area ->
+        match editable model with
+        | None -> { model with ActionNote = "picking reads a plot { } block of a table; this figure is not one" }, Cmd.none
+        | Some name ->
+            let script, path = model.Script, Option.toObj model.Path
+            model, Cmd.OfTask.either (fun () -> env.Language.PlottedAsync(script, path, name)) () (fun p -> PickFor(p, area)) Failed
+    | PickFor(plotted, _) when plotted.Rows = "" -> { model with ActionNote = "picking reads a plot { } block of a table; this figure is not one" }, Cmd.none
+    | PickFor(plotted, area) ->
+        let points =
+            if area.Width = 0.0 && area.Height = 0.0 then [| area.X; area.Y |]
+            else [| area.X; area.Y; area.Right; area.Bottom |]
+
+        { model with Picking = Some(plotted, area) }, send env (Request.Pick { Values = points; Clamp = points.Length > 2 })
     | Failed e -> { model with Status = e.Message }, Cmd.none
 
 let private label (text: string) : IView =
@@ -1021,7 +1126,8 @@ and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Ta
                         Button.onClick ((fun _ -> dispatch (TableEdited [ Tambour.Data.TableEdit.addRows t t.Rows 10 ])), SubPatchOptions.Always)
                     ]
                     Button.create [ Button.content "Remove table"; Button.onClick ((fun _ -> dispatch (RemoveTable t.Name)), SubPatchOptions.Always) ]
-                    label $"{t.Rows} rows. Double-click a header to change its column; Ctrl+= adds a row, Ctrl+- removes the selected ones."
+                    Button.create [ Button.content "Plot selected columns"; Button.onClick (fun _ -> dispatch PlotSelected) ]
+                    label $"{t.Rows} rows. Double-click a header to change its column; Ctrl+= adds a row, Ctrl+- removes the selected ones; Ctrl+click or Alt+drag in a figure picks rows."
                 ]
             ]
             // Always there, and hidden when no header is being edited, so the grid after it keeps its
@@ -1031,6 +1137,8 @@ and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Ta
             | _ -> headerView model dispatch -1 false
             Sheet.create [
                 Sheet.table t
+                Sheet.marked (match model.Marked with Some(name, rows) when name = t.Name -> rows | _ -> Set.empty)
+                Sheet.onSelectionChanged (fun columns -> dispatch (TableSelected(t.Name, columns)))
                 Sheet.onEdited (TableEdited >> dispatch)
                 Sheet.onRefused (fun why -> dispatch (Failed(FormatException why)))
                 Sheet.onHeaderActivated (fun column -> dispatch (EditHeader(t.Name, column)))
@@ -1142,7 +1250,9 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                             Pane.create [
                                                 Pane.picture model.Picture
                                                 Pane.readout model.Readout
+                                                Pane.marks model.Marks
                                                 Pane.onInput (Input >> dispatch)
+                                                Pane.onPicked (Pick >> dispatch)
                                             ]
                                         ]
                                     ]
