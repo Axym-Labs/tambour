@@ -12,6 +12,7 @@
     <Compile Include="WorkerTests.fs" />
     <Compile Include="ShellTests.fs" />
     <Compile Include="AnalysisTests.fs" />
+    <Compile Include="EditorTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

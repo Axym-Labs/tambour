@@ -54,4 +54,20 @@ let ``the window runs its script on F5 and shows the figure with its control`` (
     slider.Value <- 80.0
     pumpUntil 30.0 "the figure redrawn" (fun () -> not (obj.ReferenceEquals(pane.Picture, before)))
     Assert.Equal(Some Vector, pane.PaintPath)
+
+    // A column plotted under the wrong unit is underlined and listed as the language service
+    // checks the text as typed.
+    let editor = window.GetVisualDescendants().OfType<ScriptEditor>().Single()
+    let doc = editor.Editor.Document
+    let at = editor.Text.IndexOf "U.metre t"
+    doc.Replace(at, "U.metre".Length, "U.second")
+
+    pumpUntil 30.0 "the editor's check" (fun () -> editor.Problems.Length > 0)
+
+    pumpUntil 30.0 "the problem listed" (fun () ->
+        window.GetVisualDescendants().OfType<TextBlock>().Any(fun t -> not (isNull t.Text) && t.Text.Contains "FS0001"))
+
+    Assert.Contains(editor.Problems, fun d -> d.Code = "FS0001" && d.Message.Contains "float<m>")
+    window.CaptureRenderedFrame().Dispose()
+    save window "shell-problem.png"
     window.Close()
