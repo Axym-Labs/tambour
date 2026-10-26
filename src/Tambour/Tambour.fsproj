@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../Tambour.Protocol/Tambour.Protocol.fsproj" />
+    <ProjectReference Include="../Tambour.Edits/Tambour.Edits.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

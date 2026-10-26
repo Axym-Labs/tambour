@@ -327,15 +327,30 @@ type ScriptEditor() as this =
 
         editor.PointerHoverStopped.Add(fun _ -> ToolTip.SetIsOpen(editor, false))
 
-    /// The script's text. Setting it replaces the document; the edit is not reported as typed.
+    /// The script's text. Setting it replaces only what differs, as one edit, so the caret stays
+    /// where it was outside it; the edit is not reported as typed.
     member _.Text
         with get () = editor.Text
         and set (value: string) =
-            if value <> editor.Text then
+            let current = editor.Text
+
+            if value <> current then
+                let mutable prefix = 0
+
+                while prefix < current.Length && prefix < value.Length && current.[prefix] = value.[prefix] do
+                    prefix <- prefix + 1
+
+                let mutable suffix = 0
+
+                while suffix < current.Length - prefix
+                      && suffix < value.Length - prefix
+                      && current.[current.Length - 1 - suffix] = value.[value.Length - 1 - suffix] do
+                    suffix <- suffix + 1
+
                 settingText <- true
 
                 try
-                    editor.Text <- value
+                    editor.Document.Replace(prefix, current.Length - prefix - suffix, value.Substring(prefix, value.Length - prefix - suffix))
                 finally
                     settingText <- false
 

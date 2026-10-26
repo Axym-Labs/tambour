@@ -71,3 +71,43 @@ let ``the window runs its script on F5 and shows the figure with its control`` (
     window.CaptureRenderedFrame().Dispose()
     save window "shell-problem.png"
     window.Close()
+
+[<AvaloniaFact>]
+let ``an action writes the script, and the figure is run again`` () =
+    let script =
+        "let t = Array.init 50 (fun i -> float i * 0.1<s>)\nlet fig = Chart.lineIn U.second U.metre t (t |> Array.map (fun t -> 1.0<m> * exp (-t / 2.0<s>))) // decay\n"
+
+    let window = new Shell.MainWindow(script)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    let pane = window.GetVisualDescendants().OfType<FigurePane>().Single()
+    window.KeyPress(Key.F5, RawInputModifiers.None, PhysicalKey.F5, null)
+    pumpUntil 30.0 "a figure" (fun () -> not (isNull pane.Picture))
+
+    let button (label: string) =
+        window.GetVisualDescendants().OfType<Button>().FirstOrDefault(fun b -> b.Content = box label)
+
+    pumpUntil 30.0 "the actions" (fun () -> not (isNull (button "Title")) && (button "Title").IsEnabled)
+    let colourBy = window.GetVisualDescendants().OfType<ComboBox>().Single(fun c -> c.PlaceholderText = "Colour by")
+    Assert.False(colourBy.IsEnabled, "colour by is offered for a pipeline")
+    Assert.Contains("plot { }", string (ToolTip.GetTip colourBy))
+
+    let title = window.GetVisualDescendants().OfType<TextBox>().Single(fun t -> t.PlaceholderText = "title")
+    title.Text <- "Decay"
+    Dispatcher.UIThread.RunJobs()
+    let before = pane.Picture
+    (button "Title").RaiseEvent(Avalonia.Interactivity.RoutedEventArgs Button.ClickEvent)
+    let editor = window.GetVisualDescendants().OfType<ScriptEditor>().Single()
+    (try
+        pumpUntil 30.0 "the script written" (fun () -> editor.Text.Contains "Chart.withTitle \"Decay\"")
+     with e ->
+        let texts = window.GetVisualDescendants().OfType<TextBlock>() |> Seq.map (fun t -> t.Text) |> Seq.filter (fun t -> not (String.IsNullOrEmpty t)) |> Seq.truncate 12
+        let shown = String.Join(" | ", texts)
+        failwith $"{e.Message}; title box: {title.Text}; texts: {shown}")
+    pumpUntil 30.0 "the figure run again" (fun () -> not (obj.ReferenceEquals(pane.Picture, before)))
+    Assert.Contains("// decay", editor.Text)
+    Assert.Contains("          |> Chart.withTitle \"Decay\"", editor.Text)
+    Assert.True(window.GetVisualDescendants().OfType<TextBlock>().Any(fun t -> t.Text = "added Chart.withTitle"), "the action's note is not shown")
+    window.CaptureRenderedFrame().Dispose()
+    save window "shell-action.png"
+    window.Close()

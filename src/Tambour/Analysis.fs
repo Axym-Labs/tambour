@@ -57,6 +57,39 @@ let private referencesFor (stated: string[]) =
        yield! Directory.GetFiles(AppContext.BaseDirectory, "Marey*.dll") |> Array.sort
        yield! stated |]
 
+/// A plain identifier: what a theme, a placement or a geom is named by.
+let private identifier = Text.RegularExpressions.Regex(@"^[A-Za-z_][A-Za-z0-9_]*$")
+
+/// The edit an action names, or why there is none.
+let actionOf (spec: ActionSpec) : Result<Tambour.Edits.Edits.Action, string> =
+    let named (make: string -> Tambour.Edits.Edits.Action) =
+        if not (isNull spec.Text) && identifier.IsMatch spec.Text then Ok(make spec.Text)
+        else Error $"{spec.Kind} wants a name, not {spec.Text}"
+
+    let text (make: string -> Tambour.Edits.Edits.Action) = Ok(make (if isNull spec.Text then "" else spec.Text))
+
+    match spec.Kind with
+    | "title" -> text Tambour.Edits.Edits.Title
+    | "x label" -> text Tambour.Edits.Edits.XLabel
+    | "y label" -> text Tambour.Edits.Edits.YLabel
+    | "log y" -> Ok Tambour.Edits.Edits.YLog
+    | "y domain" when Double.IsFinite spec.Lo && Double.IsFinite spec.Hi && spec.Lo < spec.Hi ->
+        Ok(Tambour.Edits.Edits.YDomain(spec.Lo, spec.Hi))
+    | "y domain" -> Error "a domain wants two finite ends, the lower first"
+    | "theme" -> named Tambour.Edits.Edits.ThemeIs
+    | "legend" -> named Tambour.Edits.Edits.Legend
+    | "colour by" -> named Tambour.Edits.Edits.ColorBy
+    | "facet" -> named Tambour.Edits.Edits.Facet
+    | "fit" -> Ok Tambour.Edits.Edits.Fit
+    | "layer" -> named Tambour.Edits.Edits.AddLayer
+    | other -> Error $"no action is called {other}"
+
+let private outcomeOf (kind: string) (outcome: Tambour.Edits.Edits.Outcome) : ActionOutcome =
+    match outcome with
+    | Tambour.Edits.Edits.Structural note -> { Kind = kind; Outcome = "structural"; Note = note }
+    | Tambour.Edits.Edits.Fallback note -> { Kind = kind; Outcome = "fallback"; Note = note }
+    | Tambour.Edits.Edits.Refused note -> { Kind = kind; Outcome = "refused"; Note = note }
+
 /// The language service for one prelude.
 type Service(init: AnalysisInit) =
     let checker = FSharpChecker.Create()
@@ -265,6 +298,40 @@ type Service(init: AnalysisInit) =
                   Spans = spans
                   Renamable = renamable }
 
+    /// What each action would come to for a figure, and the columns its rows have.
+    member _.Actions(f: FigureIn) : ActionsFor =
+        let outcomes =
+            Tambour.Edits.Edits.outcomes f.Path f.Figure f.Text
+            |> List.map (fun (kind, outcome) -> outcomeOf kind outcome)
+            |> Array.ofList
+
+        // The block is found in the text the checker saw, the prelude before the script.
+        let path, full, _, results = check f.Path f.Text
+
+        let columns =
+            Tambour.Edits.Edits.blockRange path f.Figure full
+            |> Option.map (Tambour.Edits.Edits.columns results)
+            |> Option.defaultValue []
+            |> Array.ofList
+
+        { Id = f.Id
+          Outcomes = outcomes
+          Columns = columns }
+
+    /// An action done to a figure: the new script, or the old one where it was refused.
+    member _.Act(a: ActionOn) : Acted =
+        match actionOf a.Action with
+        | Error why ->
+            { Id = a.Id
+              Text = a.Text
+              Outcome = { Kind = a.Action.Kind; Outcome = "refused"; Note = why } }
+        | Ok action ->
+            let text, outcome = Tambour.Edits.Edits.apply a.Path a.Figure action a.Text
+
+            { Id = a.Id
+              Text = text
+              Outcome = outcomeOf a.Action.Kind outcome }
+
 /// Connects to the app's socket and answers it until it closes or the app's process `app` ends.
 let run (socketPath: string) (app: int) : int =
     Worker.outlive app
@@ -282,6 +349,8 @@ let run (socketPath: string) (app: int) : int =
         | AnalysisRequest.Hover a
         | AnalysisRequest.Signature a
         | AnalysisRequest.Uses a -> a.Id
+        | AnalysisRequest.Actions f -> f.Id
+        | AnalysisRequest.Act a -> a.Id
 
     let handle (request: AnalysisRequest) =
         match request, service with
@@ -297,6 +366,8 @@ let run (socketPath: string) (app: int) : int =
         | AnalysisRequest.Hover a, Some service -> send (AnalysisReply.Hovered(service.Hover a))
         | AnalysisRequest.Signature a, Some service -> send (AnalysisReply.Signatures(service.Signature a))
         | AnalysisRequest.Uses a, Some service -> send (AnalysisReply.Used(service.Uses a))
+        | AnalysisRequest.Actions f, Some service -> send (AnalysisReply.Actions(service.Actions f))
+        | AnalysisRequest.Act a, Some service -> send (AnalysisReply.Acted(service.Act a))
 
     let rec loop () =
         match connection.Receive() with

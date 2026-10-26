@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Tambour/Tambour.fsproj" />
     <Project Path="src/Tambour.Protocol/Tambour.Protocol.fsproj" />
+    <Project Path="src/Tambour.Edits/Tambour.Edits.fsproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Tambour.Tests/Tambour.Tests.fsproj" />

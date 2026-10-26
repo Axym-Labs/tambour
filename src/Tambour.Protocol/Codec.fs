@@ -118,6 +118,8 @@ module Codec =
         | AnalysisRequest.Hover m -> tagged 19uy m
         | AnalysisRequest.Signature m -> tagged 20uy m
         | AnalysisRequest.Uses m -> tagged 21uy m
+        | AnalysisRequest.Actions m -> tagged 22uy m
+        | AnalysisRequest.Act m -> tagged 23uy m
 
     let decodeAnalysisRequest (bytes: byte[]) : AnalysisRequest =
         nonEmpty bytes
@@ -129,6 +131,8 @@ module Codec =
         | 19uy -> AnalysisRequest.Hover(body bytes)
         | 20uy -> AnalysisRequest.Signature(body bytes)
         | 21uy -> AnalysisRequest.Uses(body bytes)
+        | 22uy -> AnalysisRequest.Actions(body bytes)
+        | 23uy -> AnalysisRequest.Act(body bytes)
         | tag -> raise (ProtocolException $"no analysis request has the tag {tag}")
 
     let encodeAnalysisReply (reply: AnalysisReply) : byte[] =
@@ -139,6 +143,8 @@ module Codec =
         | AnalysisReply.Hovered m -> tagged 99uy m
         | AnalysisReply.Signatures m -> tagged 100uy m
         | AnalysisReply.Used m -> tagged 101uy m
+        | AnalysisReply.Actions m -> tagged 103uy m
+        | AnalysisReply.Acted m -> tagged 104uy m
         | AnalysisReply.Failed(id, message) -> tagged 102uy {| Id = id; Message = message |}
 
     let decodeAnalysisReply (bytes: byte[]) : AnalysisReply =
@@ -151,6 +157,8 @@ module Codec =
         | 99uy -> AnalysisReply.Hovered(body bytes)
         | 100uy -> AnalysisReply.Signatures(body bytes)
         | 101uy -> AnalysisReply.Used(body bytes)
+        | 103uy -> AnalysisReply.Actions(body bytes)
+        | 104uy -> AnalysisReply.Acted(body bytes)
         | 102uy ->
             let f: {| Id: int; Message: string |} = body bytes
             AnalysisReply.Failed(f.Id, f.Message)

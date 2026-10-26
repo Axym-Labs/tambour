@@ -194,6 +194,30 @@ type Span =
 /// `property`, `field`, `type`, `module`, `namespace`, `value`, `keyword`, …).
 type Completion = { Name: string; Insert: string; Kind: string }
 
+/// A GUI action: its kind, by the name the panel shows (`title`, `x label`, `y label`, `log y`,
+/// `y domain`, `theme`, `legend`, `colour by`, `facet`, `fit`, `layer`), and its argument: text
+/// for a label, a theme, a placement, a column or a geom, and the ends of a domain.
+type ActionSpec =
+    { Kind: string
+      Text: string
+      Lo: float
+      Hi: float }
+
+/// A figure in a script, by the name the worker reported (`it` for the last expression).
+type FigureIn =
+    { Id: int
+      Text: string
+      Path: string
+      Figure: string }
+
+/// An action to do to a figure.
+type ActionOn =
+    { Id: int
+      Text: string
+      Path: string
+      Figure: string
+      Action: ActionSpec }
+
 [<RequireQualifiedAccess>]
 type AnalysisRequest =
     | Start of AnalysisInit
@@ -202,6 +226,9 @@ type AnalysisRequest =
     | Hover of At
     | Signature of At
     | Uses of At
+    /// What each action would come to for this figure, and the columns its rows have.
+    | Actions of FigureIn
+    | Act of ActionOn
 
 type Checked = { Id: int; Diagnostics: Diagnostic[] }
 
@@ -226,6 +253,21 @@ type Used =
       Spans: Span[]
       Renamable: bool }
 
+/// What an action came to: `structural` (done in a shape the app recognises), `fallback` (done
+/// after an expression it does not) or `refused`, and a sentence saying so.
+type ActionOutcome = { Kind: string; Outcome: string; Note: string }
+
+type ActionsFor =
+    { Id: int
+      Outcomes: ActionOutcome[]
+      Columns: string[] }
+
+/// The script after an action, and what the action came to.
+type Acted =
+    { Id: int
+      Text: string
+      Outcome: ActionOutcome }
+
 [<RequireQualifiedAccess>]
 type AnalysisReply =
     /// Started, in this many milliseconds from the process starting.
@@ -235,4 +277,6 @@ type AnalysisReply =
     | Hovered of Hovered
     | Signatures of Signatures
     | Used of Used
+    | Actions of ActionsFor
+    | Acted of Acted
     | Failed of id: int * message: string
