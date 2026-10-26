@@ -13,9 +13,12 @@ open Marey
 open Tambour.Protocol
 
 /// Text written to the console, sent to the app a line at a time; what is left without a newline
-/// goes when the run ends.
-type private Streamed(stream: string, send: Reply -> unit) =
+/// goes when the run ends. A line ends in `\n` on every OS, so what a script prints reaches the app
+/// as the same text on Windows as on Linux.
+type private Streamed(stream: string, send: Reply -> unit) as this =
     inherit TextWriter()
+
+    do this.NewLine <- "\n"
 
     let pending = StringBuilder()
 

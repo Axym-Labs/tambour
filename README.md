@@ -72,7 +72,7 @@ Three more checks run the app as a user meets it, each exiting 0 when it holds:
 `tools/package.sh [version]` writes to `artifacts/package` a self-contained Linux tarball (and an
 AppImage of it where `appimagetool` is on the path) and a Windows zip. Nothing is written next to
 the executable: settings, caches and the workers' sockets go to the XDG directories on Linux and to
-the user's application data on Windows, so the same directory can also be wrapped as a Flatpak or
+the user's application data on Windows (the sockets to its temporary directory), so the same directory can also be wrapped as a Flatpak or
 an AUR package. `tools/no-dotnet.sh` runs a command in a bubblewrap sandbox that hides every .NET
 installation:
 

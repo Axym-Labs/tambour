@@ -1,5 +1,6 @@
 /// Where the app writes. Never next to the executable, which a package may install read-only:
-/// the XDG directories on Linux, the user's application data on Windows.
+/// the XDG directories on Linux, the user's application data on Windows (sockets: its temporary
+/// directory).
 module Tambour.Paths
 
 open System
@@ -19,10 +20,13 @@ let private privateDirectory (path: string) =
     path
 
 /// The directory for this user's sockets: `$XDG_RUNTIME_DIR/tambour`, or a directory of the
-/// user's own under the temporary one where that is unset; `%LOCALAPPDATA%\Tambour\run` on Windows.
+/// user's own under the temporary one where that is unset; `%TEMP%\Tambour\run` on Windows. Not
+/// under `%LOCALAPPDATA%`: a packaged (MSIX) process, or one started by a packaged app, has its
+/// writes there redirected into the package's own directory, where a socket binds but cannot be
+/// connected to by its path (WSAEINVAL). The temporary directory is not redirected.
 let runtimeDirectory () : string =
     if OperatingSystem.IsWindows() then
-        privateDirectory (Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.LocalApplicationData, "Tambour", "run"))
+        privateDirectory (Path.Combine(Path.GetTempPath(), "Tambour", "run"))
     else
         match Environment.GetEnvironmentVariable "XDG_RUNTIME_DIR" with
         | dir when not (String.IsNullOrEmpty dir) && Directory.Exists dir -> privateDirectory (Path.Combine(dir, "tambour"))
