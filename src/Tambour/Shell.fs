@@ -131,7 +131,7 @@ let private appendOutput (model: Model) (text: string) =
     if all.Length > MaxOutput then all.Substring(all.Length - MaxOutput) else all
 
 let private diagnosticLine (d: Diagnostic) =
-    $"{d.StartLine}:{d.StartColumn + 1} {d.Severity} FS{d.Code}: {d.Message}"
+    $"{d.StartLine}:{d.StartColumn + 1} {d.Severity} {d.Code}: {d.Message}"
 
 let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with

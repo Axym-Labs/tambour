@@ -15,6 +15,7 @@
     <Compile Include="FigurePane.fs" />
     <Compile Include="App.fs" />
     <Compile Include="Shell.fs" />
+    <Compile Include="AnalysisCheck.fs" />
     <Compile Include="SelfCheck.fs" />
     <Compile Include="PaneCheck.fs" />
     <Compile Include="Program.fs" />
