@@ -1,6 +1,7 @@
 /// Typing in the script editor: Enter, Tab, Shift+Tab and Backspace indent as F# is indented, and
 /// brackets and quotes close as they open; each case through the keyboard, checked for the text
 /// and the caret it leaves, and taken back by the app's history to the text before.
+[<Xunit.Collection("workers")>]
 module Tambour.Tests.TypingTests
 
 open System
