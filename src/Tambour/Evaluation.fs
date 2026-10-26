@@ -23,6 +23,8 @@ type Run =
       Exception: string option
       /// Compiled and ran to the end.
       Ok: bool
+      /// Whether the run evaluated the project's prelude.
+      Prelude: bool
       Elapsed: TimeSpan }
 
 /// The path F# spells a unit of the SI by, which a reader does not need: `float<m>` rather than
@@ -132,17 +134,27 @@ let private asLive (value: obj) : Live option =
     | :? Live as l -> Some l
     | _ -> None
 
-/// An F# interactive session over Marey's assemblies and the stated references. Output the
-/// script writes goes to the console, which the worker points at the host; the session's own
-/// echo is off, and its errors come back as diagnostics.
+/// A script's `#load "prelude.fsx"`, the project's generated prelude.
+let private preludeLoad = Regex(@"^[ \t]*#load[ \t]+""prelude\.fsx""[ \t]*\r?$", RegexOptions.Multiline)
+
+/// The prelude's bindings of tables: `let mutable <binding>: <Type>[] = Tambour.Data.Bound.rows<Type> "<table>"`.
+let private preludeBinding =
+    Regex(@"^let mutable (?<binding>\S+|``[^`]+``): (?<type>\S+)\[\] = Tambour\.Data\.Bound\.rows<\S+> (?<table>""(?:[^""\\]|\\.)*"")", RegexOptions.Multiline)
+
+/// An F# interactive session over Marey's assemblies, the table binder and the stated
+/// references, with `TAMBOUR` defined so a project's prelude reads the tables the app sent.
+/// Output the script writes goes to the console, which the worker points at the host; the
+/// session's own echo is off, and its errors come back as diagnostics.
 type Session(references: string seq) =
     let marey =
         Directory.GetFiles(AppContext.BaseDirectory, "Marey*.dll") |> Array.sort
 
+    let own = [| Path.Combine(AppContext.BaseDirectory, "Tambour.Data.dll") |]
+
     let argv =
         Array.append
-            [| "fsi.exe"; "--noninteractive"; "--nologo"; "--quiet"; "--gui-"; "--optimize+" |]
-            (Seq.append marey references |> Seq.map (fun r -> "-r:" + r) |> Array.ofSeq)
+            [| "fsi.exe"; "--noninteractive"; "--nologo"; "--quiet"; "--gui-"; "--optimize+"; "--define:TAMBOUR" |]
+            (Seq.concat [ Seq.ofArray marey; Seq.ofArray own; references ] |> Seq.map (fun r -> "-r:" + r) |> Array.ofSeq)
 
     let fsi =
         FsiEvaluationSession.Create(
@@ -158,11 +170,76 @@ type Session(references: string seq) =
         fsi.GetBoundValues()
         |> List.map (fun b -> b.Name, b.Value.ReflectionValue)
 
+    /// The prelude last evaluated, and the version of each table its bindings last read.
+    let mutable prelude: string = null
+    let mutable readVersions: Map<string, int> = Map.empty
+
+    let failedWith (diagnostics: FSharpDiagnostic[]) (e: exn option) (where: string) =
+        let ds = diagnostics |> Array.map diagnostic |> Array.map (fun d -> { d with Message = $"{where}: {d.Message}" })
+        ds, e |> Option.map (fun e -> $"{where}: {e.Message}")
+
+    /// Brings the project's prelude up to date for a script that loads it: evaluated when its text
+    /// changed, and otherwise each table binding that the app has sent new columns for read again.
+    /// The script's `#load` line is then blanked, its line kept, so it is not compiled again.
+    let withPrelude (text: string) (path: string) =
+        let m = if isNull text then Match.Empty else preludeLoad.Match text
+        let file = if String.IsNullOrEmpty path then null else Path.Combine(Path.GetDirectoryName(Path.GetFullPath path), "prelude.fsx")
+
+        if not m.Success || isNull file || not (File.Exists file) then
+            Ok(text, false)
+        else
+            // The line's text goes and its line stays, so the script's lines are where they were.
+            let blanked = text.Remove(m.Index, m.Length).Insert(m.Index, (if m.Value.EndsWith "\r" then "\r" else ""))
+            let current = File.ReadAllText file
+            let bindings = [ for b in preludeBinding.Matches current -> b.Groups.["binding"].Value, b.Groups.["type"].Value, b.Groups.["table"].Value ]
+            let tableOf (literal: string) = Regex.Unescape(literal.Substring(1, literal.Length - 2))
+            let versions () = bindings |> List.map (fun (_, _, t) -> t, Tambour.Data.Bound.version (tableOf t)) |> Map.ofList
+
+            if current <> prelude then
+                match fsi.EvalScriptNonThrowing file with
+                | Choice1Of2 _, ds when ds |> Array.forall (fun d -> d.Severity <> FSharpDiagnosticSeverity.Error) ->
+                    prelude <- current
+                    readVersions <- versions ()
+                    Ok(blanked, true)
+                | Choice2Of2 e, ds -> Error(failedWith ds (Some e) "prelude.fsx")
+                | _, ds -> Error(failedWith ds None "prelude.fsx")
+            else
+                let now = versions ()
+
+                let stale =
+                    bindings
+                    |> List.filter (fun (_, _, t) -> Map.tryFind t now <> Map.tryFind t readVersions)
+
+                let rebind =
+                    stale
+                    |> List.map (fun (binding, typ, t) -> $"Prelude.{binding} <- Tambour.Data.Bound.rows<Prelude.{typ}> {t}")
+                    |> String.concat "\n"
+
+                if rebind = "" then
+                    Ok(blanked, false)
+                else
+                    match fsi.EvalInteractionNonThrowing(rebind) with
+                    | Choice1Of2 _, _ ->
+                        readVersions <- now
+                        Ok(blanked, false)
+                    | Choice2Of2 e, ds -> Error(failedWith ds (Some e) "reading the tables")
+
     /// Evaluates a script. A figure is what this run bound: a name it bound anew, or bound to a
     /// different value than before. A figure a run no longer binds is therefore no longer
     /// found, though the session still holds it.
     member _.Run(text: string, path: string) : Run =
         let clock = Stopwatch.StartNew()
+
+        match withPrelude text path with
+        | Error(diagnostics, exn) ->
+            { Found = []
+              Diagnostics = diagnostics
+              Exception = exn
+              Ok = false
+              Prelude = true
+              Elapsed = clock.Elapsed }
+        | Ok(text, preludeEvaluated) ->
+
         let before = bound () |> dict
         let path = if String.IsNullOrEmpty path then "script.fsx" else path
         let result, diagnostics = fsi.EvalInteractionNonThrowing(text, path)
@@ -199,6 +276,7 @@ type Session(references: string seq) =
           Diagnostics = explainNuget text (ok || sdkInstalled ()) ok diagnostics
           Exception = exn
           Ok = ok
+          Prelude = preludeEvaluated
           Elapsed = clock.Elapsed }
 
     /// Evaluates the prelude, then the warm-up, and hands back the warm-up's figure for the

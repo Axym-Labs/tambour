@@ -17,6 +17,7 @@
     <Compile Include="ScriptEditor.fs" />
     <Compile Include="App.fs" />
     <Compile Include="Project.fs" />
+    <Compile Include="Tables.fs" />
     <Compile Include="Shell.fs" />
     <Compile Include="AnalysisCheck.fs" />
     <Compile Include="SelfCheck.fs" />
@@ -28,6 +29,7 @@
   <ItemGroup>
     <ProjectReference Include="../Tambour.Protocol/Tambour.Protocol.fsproj" />
     <ProjectReference Include="../Tambour.Edits/Tambour.Edits.fsproj" />
+    <ProjectReference Include="../Tambour.Data/Tambour.Data.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

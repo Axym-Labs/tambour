@@ -35,6 +35,19 @@ type Export =
       /// The project's text settings, or null for the worker's own.
       Skia: SkiaSettings }
 
+/// A table's columns, as an Arrow IPC file's bytes, for the worker to hold by name.
+[<NoComparison; CustomEquality>]
+type TableBytes =
+    { Name: string
+      Bytes: byte[] }
+
+    override this.Equals(other) =
+        match other with
+        | :? TableBytes as t -> t.Name = this.Name && System.Linq.Enumerable.SequenceEqual(t.Bytes, this.Bytes)
+        | _ -> false
+
+    override this.GetHashCode() = hash (this.Name, this.Bytes.Length)
+
 /// What the app sends a worker.
 [<RequireQualifiedAccess>]
 type Request =
@@ -44,6 +57,8 @@ type Request =
     | Select of figure: int
     | Live of LiveInput
     | Export of Export
+    /// A table's columns, replacing any of its name.
+    | Table of TableBytes
 
 /// A worker started and ran its prelude.
 type Ready =
@@ -88,7 +103,9 @@ type Evaluated =
       Exception: string
       Timings: Timings
       /// The managed heap after the run, in bytes.
-      Heap: int64 }
+      Heap: int64
+      /// Whether the run evaluated the project's prelude, which it does only when it changed.
+      Prelude: bool }
 
 /// One control of the figure on screen. `Kind` is `slider`, `select`, `checkbox` or `time`, and
 /// says which of the other fields mean something: a slider's and a time control's range and

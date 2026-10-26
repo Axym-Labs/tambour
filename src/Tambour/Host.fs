@@ -190,6 +190,8 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
     // What a worker put on duty is told again: the pane's size, the last script that ran to the
     // end, and the figure on screen.
     let mutable lastSize: LiveInput option = None
+    /// The tables sent, by name, the latest of each: a worker put on duty gets them first.
+    let tables = Collections.Generic.Dictionary<string, Request>()
     let mutable lastGood: Evaluate option = None
     let mutable selected = -1
     /// The scripts sent and not yet reported, oldest first, each with whether its output is held
@@ -290,7 +292,8 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
                     current <- Some(w, ready)
 
                     let again =
-                        [ match lastSize with
+                        [ yield! tables.Values
+                          match lastSize with
                           | Some s -> Request.Live s
                           | None -> ()
                           if replay then
@@ -345,6 +348,10 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
                     // A new size is not a request for the figure: the worker keeps it for the next.
                     | Request.Live l when l.Kind = "size" ->
                         lastSize <- Some l
+                        []
+                    // Columns are not a request for the figure either.
+                    | Request.Table t ->
+                        tables.[t.Name] <- request
                         []
                     | _ when stale ->
                         stale <- false

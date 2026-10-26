@@ -69,6 +69,15 @@ module Codec =
         | Request.Select figure -> tagged 3uy figure
         | Request.Live m -> tagged 4uy m
         | Request.Export m -> tagged 5uy m
+        | Request.Table t ->
+            // Binary: the name's length (four bytes) and UTF-8, then the bytes.
+            let name = Text.Encoding.UTF8.GetBytes t.Name
+            let bytes = Array.zeroCreate (5 + name.Length + t.Bytes.Length)
+            bytes.[0] <- 6uy
+            BinaryPrimitives.WriteInt32LittleEndian(Span(bytes, 1, 4), name.Length)
+            Buffer.BlockCopy(name, 0, bytes, 5, name.Length)
+            Buffer.BlockCopy(t.Bytes, 0, bytes, 5 + name.Length, t.Bytes.Length)
+            bytes
 
     let decodeRequest (bytes: byte[]) : Request =
         nonEmpty bytes
@@ -79,6 +88,11 @@ module Codec =
         | 3uy -> Request.Select(body bytes)
         | 4uy -> Request.Live(body bytes)
         | 5uy -> Request.Export(body bytes)
+        | 6uy ->
+            if bytes.Length < 5 then raise (ProtocolException "a table message too short for its name")
+            let n = BinaryPrimitives.ReadInt32LittleEndian(ReadOnlySpan(bytes, 1, 4))
+            if n < 0 || 5 + n > bytes.Length then raise (ProtocolException $"a table's name of {n} bytes")
+            Request.Table { Name = Text.Encoding.UTF8.GetString(bytes, 5, n); Bytes = bytes.[5 + n ..] }
         | tag -> raise (ProtocolException $"no request has the tag {tag}")
 
     let encodeReply (reply: Reply) : byte[] =
