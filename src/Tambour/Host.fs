@@ -238,8 +238,11 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
     let mutable stale = false
     let mutable recycleDue = false
 
+    /// Starts a worker, on the thread pool: not on the thread that asked, whose dispatcher may be
+    /// gone before the worker is ready (a window closed at once, a test over), leaving it running
+    /// with no one to end it.
     let start () : Task<WorkerProcess * Ready> =
-        task {
+        Task.Run<WorkerProcess * Ready>(fun () -> task {
             let! w = WorkerProcess.StartAsync(Role.worker, command)
             do! w.SendAsync(Request.Init init)
             let! first = w.Replies.ReadAsync().AsTask()
@@ -252,7 +255,7 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
             | other ->
                 w.Kill()
                 return failwith $"the worker answered Init with {other}"
-        }
+        })
 
     /// Sends requests to one worker in order.
     let sendAll (w: WorkerProcess) (requests: Request list) =
@@ -357,13 +360,20 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
 
     /// Starts the worker on duty and its spare, and returns once the one on duty is ready.
     member _.StartAsync() : Task =
-        task {
+        Task.Run<unit>(fun () -> task {
             let first = start ()
             spare <- start ()
             let! w, ready = first
-            lock gate (fun () -> current <- Some(w, ready))
-            forward w |> ignore
-        }
+
+            // Disposed while it started (a tab closed at once): the worker goes with it rather
+            // than going on duty for no one.
+            let kept =
+                lock gate (fun () ->
+                    if not disposed then current <- Some(w, ready)
+                    not disposed)
+
+            if kept then forward w |> ignore else w.Kill()
+        })
 
     /// What the worker on duty says.
     member _.Replies: ChannelReader<Reply> = replies.Reader

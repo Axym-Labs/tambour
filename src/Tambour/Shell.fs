@@ -1915,12 +1915,6 @@ let private subscriptions (env: Env) (host: Control) (titled: string -> unit) (e
       | _ -> ()
       if not model.Playing.IsEmpty then [ "clock" ], clock ]
 
-/// What to do with unsaved work before it would be dropped.
-type Unsaved =
-    | SaveIt
-    | Discard
-    | Keep
-
 /// Asks what to do with what is unsaved, by name: Save, Don't save, or Cancel, which keeps it.
 let askToSave (owner: Window) (look: Palette.Look) (names: string list) : Task<Unsaved> =
     let answer = TaskCompletionSource<Unsaved>()
@@ -2183,7 +2177,11 @@ type MainWindow(script: string, path: string option) as this =
         this.Resources.["ButtonBorderBrushDisabled"] <- Brushes.Transparent
         this.Width <- 1280.0
         this.Height <- 800.0
-        ask <- fun names -> askToSave this (look ()) names
+        ask <-
+            fun names ->
+                match App.AnswerUnsaved with
+                | Some answer -> Task.FromResult answer
+                | None -> askToSave this (look ()) names
         let tabsRow = ScrollViewer(Content = strip, HorizontalScrollBarVisibility = Primitives.ScrollBarVisibility.Auto, VerticalScrollBarVisibility = Primitives.ScrollBarVisibility.Disabled)
         let layout = DockPanel()
         DockPanel.SetDock(tabsRow, Dock.Top)
@@ -2207,9 +2205,11 @@ type MainWindow(script: string, path: string option) as this =
                             let! ok = settle w
                             settled <- ok
 
+                    // Closed again once this close has been cancelled and is over: a Close from
+                    // inside its own Closing is not taken.
                     if settled then
                         closing <- true
-                        this.Close()
+                        Dispatcher.UIThread.Post(fun () -> this.Close())
                 }
                 |> ignore)
 

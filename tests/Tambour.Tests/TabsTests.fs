@@ -44,7 +44,15 @@ let private typeInto (window: Shell.MainWindow) (text: string) =
     Dispatcher.UIThread.RunJobs()
 
 /// Answers the question before unsaved work is dropped, counting each time it is asked.
-let private answering (window: Shell.MainWindow) (answer: Shell.Unsaved) =
+/// Closes the window, answering Don't save, and waits until it has closed, workers and all.
+let private closeAll (window: Shell.MainWindow) =
+    let closed = ref false
+    window.Closed.Add(fun _ -> closed.Value <- true)
+    window.Ask <- fun _ -> Task.FromResult Discard
+    window.Close()
+    pumpUntil 5.0 "the window closed" (fun () -> closed.Value)
+
+let private answering (window: Shell.MainWindow) (answer: Unsaved) =
     let asked = ref 0
 
     window.Ask <-
@@ -91,8 +99,7 @@ let ``each tab is a workspace of its own, and switching keeps each as it was`` (
     Assert.Equal("", (editorOf window).Text)
     Assert.Equal("let first = 1\n", window.Workspaces.[0].GetVisualDescendants().OfType<ScriptEditor>().Single().Text)
 
-    answering window Shell.Discard |> ignore
-    window.Close()
+    closeAll window
 
 /// Gate 15 (a) for a tab: Ctrl+W on unsaved work asks; Cancel keeps the tab, its text and its
 /// history; Don't save closes it; Save writes the file first.
@@ -108,7 +115,7 @@ let ``closing a tab asks first, and Cancel keeps everything`` () =
 
     // Nothing unsaved: Ctrl+W closes without asking, and an empty tab takes its place.
     press window Key.N RawInputModifiers.Control
-    let asked = answering window Shell.Keep
+    let asked = answering window Keep
     press window Key.W RawInputModifiers.Control
     pumpUntil 5.0 "the tab closed" (fun () -> window.Workspaces.Length = 1)
     Assert.Equal(0, asked.Value)
@@ -128,7 +135,7 @@ let ``closing a tab asks first, and Cancel keeps everything`` () =
     Dispatcher.UIThread.RunJobs()
 
     // Save: the file is written, then the tab goes.
-    let asked = answering window Shell.SaveIt
+    let asked = answering window SaveIt
     press window Key.W RawInputModifiers.Control
     pumpUntil 5.0 "the saved tab closed" (fun () -> window.Workspaces.Single().Path.IsNone)
     Assert.Equal(1, asked.Value)
@@ -138,12 +145,12 @@ let ``closing a tab asks first, and Cancel keeps everything`` () =
     window.Post(Shell.OpenTab file)
     pumpUntil 10.0 "the script again" (fun () -> (editorOf window).Text = text)
     typeInto window "// dropped\n"
-    let asked = answering window Shell.Discard
+    let asked = answering window Discard
     press window Key.W RawInputModifiers.Control
     pumpUntil 5.0 "the tab dropped" (fun () -> window.Workspaces.Single().Path.IsNone)
     Assert.Equal(1, asked.Value)
     Assert.Equal(text, File.ReadAllText file)
-    window.Close()
+    closeAll window
 
 /// Gate 15 (a) for the window: Quit and closing ask about each tab's unsaved work; Cancel keeps
 /// the window open with its tabs as they were.
@@ -158,7 +165,7 @@ let ``quitting asks about every unsaved tab, and Cancel keeps the window`` () =
     press window Key.N RawInputModifiers.Control
     typeInto window "let b = 2\n"
 
-    let asked = answering window Shell.Keep
+    let asked = answering window Keep
     press window Key.Q RawInputModifiers.Control
     pumpUntil 5.0 "the question" (fun () -> asked.Value = 1)
     Dispatcher.UIThread.RunJobs()
@@ -167,7 +174,7 @@ let ``quitting asks about every unsaved tab, and Cancel keeps the window`` () =
     Assert.Equal("let a = 1\n", window.Workspaces.[0].GetVisualDescendants().OfType<ScriptEditor>().Single().Text)
 
     // Don't save, asked once for each unsaved tab.
-    let asked = answering window Shell.Discard
+    let asked = answering window Discard
     window.Close()
     pumpUntil 5.0 "the window closed" (fun () -> closed.Value)
     Assert.Equal(2, asked.Value)
@@ -196,4 +203,4 @@ let ``opening takes an untouched tab, and finds a tab already showing the file``
     Dispatcher.UIThread.RunJobs()
     Assert.Equal(2, window.Workspaces.Length)
     Assert.Equal(Some a, window.Active.Path)
-    window.Close()
+    closeAll window

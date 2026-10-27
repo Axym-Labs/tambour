@@ -458,3 +458,15 @@ let ``a package reference without an SDK says what to install`` () =
     Assert.Equal((2, 2), (d.StartLine, d.StartColumn))
     Assert.Equal<Diagnostic[]>(raw, Evaluation.explainNuget text true false raw)
     Assert.Equal<Diagnostic[]>(raw, Evaluation.explainNuget "let a = 1\n" false false raw)
+
+/// Workers disposed while they start (a tab closed at once) put none on duty when the start
+/// finishes: the worker that was starting goes with them rather than living on for no one.
+[<Fact>]
+let ``workers disposed while starting leave no worker on duty`` () : Task =
+    task {
+        let workers = new Workers(command, init)
+        let starting = workers.StartAsync()
+        (workers :> IDisposable).Dispose()
+        do! starting
+        Assert.Equal(None, workers.Pid)
+    }
