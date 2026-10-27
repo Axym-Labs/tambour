@@ -78,6 +78,13 @@ let ``each tab is a workspace of its own, and switching keeps each as it was`` (
     Assert.Equal(caret, (editorOf window).Editor.CaretOffset)
     Assert.StartsWith("untitled •", window.Title)
 
+    match Environment.GetEnvironmentVariable "TAMBOUR_CHECK_OUT" with
+    | null
+    | "" -> ()
+    | dir ->
+        use frame = window.CaptureRenderedFrame()
+        frame.Save(Path.Combine(dir, "tabs.png"), Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default)
+
     // A tab's history is its own: Undo here leaves the other tab's text alone.
     window.Post Shell.Undo
     Dispatcher.UIThread.RunJobs()
