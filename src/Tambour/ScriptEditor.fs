@@ -749,7 +749,7 @@ type ScriptEditor() as this =
     let applyLook () =
         dark <- this.ActualThemeVariant = ThemeVariant.Dark
         look <- Palette.forVariant this.ActualThemeVariant
-        textMate.SetTheme(registry.LoadTheme(if dark then ThemeName.DarkPlus else ThemeName.LightPlus))
+        textMate.SetTheme(Palette.grammarTheme look)
         editor.Background <- SolidColorBrush look.Background
         editor.Foreground <- SolidColorBrush look.Foreground
         editor.LineNumbersForeground <- SolidColorBrush look.LineNumbers

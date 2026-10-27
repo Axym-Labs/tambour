@@ -195,6 +195,7 @@ type FigurePane() as this =
     do
         this.ClipToBounds <- true
         this.Focusable <- true
+        this.ActualThemeVariantChanged.Add(fun _ -> this.InvalidateVisual())
 
         this.SizeChanged.Add(fun e ->
             if e.NewSize.Width > 0.0 && e.NewSize.Height > 0.0 then
@@ -260,7 +261,9 @@ type FigurePane() as this =
 
     override _.Render(dc) =
         let bounds = Rect(this.Bounds.Size)
-        dc.FillRectangle(Brushes.White, bounds)
+        let look = Palette.forVariant this.ActualThemeVariant
+        // The figure is drawn as its script's theme draws it, on the app's own surround.
+        dc.FillRectangle(SolidColorBrush look.Surface, bounds)
 
         match picture with
         | null -> ()
@@ -292,11 +295,11 @@ type FigurePane() as this =
             match readout with
             | Some r when r.Visible && r.Figure = p.Figure && r.Lines.Length > 0 ->
                 let text =
-                    FormattedText(String.Join("\n", r.Lines), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Typeface.Default, 12.0, Brushes.Black)
+                    FormattedText(String.Join("\n", r.Lines), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Typeface.Default, 12.0, SolidColorBrush look.Text)
 
                 let x = if r.Right then r.X1 - 4.0 - text.Width - 8.0 else r.X0 + 4.0
                 let box = Rect(x, r.Y0 + 4.0, text.Width + 8.0, text.Height + 4.0)
-                dc.DrawRectangle(SolidColorBrush(Color.FromArgb(225uy, 255uy, 255uy, 255uy)), Pen(Brushes.Gray, 0.5), box, 3.0, 3.0)
+                dc.DrawRectangle(SolidColorBrush(look.Raised, 0.92), Pen(SolidColorBrush look.Line, 0.5), box, 3.0, 3.0)
                 dc.DrawText(text, Point(box.X + 4.0, box.Y + 2.0))
             | _ -> ()
 

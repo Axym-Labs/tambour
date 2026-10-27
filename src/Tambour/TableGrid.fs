@@ -299,7 +299,7 @@ type TableGrid() as this =
                 this.Focus() |> ignore
                 moveTo { c with Row = c.Row + 1 } false
             | Error why ->
-                editor.BorderBrush <- Brushes.Red
+                editor.BorderBrush <- SolidColorBrush (Palette.forVariant this.ActualThemeVariant).Error
                 ToolTip.SetTip(editor, why)
                 refused.Trigger why
         | _ ->
@@ -316,7 +316,7 @@ type TableGrid() as this =
             bringIntoView focus
             editing <- Some focus
             editor.Text <- (match initial with Some s -> s | None -> CellText.exact t.Columns.[focus.Column].Values focus.Row)
-            editor.BorderBrush <- Brushes.SteelBlue
+            editor.BorderBrush <- SolidColorBrush (Palette.forVariant this.ActualThemeVariant).Accent
             ToolTip.SetTip(editor, null)
             editor.IsVisible <- true
             this.InvalidateArrange()
@@ -371,6 +371,12 @@ type TableGrid() as this =
     do
         this.Focusable <- true
         this.ClipToBounds <- true
+
+        // The shaped texts carry their colour.
+        this.ActualThemeVariantChanged.Add(fun _ ->
+            shaped.Clear()
+            this.InvalidateVisual())
+
         for child in [ vertical :> Control; horizontal; editor ] do
             this.VisualChildren.Add child
             this.LogicalChildren.Add child
@@ -489,13 +495,16 @@ type TableGrid() as this =
     override _.Render(dc: DrawingContext) =
         let clock = Diagnostics.Stopwatch.StartNew()
         let bounds = Rect(this.Bounds.Size)
-        dc.FillRectangle(Brushes.White, bounds)
+        let look = Palette.forVariant this.ActualThemeVariant
+        let ink = SolidColorBrush look.Foreground
+        let dim = SolidColorBrush look.Dim
+        dc.FillRectangle(SolidColorBrush look.Background, bounds)
 
         match table with
         | None -> ()
         | Some t ->
-            let line = Pen(SolidColorBrush(Color.FromRgb(225uy, 228uy, 232uy)), 1.0)
-            let headerBrush = SolidColorBrush(Color.FromRgb(244uy, 245uy, 247uy))
+            let line = Pen(SolidColorBrush look.Line, 1.0)
+            let headerBrush = SolidColorBrush look.Raised
             let numbers = numberWidth ()
             let shownRows = min (visibleRows () + 1) (t.Rows - top)
             let shownColumns = min (visibleColumns () + 1) (t.Columns.Length - left)
@@ -506,22 +515,22 @@ type TableGrid() as this =
             // Marked rows, then the selection, under the text.
             for i in 0 .. shownRows - 1 do
                 if marked.Contains(top + i) then
-                    dc.FillRectangle(SolidColorBrush(Color.FromArgb(70uy, 250uy, 200uy, 40uy)), Rect(0.0, headerHeight + float i * rowHeight, bounds.Width, rowHeight))
+                    dc.FillRectangle(SolidColorBrush look.Marked, Rect(0.0, headerHeight + float i * rowHeight, bounds.Width, rowHeight))
 
             let c0, c1, r0, r1 = selectionBounds ()
             let a = cellRect { Column = max c0 left; Row = max r0 top }
             let b = cellRect { Column = c1; Row = r1 }
 
             if c1 >= left && r1 >= top then
-                dc.FillRectangle(SolidColorBrush(Color.FromArgb(50uy, 30uy, 110uy, 220uy)), Rect(a.TopLeft, b.BottomRight))
-                dc.DrawRectangle(Pen(SolidColorBrush(Color.FromRgb(30uy, 110uy, 220uy)), 1.5), cellRect focus)
+                dc.FillRectangle(SolidColorBrush look.Selected, Rect(a.TopLeft, b.BottomRight))
+                dc.DrawRectangle(Pen(SolidColorBrush look.Accent, 1.5), cellRect focus)
 
             for j in 0 .. shownColumns - 1 do
                 let column = t.Columns.[left + j]
                 let x = numbers + float j * columnWidth
-                dc.DrawText(text column.Name bold 12.5 Brushes.Black, Point(x + 6.0, 4.0))
+                dc.DrawText(text column.Name bold 12.5 (SolidColorBrush look.Text), Point(x + 6.0, 4.0))
 
-                dc.DrawText(text (kindOf column) typeface 11.0 Brushes.DimGray, Point(x + 6.0, 21.0))
+                dc.DrawText(text (kindOf column) typeface 11.0 dim, Point(x + 6.0, 21.0))
 
                 // The column's cells in view, clipped to it.
                 use _ = dc.PushClip(Rect(x + 2.0, headerHeight, columnWidth - 4.0, bounds.Height - headerHeight))
@@ -536,7 +545,7 @@ type TableGrid() as this =
                     let shown = (CellText.shown column.Values (top + i)).Replace('\n', '⏎').Replace('\r', '⏎')
 
                     if shown <> "" then
-                        let width, draw = cellText shown 12.5 cellNumerals Brushes.Black
+                        let width, draw = cellText shown 12.5 cellNumerals ink
                         let y = headerHeight + float i * rowHeight + 3.0
                         draw dc (Point((if numeric then x + columnWidth - 5.0 - width else x + 5.0), y))
 
@@ -544,7 +553,7 @@ type TableGrid() as this =
 
             for i in 0 .. shownRows - 1 do
                 let y = headerHeight + float i * rowHeight
-                let width, draw = cellText (string (top + i + 1)) 11.0 rowNumerals Brushes.DimGray
+                let width, draw = cellText (string (top + i + 1)) 11.0 rowNumerals dim
                 draw dc (Point(numbers - 6.0 - width, y + 4.0))
                 dc.DrawLine(line, Point(0.0, y + rowHeight), Point(bounds.Width, y + rowHeight))
 

@@ -252,7 +252,10 @@ type Model =
       Picking: (PlottedFields * Rect) option
       /// Rows picked in the figure, by table, marked in its grid; and their points in the figure.
       Marked: (string * Set<int>) option
-      Marks: Point[] }
+      Marks: Point[]
+      /// The theme chosen in View → Theme, and the look the window is drawn in by it.
+      Theme: Preferences.Theme
+      Look: Palette.Look }
 
 type Msg =
     | Edited of History.TextEdit * string
@@ -294,6 +297,8 @@ type Msg =
     | PlotSelected
     | Pick of Rect
     | PickFor of PlottedFields * Rect
+    | ChooseTheme of Preferences.Theme
+    | LookChanged of Palette.Look
     | Failed of exn
 
 let init (script: string) () : Model * Cmd<Msg> =
@@ -329,7 +334,9 @@ let init (script: string) () : Model * Cmd<Msg> =
       ShowFigure = None
       Picking = None
       Marked = None
-      Marks = [||] },
+      Marks = [||]
+      Theme = App.Theme
+      Look = Palette.light },
     Cmd.none
 
 let private send (env: Env) (request: Request) : Cmd<Msg> =
@@ -898,6 +905,10 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             else [| area.X; area.Y; area.Right; area.Bottom |]
 
         { model with Picking = Some(plotted, area) }, send env (Request.Pick { Values = points; Clamp = points.Length > 2 })
+    | ChooseTheme theme ->
+        App.Choose theme
+        { model with Theme = theme }, Cmd.none
+    | LookChanged look -> { model with Look = look }, Cmd.none
     | Failed e -> { model with Status = e.Message }, Cmd.none
 
 let private label (text: string) : IView =
@@ -1042,7 +1053,7 @@ let private actionsView (model: Model) (dispatch: Msg -> unit) : IView =
         ]
     | None -> TextBlock.create [ TextBlock.margin (Thickness(8.0, 4.0)); TextBlock.text "Run a script that binds a figure to edit it here." ]
 
-let private problemView (dispatch: Msg -> unit) (d: Diagnostic) : IView =
+let private problemView (look: Palette.Look) (dispatch: Msg -> unit) (d: Diagnostic) : IView =
     Button.create [
         Button.background Brushes.Transparent
         Button.horizontalAlignment HorizontalAlignment.Stretch
@@ -1056,7 +1067,7 @@ let private problemView (dispatch: Msg -> unit) (d: Diagnostic) : IView =
                 TextBlock.text (Text.RegularExpressions.Regex.Replace(diagnosticLine d, @"\s+", " "))
                 TextBlock.textWrapping TextWrapping.NoWrap
                 TextBlock.textTrimming TextTrimming.CharacterEllipsis
-                TextBlock.foreground (if d.Severity = "error" then Brushes.DarkRed else Brushes.DarkGoldenrod)
+                TextBlock.foreground (SolidColorBrush(if d.Severity = "error" then look.Error else look.Warning))
             ]
         )
     ]
@@ -1152,8 +1163,35 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
         + (if model.Diagnostics.Length > 0 && model.Output.Length > 0 then "\n" else "")
         + model.Output
 
+    let themeItem (theme: Preferences.Theme) (header: string) =
+        MenuItem.create [
+            MenuItem.header header
+            MenuItem.toggleType MenuItemToggleType.Radio
+            MenuItem.groupName "theme"
+            MenuItem.isChecked (model.Theme = theme)
+            MenuItem.onClick ((fun _ -> dispatch (ChooseTheme theme)), SubPatchOptions.Always)
+        ]
+
     DockPanel.create [
         DockPanel.children [
+            Menu.create [
+                Menu.dock Dock.Top
+                Menu.viewItems [
+                    MenuItem.create [
+                        MenuItem.header "_View"
+                        MenuItem.viewItems [
+                            MenuItem.create [
+                                MenuItem.header "_Theme"
+                                MenuItem.viewItems [
+                                    themeItem Preferences.Light "_Light"
+                                    themeItem Preferences.Dark "_Dark"
+                                    themeItem Preferences.FollowSystem "Follow _system"
+                                ]
+                            ]
+                        ]
+                    ]
+                ]
+            ]
             StackPanel.create [
                 StackPanel.dock Dock.Top
                 StackPanel.orientation Orientation.Horizontal
@@ -1186,7 +1224,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                     TextBlock.create [
                         TextBlock.text model.ActionNote
                         TextBlock.verticalAlignment VerticalAlignment.Center
-                        TextBlock.foreground (if model.ActionNote.Contains "whole expression" || model.ActionNote.StartsWith "not done" then Brushes.DarkGoldenrod else Brushes.DimGray)
+                        TextBlock.foreground (SolidColorBrush(if model.ActionNote.Contains "whole expression" || model.ActionNote.StartsWith "not done" then model.Look.Warning else model.Look.Dim))
                     ]
                 ]
             ]
@@ -1212,7 +1250,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                 ScrollViewer.maxHeight 110.0
                                 ScrollViewer.content (
                                     StackPanel.create [
-                                        StackPanel.children (model.Problems |> Array.map (problemView dispatch) |> List.ofArray)
+                                        StackPanel.children (model.Problems |> Array.map (problemView model.Look dispatch) |> List.ofArray)
                                     ]
                                 )
                             ]
@@ -1366,6 +1404,13 @@ let private subscriptions (env: Env) (window: Window) (expose: (Msg -> unit) -> 
         window.Title <- text
         { new IDisposable with member _.Dispose() = () }
 
+    /// The look the window is drawn in, now and whenever its theme changes.
+    let look (dispatch: Msg -> unit) : IDisposable =
+        let changed = EventHandler(fun _ _ -> dispatch (LookChanged(Palette.forVariant window.ActualThemeVariant)))
+        window.ActualThemeVariantChanged.AddHandler changed
+        dispatch (LookChanged(Palette.forVariant window.ActualThemeVariant))
+        { new IDisposable with member _.Dispose() = window.ActualThemeVariantChanged.RemoveHandler changed }
+
     let exposed (dispatch: Msg -> unit) : IDisposable =
         expose dispatch
         { new IDisposable with member _.Dispose() = () }
@@ -1373,6 +1418,7 @@ let private subscriptions (env: Env) (window: Window) (expose: (Msg -> unit) -> 
     [ [ "replies" ], replies
       [ "keys" ], keys
       [ "post" ], exposed
+      [ "look" ], look
       [ "title"; title model ], titled (title model)
       match model.Path with
       | Some path when Directory.Exists(Path.GetDirectoryName path) -> [ "watch"; path ], watch path
