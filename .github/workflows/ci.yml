@@ -106,6 +106,16 @@ jobs:
           MAREY_EXAMPLES: ${{ github.workspace }}/marey/examples
         run: dotnet test Tambour.slnx -c Release --no-build --logger "console;verbosity=normal"
 
+      # Every worker and language service the tests started ends with them: a process still there
+      # 10 s on, stopped or running, is one its host failed to end.
+      - name: Nothing left behind by the tests
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'Linux' }}
+        run: |
+          for _ in $(seq 10); do pgrep -f 'Tambour.Tests/bin/.*/tambour --' > /dev/null || exit 0; sleep 1; done
+          ps -o pid,stat,args -p "$(pgrep -d, -f 'Tambour.Tests/bin/.*/tambour --')"
+          echo "::error::the tests left processes of the app behind"
+          exit 1
+
       # A real window, which catches a SkiaSharp, HarfBuzzSharp or Avalonia upgrade that breaks the
       # pair. The runners have no GPU. Windows paints on ANGLE over WARP, and its canvas must be
       # OpenGL. Linux runs under Xvfb, where the only GL is Mesa's llvmpipe, which Avalonia declines
