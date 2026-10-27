@@ -55,6 +55,50 @@ module Role =
           Encode = Codec.encodeAnalysisRequest
           Decode = Codec.decodeAnalysisReply }
 
+module ProcessTree =
+
+    /// The processes `pid` started that are still its own, as Linux lists them for each thread.
+    let private childrenOf (pid: int) : int[] =
+        try
+            Directory.GetDirectories $"/proc/{pid}/task"
+            |> Array.collect (fun task ->
+                try
+                    File.ReadAllText(Path.Combine(task, "children")).Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                with _ ->
+                    [||])
+            |> Array.map int
+        with _ ->
+            [||]
+
+    /// Ends `proc` and everything it started. Not `Process.Kill true` on Linux: that stops each
+    /// process before it kills it, and a process whose killer exits in between stays stopped for
+    /// good, its watch on the app stopped with it.
+    let rec kill (proc: Process) =
+        if OperatingSystem.IsLinux() then
+            // Its children are read while they are still its own; once it has gone, they are not.
+            let children = childrenOf proc.Id
+            let started = try proc.StartTime with _ -> DateTime.MaxValue
+
+            try
+                proc.Kill()
+            with _ ->
+                ()
+
+            for pid in children do
+                try
+                    use child = Process.GetProcessById pid
+
+                    // Not another process that has since taken the number.
+                    if child.StartTime >= started then
+                        kill child
+                with _ ->
+                    ()
+        else
+            try
+                proc.Kill true
+            with _ ->
+                ()
+
 /// One process of this app in another role, and the connection to it.
 type ChildProcess<'request, 'reply> private
     (role: Role<'request, 'reply>, proc: Process, connection: Connection, replies: ChannelReader<'reply>, log: StringBuilder) =
@@ -78,11 +122,7 @@ type ChildProcess<'request, 'reply> private
 
     /// Ends the process and everything it started. Its replies end with it.
     member _.Kill() =
-        try
-            proc.Kill true
-        with _ ->
-            ()
-
+        ProcessTree.kill proc
         (connection :> IDisposable).Dispose()
 
     /// Completes when the process has ended.
@@ -133,10 +173,7 @@ type ChildProcess<'request, 'reply> private
                 ()
 
             if not (obj.ReferenceEquals(first, accept)) || not accept.IsCompletedSuccessfully then
-                try
-                    proc.Kill true
-                with _ ->
-                    ()
+                ProcessTree.kill proc
 
                 let said = lock log (fun () -> log.ToString().Trim())
                 return failwith $"the {role.Flag.TrimStart('-')} did not connect: {said}"
@@ -401,8 +438,12 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
 
                 current <- None)
 
+            // A spare already started is killed here, before the app can exit, not on another thread.
             if not (isNull spare) then
-                spare.ContinueWith(fun (t: Task<WorkerProcess * Ready>) -> if t.IsCompletedSuccessfully then (fst t.Result).Kill())
+                spare.ContinueWith(
+                    (fun (t: Task<WorkerProcess * Ready>) -> if t.IsCompletedSuccessfully then (fst t.Result).Kill()),
+                    TaskContinuationOptions.ExecuteSynchronously
+                )
                 |> ignore
 
 /// The language service, as the editor asks it: one `tambour --analysis` process, started at once
@@ -566,6 +607,9 @@ type LanguageService(command: Command, init: AnalysisInit) =
             disposed <- true
             failAll "the language service was closed"
 
-            child.ContinueWith(fun (t: Task<ChildProcess<AnalysisRequest, AnalysisReply>>) ->
-                if t.IsCompletedSuccessfully then t.Result.Kill())
+            // A process already started is killed here, before the app can exit, not on another thread.
+            child.ContinueWith(
+                (fun (t: Task<ChildProcess<AnalysisRequest, AnalysisReply>>) -> if t.IsCompletedSuccessfully then t.Result.Kill()),
+                TaskContinuationOptions.ExecuteSynchronously
+            )
             |> ignore
