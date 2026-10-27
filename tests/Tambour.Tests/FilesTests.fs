@@ -254,3 +254,16 @@ let ``two columns selected are plotted, and a row picked in the figure is marked
     pumpUntil 10.0 "the grid shown again" (fun () -> window.GetVisualDescendants().OfType<TableGrid>().Any())
     Assert.Equal<Set<int>>(set [ 7 ], window.GetVisualDescendants().OfType<TableGrid>().Single().Marked)
     window.Close()
+
+/// A project with tables but no script yet opens a new script, not the prelude Tambour wrote for
+/// the tables; a project's own script is opened before it, whatever their names.
+[<Fact>]
+let ``a project opens its own script or a new one, never the prelude`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-noscript").FullName
+    File.WriteAllText(Path.Combine(dir, "prelude.fsx"), "module Prelude\n")
+    Assert.Equal(Path.Combine(dir, "figure.fsx"), (Project.resolve dir).Script)
+    Assert.Empty(Project.scripts dir)
+
+    File.WriteAllText(Path.Combine(dir, "zeta.fsx"), "let x = 1\n")
+    Assert.Equal(Path.Combine(dir, "zeta.fsx"), (Project.resolve dir).Script)
+    Assert.Equal<string[]>([| "zeta.fsx" |], Project.scripts dir)

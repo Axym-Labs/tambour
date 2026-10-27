@@ -11,6 +11,7 @@ open Avalonia.Controls
 open Avalonia.Headless
 open Avalonia.Headless.XUnit
 open Avalonia.Input
+open Avalonia.Input.Platform
 open Avalonia.Threading
 open Avalonia.VisualTree
 open Tambour
@@ -70,6 +71,34 @@ let ``the window runs its script on F5 and shows the figure with its control`` (
     Assert.Contains(editor.Problems, fun d -> d.Code = "FS0001" && d.Message.Contains "float<m>")
     window.CaptureRenderedFrame().Dispose()
     save window "shell-problem.png"
+
+    // A problem is copied with Ctrl+C on it, and every problem from its menu.
+    let row =
+        window.GetVisualDescendants().OfType<Button>()
+        |> Seq.find (fun b -> b.GetVisualDescendants().OfType<TextBlock>().Any(fun t -> not (isNull t.Text) && t.Text.Contains "FS0001"))
+
+    let clipboard () =
+        let text = window.Clipboard.TryGetTextAsync()
+        pumpUntil 5.0 "the clipboard" (fun () -> text.IsCompleted)
+        text.Result
+
+    row.Focus() |> ignore
+    window.KeyPress(Key.C, RawInputModifiers.Control, PhysicalKey.C, "c")
+    Dispatcher.UIThread.RunJobs()
+    let copied = clipboard ()
+    Assert.StartsWith($"{editor.Problems.[0].StartLine}:", copied)
+    Assert.Contains("FS0001", copied)
+
+    row.ContextMenu.Open row
+    Dispatcher.UIThread.RunJobs()
+    let all = row.ContextMenu.Items.OfType<MenuItem>() |> Seq.find (fun i -> string i.Header = "Copy all problems")
+    all.RaiseEvent(Avalonia.Interactivity.RoutedEventArgs MenuItem.ClickEvent)
+    Dispatcher.UIThread.RunJobs()
+    let everything = clipboard ()
+
+    for d in editor.Problems do
+        Assert.Contains($"{d.StartLine}:{d.StartColumn + 1} {d.Severity} {d.Code}: ", everything)
+    row.ContextMenu.Close()
     window.Close()
 
 [<AvaloniaFact>]

@@ -57,9 +57,13 @@ let read (directory: string) : Settings option =
 let write (directory: string) (settings: Settings) =
     File.WriteAllText(Path.Combine(directory, FileName), JsonSerializer.Serialize(settings, json))
 
-/// The project's scripts, by name.
+/// The project's scripts, by name: not the prelude Tambour writes for its tables, which a script
+/// loads but no one writes.
 let scripts (directory: string) : string[] =
-    Directory.GetFiles(directory, "*.fsx") |> Array.map Path.GetFileName |> Array.sort
+    Directory.GetFiles(directory, "*.fsx")
+    |> Array.map Path.GetFileName
+    |> Array.filter (fun name -> name <> Tambour.Data.Prelude.FileName)
+    |> Array.sort
 
 /// What opening a path comes to: the script to show, and the project it belongs to, if any.
 type Opened =

@@ -17,6 +17,7 @@ open Avalonia.FuncUI.Elmish
 open Avalonia.FuncUI.Hosts
 open Avalonia.FuncUI.Types
 open Avalonia.Input
+open Avalonia.Input.Platform
 open Avalonia.Interactivity
 open Avalonia.Layout
 open Avalonia.Media
@@ -1173,13 +1174,47 @@ let private actionsView (model: Model) (dispatch: Msg -> unit) : IView =
         ]
     | None -> TextBlock.create [ TextBlock.margin (Thickness(8.0, 4.0)); TextBlock.text "Run a script that binds a figure to edit it here." ]
 
-let private problemView (look: Palette.Look) (dispatch: Msg -> unit) (d: Diagnostic) : IView =
+/// Puts a text on the clipboard of the window a control is in.
+let private copyFrom (source: obj) (text: string) =
+    match source with
+    | :? Visual as v ->
+        match TopLevel.GetTopLevel v with
+        | null -> ()
+        | top -> top.Clipboard |> Option.ofObj |> Option.iter (fun board -> board.SetTextAsync text |> ignore)
+    | _ -> ()
+
+/// A problem in the Problems panel: a click goes to it; Ctrl+C or its menu copies it, or them all.
+let private problemView (look: Palette.Look) (dispatch: Msg -> unit) (all: Diagnostic[]) (d: Diagnostic) : IView =
+    let everything = String.Join("\n", all |> Array.map diagnosticLine)
+
     Button.create [
         Button.background Brushes.Transparent
         Button.horizontalAlignment HorizontalAlignment.Stretch
         Button.horizontalContentAlignment HorizontalAlignment.Left
         Button.padding (Thickness(6.0, 1.0))
         Button.onClick ((fun _ -> dispatch (GoTo(d.StartLine, d.StartColumn))), SubPatchOptions.Always)
+        Button.onKeyDown (
+            (fun e ->
+                if e.Key = Key.C && e.KeyModifiers = KeyModifiers.Control then
+                    copyFrom e.Source (diagnosticLine d)
+                    e.Handled <- true),
+            SubPatchOptions.Always
+        )
+        Button.contextMenu (
+            ContextMenu.create [
+                ContextMenu.viewItems [
+                    MenuItem.create [
+                        MenuItem.header "Copy"
+                        MenuItem.inputGesture (KeyGesture(Key.C, KeyModifiers.Control))
+                        MenuItem.onClick ((fun e -> copyFrom e.Source (diagnosticLine d)), SubPatchOptions.Always)
+                    ]
+                    MenuItem.create [
+                        MenuItem.header "Copy all problems"
+                        MenuItem.onClick ((fun e -> copyFrom e.Source everything), SubPatchOptions.Always)
+                    ]
+                ]
+            ]
+        )
         Button.tip (diagnosticLine d)
         Button.content (
             TextBlock.create [
@@ -1545,7 +1580,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                         if model.Problems.Length = 0 then
                                             TextBlock.create [ TextBlock.margin (Thickness gap); TextBlock.text "No problems in the script."; TextBlock.foreground (brush look.Dim) ]
                                         for d in model.Problems do
-                                            problemView look dispatch d
+                                            problemView look dispatch model.Problems d
                                     ]
                                 ]
                             )

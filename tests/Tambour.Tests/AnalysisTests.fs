@@ -177,3 +177,24 @@ let ``documentation reads as text`` () =
     // Markdown as Marey writes it: its lines, less their indent, a code block's spaces kept.
     let markdown = "<summary>\n **Bold** words,\n two   lines.\n\n ```fsharp\n let x =\n     1\n ```\n</summary>"
     Assert.Equal("**Bold** words,\ntwo lines.\n\n```fsharp\nlet x =\n    1\n```", Analysis.readable markdown)
+
+/// The prelude Tambour writes for a project's tables opens with `module Prelude`: checked as it
+/// is, nothing is in front of the module, and it has no problems.
+[<Fact>]
+let ``the project's prelude is checked as its own module, without problems`` () =
+    let table: Tambour.Data.Table =
+        { Name = "trial"
+          Columns =
+            [ { Name = "t"; Unit = "s"; Values = Tambour.Data.Floats [| 0.0; 1.0 |] }
+              { Name = "test_results.AUC"; Unit = null; Values = Tambour.Data.Floats [| 0.9; 0.95 |] } ] }
+
+    let prelude = Tambour.Data.Prelude.generate [ { Tambour.Data.Prelude.Table = table; Tambour.Data.Prelude.File = "trial.csv" } ]
+    Assert.True(Analysis.ownsModule prelude)
+    let checkedPrelude = service.Value.Check { Id = 1; Text = prelude; Path = null }
+    Assert.Empty(checkedPrelude.Diagnostics |> Array.filter (fun d -> d.Severity = "error"))
+
+    // An error in such a script is still on its own line.
+    let broken = "// a module of its own\nmodule Mine\n\nlet x: int = \"one\"\n"
+    let error = (service.Value.Check { Id = 2; Text = broken; Path = null }).Diagnostics |> Array.find (fun d -> d.Severity = "error")
+    Assert.Equal(4, error.StartLine)
+    Assert.False(Analysis.ownsModule "module Nested =\n    let x = 1\n")

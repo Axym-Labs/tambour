@@ -291,6 +291,18 @@ let private outcomeOf (kind: string) (outcome: Tambour.Edits.Edits.Outcome) : Ac
     | Tambour.Edits.Edits.Fallback note -> { Kind = kind; Outcome = "fallback"; Note = note }
     | Tambour.Edits.Edits.Refused note -> { Kind = kind; Outcome = "refused"; Note = note }
 
+/// Whether a script opens with a top-level `module Name`: its first line that is not blank or a
+/// line comment.
+let ownsModule (script: string) =
+    let first =
+        (if isNull script then "" else script).Split('\n')
+        |> Array.map (fun l -> l.Trim())
+        |> Array.tryFind (fun l -> l <> "" && not (l.StartsWith "//"))
+
+    match first with
+    | Some l -> Text.RegularExpressions.Regex.IsMatch(l, @"^module\s+(rec\s+)?[A-Za-z_][\w.`]*$")
+    | None -> false
+
 /// The language service for one prelude.
 type Service(init: AnalysisInit) =
     let checker = FSharpChecker.Create()
@@ -332,9 +344,14 @@ type Service(init: AnalysisInit) =
 
     let pathOf (path: string) = if String.IsNullOrEmpty path then Path.Combine(Environment.CurrentDirectory, "script.fsx") else path
 
+    /// What goes before a script: the prelude, or as many blank lines where the script opens with a
+    /// module of its own (the project's prelude.fsx), which must come first and is compiled, under
+    /// `#load`, without the prelude's opens.
+    let before (script: string) = if ownsModule script then String.replicate offset "\n" else prelude
+
     let check (path: string) (script: string) =
         let path = pathOf path
-        let full = prelude + script
+        let full = before script + script
         let parse, answer =
             checker.ParseAndCheckFileInProject(path, full.GetHashCode(), SourceText.ofString full, optionsFor path full)
             |> Async.RunSynchronously
