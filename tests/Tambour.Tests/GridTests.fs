@@ -88,10 +88,25 @@ let ``a frame over a million rows is drawn within 16 ms wherever it is scrolled`
     let window = Window(Width = 1280.0, Height = 800.0, Content = grid)
     window.Show()
 
-    for _ in 1..3 do
-        window.CaptureRenderedFrame().Dispose()
-
+    // A warm-up where the timed frames will be, so none of them is the first to run its code.
     let random = Random 7
+    let warm n =
+        for _ in 1..n do
+            grid.Top <- random.Next rows
+            window.CaptureRenderedFrame().Dispose()
+
+    warm 5
+
+    // What the earlier tests leave on the heap (2.7 GB in the full suite) is collected next, so the
+    // timed frames' few allocations don't set off a young collection over it: one held a frame 18 ms.
+    // Two more frames then bring back the caches the collection swept.
+    GC.Collect()
+    GC.WaitForPendingFinalizers()
+    GC.Collect()
+    warm 2
+
+    let collections () = [ for g in 0..2 -> GC.CollectionCount g ]
+    let before = collections ()
     let times = ResizeArray()
     let recorded = ResizeArray()
 
@@ -101,6 +116,8 @@ let ``a frame over a million rows is drawn within 16 ms wherever it is scrolled`
         use frame = window.CaptureRenderedFrame()
         times.Add clock.Elapsed.TotalMilliseconds
         recorded.Add grid.LastRender
+
+    let collected = List.map2 (-) (collections ()) before
 
     // What a frame of this window costs with no table in it: the headless raster and its copy.
     grid.Table <- None
@@ -116,6 +133,7 @@ let ``a frame over a million rows is drawn within 16 ms wherever it is scrolled`
     log $"""the same window empty: median {(Seq.sort empty |> Array.ofSeq).[10]:F1} ms"""
     let sorted = times |> Seq.sort |> Array.ofSeq
     log $"""a frame over 10^6 rows, 20 scroll positions: median {sorted.[10]:F1} ms, max {sorted.[19]:F1} ms; the grid's Render alone: median {(Seq.sort recorded |> Array.ofSeq).[10]:F2} ms, max {Seq.max recorded:F2} ms"""
+    log $"collections during them, gen 0/1/2: {collected.[0]}/{collected.[1]}/{collected.[2]}"
 
     match Environment.GetEnvironmentVariable "TAMBOUR_CHECK_OUT" with
     | null | "" -> ()
