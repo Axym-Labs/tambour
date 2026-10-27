@@ -103,11 +103,14 @@ module Shown =
         let mutable lineStart = true
         // The kind the next name is, after `module`, `type` and the like.
         let mutable nameKind = "function"
+        // The colour of the name before a dot, which the name after it continues.
+        let mutable last: IBrush = plain
+        let mutable dotted: IBrush option = None
 
         for m in pieces.Matches text do
             let p = m.Value
 
-            let colour: IBrush =
+            let coloured: IBrush =
                 if Char.IsWhiteSpace p.[0] then
                     if p.Contains '\n' then
                         named <- false
@@ -152,6 +155,13 @@ module Shown =
 
                     plain
 
+            let colour =
+                match dotted with
+                | Some qualified when Char.IsLetter p.[0] || p.[0] = '_' -> qualified
+                | _ -> coloured
+
+            dotted <- if p = "."&& (Char.IsLetter previous.[0] || previous.[0] = '_') then Some last else None
+            last <- colour
             previous <- p
             inlines.Add(Run(p, Foreground = colour))
 

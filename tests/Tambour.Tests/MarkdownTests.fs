@@ -47,8 +47,31 @@ let ``a module's name and where it is from are drawn as a namespace, not a funct
     )
 
     Assert.Equal<(string * Color) list>(
+        [ "module", colour "keyword"
+          "Array", colour "namespace"
+          "from", colour "keyword"
+          "Microsoft", colour "namespace"
+          ".", Palette.light.Foreground
+          "FSharp", colour "namespace"
+          ".", Palette.light.Foreground
+          "Collections", colour "namespace" ],
+        coloured "module Array\n\nfrom Microsoft.FSharp.Collections"
+    )
+
+    Assert.Equal<(string * Color) list>(
         [ "val", colour "keyword"; "lineIn", colour "function"; ":", Palette.light.Foreground; "x", colour "type" ],
         coloured "val lineIn: x"
+    )
+
+    // A qualified type keeps the type's colour past its dots.
+    Assert.Equal<(string * Color) list>(
+        [ "val", colour "keyword"
+          "f", colour "function"
+          ":", Palette.light.Foreground
+          "System", colour "type"
+          ".", Palette.light.Foreground
+          "String", colour "type" ],
+        coloured "val f: System.String"
     )
 
 /// Marey's own documentation of `Chart`, as a hover shows it: a code block and headings, not
