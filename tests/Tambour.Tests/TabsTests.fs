@@ -204,3 +204,88 @@ let ``opening takes an untouched tab, and finds a tab already showing the file``
     Assert.Equal(2, window.Workspaces.Length)
     Assert.Equal(Some a, window.Active.Path)
     closeAll window
+
+let private trial (name: string) (column: string) : Tambour.Data.Table =
+    { Name = name
+      Columns = [ { Name = column; Unit = null; Values = Tambour.Data.Floats [| 1.0; 2.0 |] } ] }
+
+/// A workspace's directory: its script, its tables in `tables/`, and `workspace.json`. It opens
+/// with those tables, its prelude reads them from there, and saving keeps them there.
+[<AvaloniaFact>]
+let ``a workspace keeps its tables in tables/ and its settings in workspace.json`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-workspace").FullName
+    Project.makeWorkspace dir
+    Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", "runs.csv")) (trial "runs" "auc")
+    File.WriteAllText(Path.Combine(dir, "figure.fsx"), Shell.newScriptWithTables + "let n = runs.Length\n")
+    let window = new Shell.MainWindow("", Some dir)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    pumpUntil 10.0 "the script" (fun () -> (editorOf window).Text.Contains "runs.Length")
+
+    let prelude = File.ReadAllText(Path.Combine(dir, "prelude.fsx"))
+    Assert.Contains("\"tables/runs.csv\"", prelude)
+    Assert.False(File.Exists(Path.Combine(dir, "runs.csv")))
+
+    typeInto window "// saved\n"
+    press window Key.S RawInputModifiers.Control
+    pumpUntil 10.0 "the save" (fun () -> window.Active.Unsaved.IsEmpty)
+    Assert.True(File.Exists(Path.Combine(dir, Project.WorkspaceFile)))
+    Assert.False(File.Exists(Path.Combine(dir, Project.FileName)))
+    Assert.True(File.Exists(Path.Combine(dir, "tables", "runs.csv")))
+    Assert.False(File.Exists(Path.Combine(dir, "runs.csv")))
+    closeAll window
+
+/// A new tab given a table is saved as a workspace of its own: a directory named as its script.
+[<AvaloniaFact>]
+let ``a new workspace with a table saves as a directory of its own`` () =
+    let parent = (Directory.CreateTempSubdirectory "tambour-new").FullName
+    let window = new Shell.MainWindow("")
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    window.Post Shell.NewTable
+    pumpUntil 10.0 "the table" (fun () -> not window.Active.Unsaved.IsEmpty)
+    window.Post(Shell.SaveAs(Path.Combine(parent, "paper.fsx")))
+    let dir = Path.Combine(parent, "paper")
+    pumpUntil 10.0 "the save" (fun () -> window.Active.Unsaved.IsEmpty)
+    Assert.Equal(Some(Path.Combine(dir, "paper.fsx")), window.Active.Path)
+    Assert.True(File.Exists(Path.Combine(dir, "paper.fsx")))
+    Assert.True(File.Exists(Path.Combine(dir, "tables", "table.csv")))
+    Assert.True(File.Exists(Path.Combine(dir, Project.WorkspaceFile)))
+    Assert.Contains("\"tables/table.csv\"", File.ReadAllText(Path.Combine(dir, "prelude.fsx")))
+    closeAll window
+
+/// Gate 15 (b): two tabs with different tables; each script compiles against its own, and a name
+/// from the other's tables is not in scope.
+[<AvaloniaFact>]
+let ``two tabs each compile against their own tables only`` () =
+    let workspace (name: string) (table: Tambour.Data.Table) (script: string) =
+        let dir = Path.Combine((Directory.CreateTempSubdirectory "tambour-two").FullName, name)
+        Directory.CreateDirectory dir |> ignore
+        Project.makeWorkspace dir
+        Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", table.Name + ".csv")) table
+        File.WriteAllText(Path.Combine(dir, "figure.fsx"), Shell.newScriptWithTables + script)
+        dir
+
+    let a = workspace "a" (trial "alpha" "x") "let n = alpha.Length\nlet m = beta.Length\n"
+    let b = workspace "b" (trial "beta" "y") "let n = beta.Length\nlet m = alpha.Length\n"
+    let window = new Shell.MainWindow("", Some a)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    window.Post(Shell.OpenTab b)
+    pumpUntil 10.0 "the second tab" (fun () -> window.Workspaces.Length = 2)
+
+    let problems () =
+        pumpUntil 10.0 "the tab's editor" (fun () -> window.Active.GetVisualDescendants().OfType<ScriptEditor>().Any())
+        let editor = editorOf window
+        pumpUntil 60.0 "the check" (fun () -> editor.Problems.Length > 0)
+        editor.Problems
+
+    // Each knows its own table (line 4, under the three lines of the prelude's load) and not the
+    // other's (line 5): b's tab is shown first, then a's.
+    for other in [ "alpha"; "beta" ] do
+        let found = problems ()
+        Assert.All(found, fun p -> Assert.Equal(5, p.StartLine))
+        Assert.Contains(found, fun p -> p.Message.Contains other)
+        press window Key.Tab RawInputModifiers.Control
+
+    closeAll window

@@ -553,8 +553,9 @@ let private freshName (model: Model) (stem: string) =
     let taken = model.Tables |> List.map (fun s -> s.Table.Name) |> Set.ofList
     Seq.initInfinite (fun i -> if i = 0 then stem else $"{stem}{i + 1}") |> Seq.find (taken.Contains >> not)
 
-/// The tables saved: each to `<name>.csv`, or `<name>.arrow` above Arrow's threshold, a file of
-/// a table that moved between the two or was removed taken away, and the prelude written again.
+/// The tables saved: each to `<name>.csv`, or `<name>.arrow` above Arrow's threshold, in
+/// `tables/` in a workspace; a file of a table that moved between the two or was removed taken
+/// away, and the prelude written again.
 let private saveTables (model: Model) =
     match model.Project with
     | None -> model
@@ -562,8 +563,9 @@ let private saveTables (model: Model) =
         let saved =
             model.Tables
             |> List.map (fun s ->
-                let file = s.Table.Name + (if s.Table.Rows > Tambour.Data.Arrow.Threshold then ".arrow" else ".csv")
+                let file = Project.tableFile dir (s.Table.Name + (if s.Table.Rows > Tambour.Data.Arrow.Threshold then ".arrow" else ".csv"))
                 let path = Path.Combine(dir, file)
+                Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
 
                 if file.EndsWith ".arrow" then Tambour.Data.Arrow.writeFile path s.Table
                 else Tambour.Data.Csv.writeFile path s.Table
@@ -852,6 +854,16 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         match model.Path with
         | Some path ->
             try
+                // A lone script given tables of its own: its directory becomes its workspace, where
+                // the tables are kept.
+                let model =
+                    if model.Project.IsNone && not model.Tables.IsEmpty then
+                        let dir = Path.GetDirectoryName path
+                        Project.makeWorkspace dir
+                        { model with Project = Some dir }
+                    else
+                        model
+
                 File.WriteAllText(path, model.Script)
                 writeProject model
                 let model = saveTables model
@@ -859,8 +871,18 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             with e ->
                 { model with Status = $"not saved: {e.Message}" }, Cmd.none
         | None ->
-            model, Cmd.OfTask.either (fun () -> pickSave (topOf env) "Save the script" "figure.fsx" "fsx") () (Option.map SaveAs >> Option.defaultValue Dismissed) Failed
-    | SaveAs path -> { model with Path = Some path }, Cmd.ofMsg Save
+            model, Cmd.OfTask.either (fun () -> pickSave (topOf env) "Save the workspace: a folder named as its script" "figure.fsx" "fsx") () (Option.map SaveAs >> Option.defaultValue Dismissed) Failed
+    | SaveAs path ->
+        // A new workspace is a directory of its own, named as its script: the script, its tables
+        // in `tables/`, and `workspace.json`.
+        try
+            let name = Path.GetFileNameWithoutExtension path
+            let dir = Path.Combine(Path.GetDirectoryName path, name)
+            Directory.CreateDirectory dir |> ignore
+            Project.makeWorkspace dir
+            { model with Path = Some(Path.Combine(dir, name + ".fsx")); Project = Some dir }, Cmd.ofMsg Save
+        with e ->
+            { model with Status = $"not saved: {e.Message}" }, Cmd.none
     | DiskChanged ->
         match model.Path with
         | Some path when File.Exists path ->
@@ -952,12 +974,10 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 match Tambour.Data.Table.create after.Name after.Columns with
                 | Error why -> { model with ActionNote = $"not done: {why}" }, Cmd.none
                 | Ok _ -> { model with Header = None }, Cmd.ofMsg (TableEdited [ e ])
-    | NewTable when model.Project.IsNone -> { model with ActionNote = "a table belongs to a project: open a folder first" }, Cmd.none
     | NewTable ->
         let blank = Tambour.Data.Values.blank "float" 10
         let t: Tambour.Data.Table = { Name = freshName model "table"; Columns = [ { Name = "x"; Unit = null; Values = blank }; { Name = "y"; Unit = null; Values = blank } ] }
         { model with Tab = model.Tables.Length + 1 }, Cmd.ofMsg (TableEdited [ Tambour.Data.AddTable t ])
-    | ChooseImport when model.Project.IsNone -> { model with ActionNote = "a table belongs to a project: open a folder first" }, Cmd.none
     | ChooseImport ->
         let pick () =
             task {

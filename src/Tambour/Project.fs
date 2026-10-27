@@ -1,6 +1,10 @@
-/// A project is a directory: its `*.fsx` scripts and a `project.json` holding what the window
-/// needs to open it again, which script was open, the Skia settings the figures are measured and
-/// exported with, and the Marey the scripts were last run on. A single `.fsx` opens without one.
+/// A project is a directory: its `*.fsx` scripts, its tables, and a settings file holding what the
+/// window needs to open it again, which script was open, the Skia settings the figures are measured
+/// and exported with, and the Marey the scripts were last run on. A single `.fsx` opens without one.
+///
+/// A workspace's directory has its tables in `tables/` and its settings in `workspace.json`, laid
+/// out as a single file of Tambour's own would hold them. A project folder from before, its tables
+/// beside its scripts and its settings in `project.json`, opens and saves as it is.
 module Tambour.Project
 
 open System
@@ -10,6 +14,32 @@ open Tambour.Protocol
 
 [<Literal>]
 let FileName = "project.json"
+
+[<Literal>]
+let WorkspaceFile = "workspace.json"
+
+[<Literal>]
+let TablesDirectory = "tables"
+
+/// Whether a directory is laid out as a workspace rather than as a project folder from before.
+let isWorkspace (directory: string) =
+    File.Exists(Path.Combine(directory, WorkspaceFile)) || Directory.Exists(Path.Combine(directory, TablesDirectory))
+
+/// Lays a directory out as a workspace: its tables' directory made.
+let makeWorkspace (directory: string) =
+    Directory.CreateDirectory(Path.Combine(directory, TablesDirectory)) |> ignore
+
+/// Where the directory's tables are.
+let tablesIn (directory: string) =
+    if isWorkspace directory then Path.Combine(directory, TablesDirectory) else directory
+
+/// A table's file, from the directory and with `/` between, as the prelude names it: in `tables/`
+/// in a workspace, beside the scripts in a project folder.
+let tableFile (directory: string) (file: string) =
+    if isWorkspace directory then $"{TablesDirectory}/{file}" else file
+
+let private settingsPath (directory: string) =
+    Path.Combine(directory, (if isWorkspace directory then WorkspaceFile else FileName))
 
 /// What `project.json` holds.
 type Settings =
@@ -42,7 +72,7 @@ let private json = JsonSerializerOptions(WriteIndented = true)
 
 /// The project's settings, if it has a readable `project.json`.
 let read (directory: string) : Settings option =
-    let path = Path.Combine(directory, FileName)
+    let path = settingsPath directory
 
     if File.Exists path then
         try
@@ -55,7 +85,7 @@ let read (directory: string) : Settings option =
         None
 
 let write (directory: string) (settings: Settings) =
-    File.WriteAllText(Path.Combine(directory, FileName), JsonSerializer.Serialize(settings, json))
+    File.WriteAllText(settingsPath directory, JsonSerializer.Serialize(settings, json))
 
 /// The project's scripts, by name: not the prelude Tambour writes for its tables, which a script
 /// loads but no one writes.

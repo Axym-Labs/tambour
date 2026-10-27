@@ -6,11 +6,11 @@ open System.IO
 open Tambour.Data
 open Tambour.Protocol
 
-/// The project's tables, by file: `<name>.arrow` where there is one, `<name>.csv` otherwise. A file
-/// that does not read is reported, not skipped silently.
+/// The project's tables, by file: `<name>.arrow` where there is one, `<name>.csv` otherwise, in
+/// `tables/` in a workspace. A file that does not read is reported, not skipped silently.
 let load (directory: string) : Prelude.Source list * string list =
     let files =
-        Directory.GetFiles directory
+        Directory.GetFiles(Project.tablesIn directory)
         |> Array.filter (fun f -> f.EndsWith ".csv" || f.EndsWith ".arrow")
         |> Array.groupBy Path.GetFileNameWithoutExtension
         |> Array.sortBy fst
@@ -18,7 +18,7 @@ let load (directory: string) : Prelude.Source list * string list =
 
     let read (file: string) =
         match (if file.EndsWith ".arrow" then Arrow.readFile file else Csv.readFile file) with
-        | Ok table -> Ok { Prelude.Table = table; Prelude.File = Path.GetFileName file }
+        | Ok table -> Ok { Prelude.Table = table; Prelude.File = Project.tableFile directory (Path.GetFileName file) }
         | Error why -> Error $"{Path.GetFileName file}: {why}"
 
     let results = files |> Array.map read |> List.ofArray
