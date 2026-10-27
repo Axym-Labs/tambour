@@ -185,6 +185,10 @@ let fall =
     }
 """
 
+/// A new script in a project with tables: the prelude loaded and opened, so the tables are in
+/// reach by name, as they are when the script runs outside Tambour.
+let newScriptWithTables = "#load \"prelude.fsx\"\nopen Prelude\n\n"
+
 /// What every script may take for granted.
 let prelude =
     "open Marey\nopen Marey.UnitsOfMeasure\nopen Microsoft.FSharp.Data.UnitSystems.SI.UnitSymbols\n"
@@ -764,7 +768,6 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | OpenPath path ->
         try
             let opened = Project.resolve path
-            let text = if File.Exists opened.Script then File.ReadAllText opened.Script else ""
 
             // The project's tables, their prelude written if it changed, and their columns sent.
             let tables, unread =
@@ -774,6 +777,12 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     if not tables.IsEmpty then Tables.writePrelude dir tables |> ignore
                     tables, unread
                 | None -> [], []
+
+            // A new script in a project with tables begins with them in reach.
+            let text =
+                if File.Exists opened.Script then File.ReadAllText opened.Script
+                elif tables.IsEmpty then ""
+                else newScriptWithTables
 
             let note =
                 match opened.Settings, unread with

@@ -198,3 +198,24 @@ let ``the project's prelude is checked as its own module, without problems`` () 
     let error = (service.Value.Check { Id = 2; Text = broken; Path = null }).Diagnostics |> Array.find (fun d -> d.Severity = "error")
     Assert.Equal(4, error.StartLine)
     Assert.False(Analysis.ownsModule "module Nested =\n    let x = 1\n")
+
+/// A script that loads the project's prelude completes its tables by name; one that does not
+/// cannot see them.
+[<Fact>]
+let ``a script that loads the prelude completes a table's name`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-complete").FullName
+
+    let table: Tambour.Data.Table =
+        { Name = "pretrained"
+          Columns = [ { Name = "soma_rmse_mv"; Unit = null; Values = Tambour.Data.Floats [| 3.2; 3.5 |] } ] }
+
+    File.WriteAllText(Path.Combine(dir, "prelude.fsx"), Tambour.Data.Prelude.generate [ { Tambour.Data.Prelude.Table = table; Tambour.Data.Prelude.File = "pretrained.csv" } ])
+    let path = Path.Combine(dir, "figure.fsx")
+
+    let namesAt (text: string) =
+        let lines = text.Split('\n')
+        (service.Value.Complete { Id = 1; Text = text; Path = path; Line = lines.Length; Column = lines.[lines.Length - 1].Length }).Items
+        |> Array.map (fun i -> i.Name)
+
+    Assert.Contains("pretrained", namesAt (Shell.newScriptWithTables + "let a = pre"))
+    Assert.DoesNotContain("pretrained", namesAt "let a = pre")

@@ -407,7 +407,7 @@ type private Classes() =
 /// The script editor: AvaloniaEdit with F# highlighting, the grammar's and the compiler's, in the
 /// colours of the app's light or dark theme, and what the language service says about the script.
 /// Problems are underlined and their messages shown on hover, the symbol at the caret is marked
-/// where it is used and the bracket at it with its match, a dot or Ctrl+Space completes, a
+/// where it is used and the bracket at it with its match, a name typed, a dot or Ctrl+Space completes, a
 /// parenthesis or a comma shows the call's overloads, the pointer resting on a name shows its
 /// tooltip, and F2 renames a binding the script makes. Enter, Tab, Shift+Tab and Backspace indent
 /// as F# is indented, and brackets and quotes are closed as they are opened.
@@ -438,6 +438,12 @@ type ScriptEditor() as this =
     let mutable settingText = false
     let mutable completion: CompletionWindow = null
     let mutable typed = Typed()
+    /// Whether the completion open came by itself, as a name was typed; such a list takes Enter
+    /// only once its choice was moved, so that Enter after a name still ends the line.
+    let mutable unasked = false
+    let mutable moved = false
+    /// Where the name begins whose list, come by itself, was closed: it does not come again in it.
+    let mutable quietAt = -1
     let mutable overloads: OverloadInsightWindow = null
     let mutable look = Palette.light
     let mutable dark = false
@@ -526,24 +532,44 @@ type ScriptEditor() as this =
 
         s
 
-    let complete () =
+    /// Whether a completion's name takes what was typed of it.
+    let takes (typedText: string) (name: string) = typedText = "" || Array.exists id (Shown.matched name typedText)
+
+    /// Opens the completion list at the caret: asked for (a dot, Ctrl+Space), or come by itself
+    /// as a name is typed, and then only where something completes what was typed.
+    let complete (byItself: bool) =
         let line, column = caret ()
         let text = editor.Text
 
         ask (fun l -> l.CompleteAsync(text, path, line, column)) (fun c ->
-            if c.Items.Length > 0 then
+            let start = wordStart ()
+            let sofar = editor.Document.GetText(start, editor.CaretOffset - start)
+
+            let wanted =
+                not byItself
+                || (isNull completion && start <> quietAt && Typing.completesAsTyped editor.Text editor.CaretOffset
+                    && c.Items |> Array.exists (fun i -> takes sofar i.Name))
+
+            if c.Items.Length > 0 && wanted then
                 if not (isNull completion) then completion.Close()
                 let window = CompletionWindow(editor.TextArea)
-                window.StartOffset <- wordStart ()
+                window.StartOffset <- start
                 typed <- Typed()
-                typed.Text <- editor.Document.GetText(window.StartOffset, editor.CaretOffset - window.StartOffset)
+                typed.Text <- sofar
 
                 for item in c.Items do
                     window.CompletionList.CompletionData.Add(CompletionItem(item, look, typed))
 
-                window.Closed.Add(fun _ -> completion <- null)
+                window.Closed.Add(fun _ ->
+                    if obj.ReferenceEquals(completion, window) then
+                        if unasked then quietAt <- window.StartOffset
+                        completion <- null)
+
                 completion <- window
-                window.Show())
+                unasked <- byItself
+                moved <- false
+                window.Show()
+                if sofar <> "" then window.CompletionList.SelectItem sofar)
 
     let signature () =
         let line, column = caret ()
@@ -562,7 +588,15 @@ type ScriptEditor() as this =
     /// parenthesis or a comma.
     let reactTo (input: string) =
         match input with
-        | "." -> complete ()
+        | "." -> complete false
+        | letter when
+            letter.Length = 1
+            && isNull completion
+            && (Char.IsLetterOrDigit letter.[0] || letter.[0] = '_')
+            && wordStart () <> quietAt
+            && Typing.completesAsTyped editor.Text editor.CaretOffset
+            ->
+            complete true
         | "("
         | "," -> signature ()
         | ")" -> if not (isNull overloads) then overloads.Close()
@@ -661,6 +695,17 @@ type ScriptEditor() as this =
         let text () = editor.Text
 
         match e.Key, e.KeyModifiers with
+        | (Key.Up | Key.Down | Key.PageUp | Key.PageDown), _ when not (isNull completion) -> moved <- true
+        | Key.Enter, KeyModifiers.None when not (isNull completion) && unasked && not moved ->
+            // A list that came by itself, its choice not moved: Enter ends the line.
+            completion.Close()
+            e.Handled <- true
+            let s, t = selection ()
+            apply (Typing.enter (text ()) s t)
+        | Key.Tab, KeyModifiers.None when not (isNull completion) ->
+            // Tab takes the list's choice, as Enter does; past the list it would move the focus.
+            e.Handled <- true
+            completion.CompletionList.RequestInsertion e
         | Key.Tab, KeyModifiers.None when isNull completion ->
             e.Handled <- true
             let s, t = selection ()
@@ -873,6 +918,11 @@ type ScriptEditor() as this =
             if not (isNull completion) && editor.CaretOffset >= completion.StartOffset then
                 typed.Text <- editor.Document.GetText(completion.StartOffset, editor.CaretOffset - completion.StartOffset)
 
+                // A list that came by itself goes once nothing in it takes what was typed.
+                if unasked
+                   && not (completion.CompletionList.CompletionData |> Seq.exists (fun d -> takes typed.Text (string d.Text))) then
+                    completion.Close()
+
             after 300 (fun () -> move = moves) markUses)
 
         editor.TextArea.TextEntering.Add onTextEntering
@@ -883,7 +933,7 @@ type ScriptEditor() as this =
             match e.Key, e.KeyModifiers with
             | Key.Space, KeyModifiers.Control ->
                 e.Handled <- true
-                complete ()
+                complete false
             | Key.F2, _ ->
                 e.Handled <- true
                 rename ()

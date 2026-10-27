@@ -61,3 +61,41 @@ let ``a typed dot completes a row's columns, and a binding is renamed wherever i
     pumpUntil 30.0 "the refusal" (fun () -> refused.IsCompleted)
     Assert.False refused.Result
     window.Close()
+
+/// A name typed letter by letter opens the completion; Enter on a list that came by itself ends
+/// the line, and Tab takes its choice.
+[<AvaloniaFact>]
+let ``completion comes as a name is typed, and Enter still ends the line`` () =
+    use language = new LanguageService(command, { References = [||]; Prelude = Shell.prelude })
+    let editor = ScriptEditor(Language = language)
+    let window = Window(Width = 800.0, Height = 500.0, Content = editor)
+    window.Show()
+    let script = "let pretrained = [| 1.0 |]\nlet a = "
+    editor.Text <- script
+    editor.Editor.CaretOffset <- script.Length
+    editor.Editor.TextArea.Focus() |> ignore
+
+    let typeName () =
+        for letter in [ "p"; "r"; "e" ] do
+            window.KeyTextInput letter
+            Dispatcher.UIThread.RunJobs()
+
+        pumpUntil 30.0 "the completion list" (fun () -> editor.Completions.Length > 0)
+        Assert.Contains("pretrained", editor.Completions)
+
+    let press (key: Avalonia.Input.Key) =
+        window.KeyPress(key, Avalonia.Input.RawInputModifiers.None, Avalonia.Input.PhysicalKey.None, null)
+        window.KeyRelease(key, Avalonia.Input.RawInputModifiers.None, Avalonia.Input.PhysicalKey.None, null)
+        Dispatcher.UIThread.RunJobs()
+
+    typeName ()
+    press Avalonia.Input.Key.Enter
+    Assert.StartsWith(script + "pre\n", editor.Text)
+    Assert.Empty editor.Completions
+
+    window.KeyTextInput "let b = "
+    Dispatcher.UIThread.RunJobs()
+    typeName ()
+    press Avalonia.Input.Key.Tab
+    Assert.True(editor.Text.TrimEnd().EndsWith "let b = pretrained", $"text: {editor.Text}; list: %A{editor.Completions}")
+    window.Close()

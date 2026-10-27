@@ -222,3 +222,15 @@ let ``backspaces in indentation group as backspaces do`` () =
         |> History.record now true (back 4 "    ")
 
     Assert.Equal(1, h.Done.Length)
+
+/// Completion comes by itself where a name is being used, not where one is being made, nor in a
+/// comment or a string. The caret is at ‸.
+[<Fact>]
+let ``completion comes by itself where a name is used`` () =
+    let at (marked: string) = Typing.completesAsTyped (marked.Replace("‸", "")) (marked.IndexOf '‸')
+
+    for used in [ "let a = pre‸"; "x |> Array.map (fun r -> r.m‸"; "let b = f (p‸"; "  pre‸"; "let a = _x‸" ] do
+        Assert.True(at used, used)
+
+    for quiet in [ "let p‸"; "let mutable p‸"; "fun r‸"; "type R‸"; "// pre‸"; "let s = \"pre‸"; "let n = 1e‸"; "let a = ‸" ] do
+        Assert.False(at quiet, quiet)

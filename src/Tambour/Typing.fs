@@ -408,3 +408,37 @@ let matching (text: string) (caret: int) : (int * int) option =
             j <- j + step
 
         found |> Option.map (fun j -> i, j))
+
+/// The words after which a name is being made, not used: nothing there to complete.
+let private declaring =
+    set [ "let"; "rec"; "mutable"; "use"; "fun"; "function"; "type"; "and"; "for"; "member"; "val"
+          "module"; "namespace"; "inline"; "private"; "internal"; "public"; "exception"; "as" ]
+
+/// The name the caret is in or just after: where it begins, or the caret itself where it is in
+/// none.
+let wordStart (text: string) (caret: int) =
+    let mutable s = min caret text.Length
+
+    while s > 0 && isIdentifier text.[s - 1] do
+        s <- s - 1
+
+    s
+
+/// Whether completion opens by itself with the caret here, a name's letters just typed before it:
+/// in code, in a name that begins with a letter or `_`, and not a name being declared.
+let completesAsTyped (text: string) (caret: int) =
+    let caret = min caret text.Length
+    let s = wordStart text caret
+
+    if s >= caret || not (Char.IsLetter text.[s] || text.[s] = '_') || not (inCode text caret) then
+        false
+    else
+        // The word before this one, on its line, past any spaces.
+        let mutable e = s
+
+        while e > 0 && (text.[e - 1] = ' ' || text.[e - 1] = '\t') do
+            e <- e - 1
+
+        let b = wordStart text e
+        let before = text.Substring(b, e - b)
+        not (declaring.Contains before)
