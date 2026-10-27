@@ -61,8 +61,9 @@ type App() =
 
 module App =
 
-    /// Popups (tooltips, the completion list, menus) drawn inside the window on Linux. As X11
-    /// windows of their own they are placed by whatever manages windows, and under XWayland a
-    /// compositor may move them: Hyprland showed a problem's tooltip at the screen's centre.
+    /// Inter as the one UI font on every OS, carried in the app. Popups (tooltips, the completion
+    /// list, menus) drawn inside the window on Linux: as X11 windows of their own they are placed
+    /// by whatever manages windows, and under XWayland a compositor may move them (Hyprland showed
+    /// a problem's tooltip at the screen's centre).
     let builder () =
-        AppBuilder.Configure<App>().UsePlatformDetect().With(X11PlatformOptions(OverlayPopups = true))
+        AppBuilder.Configure<App>().UsePlatformDetect().WithInterFont().With(X11PlatformOptions(OverlayPopups = true))

@@ -149,8 +149,10 @@ type TableGrid() as this =
     let horizontal = ScrollBar(Orientation = Orientation.Horizontal, Minimum = 0.0, SmallChange = 1.0, LargeChange = 1.0)
     let editor = TextBox(IsVisible = false, BorderThickness = Thickness 1.0, Padding = Thickness(3.0, 1.0), MinHeight = 0.0)
 
-    let typeface = Typeface FontFamily.Default
-    let bold = Typeface(FontFamily.Default, FontStyle.Normal, FontWeight.SemiBold)
+    // The UI's font, Inter, where the app carries it.
+    let font = FontFamily "fonts:Inter#Inter, $Default"
+    let typeface = Typeface font
+    let bold = Typeface(font, FontStyle.Normal, FontWeight.SemiBold)
 
     let text (s: string) (face: Typeface) (size: float) (brush: IBrush) =
         FormattedText(s, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, face, size, brush)

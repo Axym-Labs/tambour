@@ -37,7 +37,7 @@ type private Typed() =
 module private Shown =
 
     /// The editor's font, and the code in its tooltips.
-    let code = FontFamily "Cascadia Code,Consolas,DejaVu Sans Mono,monospace"
+    let code = Palette.code
 
     /// Which characters of a name the typed text matches, in order and ignoring case; none where it
     /// does not match them all.
@@ -372,7 +372,7 @@ type ScriptEditor() as this =
     inherit UserControl()
 
     let editor =
-        TextEditor(ShowLineNumbers = true, FontFamily = Shown.code, FontSize = 13.0)
+        TextEditor(ShowLineNumbers = true, FontFamily = Shown.code, FontSize = 14.0)
 
     let registry = RegistryOptions ThemeName.LightPlus
     let textMate = TextMate.InstallTextMate(editor, registry, true, null)
@@ -386,6 +386,7 @@ type ScriptEditor() as this =
 
     let edited = Event<History.TextEdit * string>()
     let problemsChanged = Event<Diagnostic[]>()
+    let caretMoved = Event<int * int>()
 
     let mutable language: LanguageService = Unchecked.defaultof<_>
     let mutable path: string = null
@@ -794,6 +795,9 @@ type ScriptEditor() as this =
         // The app keeps the history, so AvaloniaEdit keeps none.
         editor.Document.UndoStack.SizeLimit <- 0
 
+        editor.TextArea.Caret.PositionChanged.Add(fun _ ->
+            caretMoved.Trigger(editor.TextArea.Caret.Line, editor.TextArea.Caret.Column))
+
         editor.TextChanged.Add(fun _ ->
             version <- version + 1
             marks.Uses <- [||]
@@ -940,3 +944,7 @@ type ScriptEditor() as this =
     /// The language service's problems, after each check.
     [<CLIEvent>]
     member _.ProblemsChanged = problemsChanged.Publish
+
+    /// Where the caret is, as a line and a column from 1, each time it moves.
+    [<CLIEvent>]
+    member _.CaretMoved = caretMoved.Publish

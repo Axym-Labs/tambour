@@ -1,5 +1,5 @@
-/// The window: the script on the left, its figure on the right, the output below the script and
-/// the figure's controls below the figure. An Elmish loop over FuncUI, whose messages include
+/// The window: a menu bar and a toolbar over the script on the left and its figure (or a table) on
+/// the right, the problems and the output in a panel below the script, a status bar at the foot. An Elmish loop over FuncUI, whose messages include
 /// everything the worker says.
 module Tambour.Shell
 
@@ -124,6 +124,7 @@ module Editor =
 
     let onEdited f = subscription "Edited" (fun e -> e.Edited) f
     let onProblemsChanged f = subscription "ProblemsChanged" (fun e -> e.ProblemsChanged) f
+    let onCaretMoved f = subscription "CaretMoved" (fun e -> e.CaretMoved) f
 
 /// The table grid in FuncUI's terms.
 module Sheet =
@@ -255,7 +256,17 @@ type Model =
       Marks: Point[]
       /// The theme chosen in View → Theme, and the look the window is drawn in by it.
       Theme: Preferences.Theme
-      Look: Palette.Look }
+      Look: Palette.Look
+      /// Where the caret is, for the status bar.
+      Caret: int * int
+      /// Where the divider between the script and the right side is, as a fraction of the width.
+      Split: float
+      /// The panel under the script: whether it is open, its tab (problems, output), its height.
+      BottomOpen: bool
+      BottomTab: int
+      Bottom: float
+      /// Whether the figure's actions are shown.
+      ActionsOpen: bool }
 
 type Msg =
     | Edited of History.TextEdit * string
@@ -299,7 +310,18 @@ type Msg =
     | PickFor of PlottedFields * Rect
     | ChooseTheme of Preferences.Theme
     | LookChanged of Palette.Look
+    | Caret of line: int * column: int
+    | ToggleBottom
+    | ShowBottom of tab: int
+    | ToggleActions
+    /// A divider dragged: where the script's side ends, as a fraction, and the bottom panel's height.
+    | Resized of split: float * bottom: float
+    | About
+    | Quit
     | Failed of exn
+
+/// The bottom panel's height where a project has none.
+let defaultBottom = 170.0
 
 let init (script: string) () : Model * Cmd<Msg> =
     { Script = script
@@ -336,7 +358,13 @@ let init (script: string) () : Model * Cmd<Msg> =
       Marked = None
       Marks = [||]
       Theme = App.Theme
-      Look = Palette.light },
+      Look = Palette.light
+      Caret = (1, 1)
+      Split = 0.5
+      BottomOpen = true
+      BottomTab = 0
+      Bottom = defaultBottom
+      ActionsOpen = true },
     Cmd.none
 
 let private send (env: Env) (request: Request) : Cmd<Msg> =
@@ -403,7 +431,13 @@ let private writeProject (model: Model) =
     match model.Project, model.Path with
     | Some dir, Some path when Path.GetDirectoryName path = dir ->
         let settings = model.Settings |> Option.defaultValue (Project.defaults (Path.GetFileName path))
-        Project.write dir { settings with Script = Path.GetFileName path; Marey = Project.mareyVersion }
+        Project.write
+            dir
+            { settings with
+                Script = Path.GetFileName path
+                Marey = Project.mareyVersion
+                Split = model.Split
+                Bottom = model.Bottom }
     | _ -> ()
 
 /// The tables by name, as the history holds them.
@@ -518,6 +552,36 @@ let private saveTables (model: Model) =
             Tables = saved
             SavedTables = saved |> List.map (fun s -> s.Table.Name, s.Table) |> Map.ofList
             TableFiles = files }
+
+/// This app's version, as its package names it.
+let tambourVersion =
+    let assembly = typeof<Env>.Assembly
+
+    match assembly.GetCustomAttributes(typeof<Reflection.AssemblyInformationalVersionAttribute>, false) with
+    | [| :? Reflection.AssemblyInformationalVersionAttribute as v |] -> v.InformationalVersion.Split('+').[0]
+    | _ -> string (assembly.GetName().Version)
+
+/// Help → About: what this is, which Marey it runs, and where its licences are.
+let private aboutWindow (look: Palette.Look) =
+    let close = Button(Content = "Close", HorizontalAlignment = HorizontalAlignment.Right, IsDefault = true, IsCancel = true)
+
+    let text =
+        TextBlock(
+            Text =
+                $"Tambour {tambourVersion}\nScripts run on Marey {Project.mareyVersion}.\n\nMPL-2.0. The libraries it carries, and their licences, are listed in THIRD-PARTY-NOTICES.md beside it.",
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = SolidColorBrush look.Text
+        )
+
+    let panel = StackPanel(Spacing = 12.0, Margin = Thickness 18.0)
+    panel.Children.Add text
+    panel.Children.Add close
+
+    let window =
+        Window(Title = "About Tambour", Width = 420.0, SizeToContent = SizeToContent.Height, CanResize = false, Content = panel, WindowStartupLocation = WindowStartupLocation.CenterOwner)
+
+    close.Click.Add(fun _ -> window.Close())
+    window
 
 let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
@@ -716,6 +780,8 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 Path = Some opened.Script
                 Project = opened.Project
                 Settings = opened.Settings
+                Split = (match opened.Settings with Some s when s.Split > 0.05 && s.Split < 0.95 -> s.Split | _ -> model.Split)
+                Bottom = (match opened.Settings with Some s when s.Bottom > 0.0 -> s.Bottom | _ -> model.Bottom)
                 History = History.empty
                 Figures = [||]
                 Selected = -1
@@ -909,7 +975,28 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         App.Choose theme
         { model with Theme = theme }, Cmd.none
     | LookChanged look -> { model with Look = look }, Cmd.none
+    | Caret(line, column) -> { model with Caret = (line, column) }, Cmd.none
+    | ToggleBottom -> { model with BottomOpen = not model.BottomOpen }, Cmd.none
+    | ShowBottom tab -> { model with BottomOpen = true; BottomTab = tab }, Cmd.none
+    | ToggleActions -> { model with ActionsOpen = not model.ActionsOpen }, Cmd.none
+    | Resized(split, bottom) ->
+        let next = { model with Split = split; Bottom = bottom }
+        writeProject next
+        next, Cmd.none
+    | About ->
+        match env.Window with
+        | :? Window as owner -> model, Cmd.OfTask.attempt (fun () -> (aboutWindow model.Look).ShowDialog owner) () Failed
+        | _ -> model, Cmd.none
+    | Quit ->
+        match env.Window with
+        | :? Window as w -> w.Close()
+        | _ -> ()
+
+        model, Cmd.none
     | Failed e -> { model with Status = e.Message }, Cmd.none
+
+/// The one spacing unit; every margin and gap is a multiple of it.
+let gap = 6.0
 
 let private label (text: string) : IView =
     TextBlock.create [ TextBlock.text text; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.margin (Thickness(0.0, 0.0, 8.0, 0.0)) ]
@@ -1028,7 +1115,7 @@ let private actionsView (model: Model) (dispatch: Msg -> unit) : IView =
             None
 
     let group (children: IView list) : IView =
-        StackPanel.create [ StackPanel.orientation Orientation.Horizontal; StackPanel.spacing 4.0; StackPanel.margin (Thickness(0.0, 0.0, 10.0, 4.0)); StackPanel.children children ]
+        StackPanel.create [ StackPanel.orientation Orientation.Horizontal; StackPanel.spacing gap; StackPanel.margin (Thickness(0.0, 0.0, 2.0 * gap, gap)); StackPanel.children children ]
 
     match Array.tryItem model.Selected model.Figures with
     | Some f when f.Controls > 0 ->
@@ -1038,17 +1125,40 @@ let private actionsView (model: Model) (dispatch: Msg -> unit) : IView =
             TextBlock.text "This figure is inside interact { }: it is shown and driven, but the actions edit plot { } blocks and Chart.* pipelines only."
         ]
     | Some _ ->
-        WrapPanel.create [
-            WrapPanel.margin (Thickness(6.0, 4.0))
-            WrapPanel.children [
-                group [ input "title" "title" 140.0; button "title" "Title" (text "title" "title") ]
-                group [ input "x label" "x label" 100.0; button "x label" "X label" (text "x label" "x label") ]
-                group [ input "y label" "y label" 100.0; button "y label" "Y label" (text "y label" "y label") ]
-                group [ button "log y" "Log y" (fun () -> Some { Kind = "log y"; Text = ""; Lo = 0.0; Hi = 0.0 }) ]
-                group [ input "lo" "from" 60.0; input "hi" "to" 60.0; button "y domain" "Y domain" domain ]
-                group [ menu "theme" "Theme" themes; menu "legend" "Legend" placements ]
-                group [ menu "colour by" "Colour by" model.Columns; menu "facet" "Facet by" model.Columns ]
-                group [ button "fit" "Fit" (fun () -> Some { Kind = "fit"; Text = ""; Lo = 0.0; Hi = 0.0 }); menu "layer" "Add layer" geoms ]
+        let section (name: string) (children: IView list) : IView =
+            DockPanel.create [
+                DockPanel.margin (Thickness(0.0, 0.0, 0.0, gap))
+                DockPanel.children [
+                    TextBlock.create [
+                        TextBlock.dock Dock.Left
+                        TextBlock.width 64.0
+                        TextBlock.margin (Thickness(0.0, 6.0, 0.0, 0.0))
+                        TextBlock.text name
+                        TextBlock.fontSize 12.0
+                        TextBlock.foreground (SolidColorBrush model.Look.Dim)
+                    ]
+                    WrapPanel.create [ WrapPanel.children children ]
+                ]
+            ]
+
+        StackPanel.create [
+            StackPanel.margin (Thickness(2.0 * gap, gap))
+            StackPanel.children [
+                section "Labels" [
+                    group [ input "title" "title" 140.0; button "title" "Title" (text "title" "title") ]
+                    group [ input "x label" "x label" 100.0; button "x label" "X label" (text "x label" "x label") ]
+                    group [ input "y label" "y label" 100.0; button "y label" "Y label" (text "y label" "y label") ]
+                ]
+                section "Axes" [
+                    group [ button "log y" "Log y" (fun () -> Some { Kind = "log y"; Text = ""; Lo = 0.0; Hi = 0.0 }) ]
+                    group [ input "lo" "from" 60.0; input "hi" "to" 60.0; button "y domain" "Y domain" domain ]
+                ]
+                section "Look" [
+                    group [ menu "theme" "Theme" themes; menu "legend" "Legend" placements; menu "colour by" "Colour by" model.Columns ]
+                ]
+                section "Layers" [
+                    group [ menu "layer" "Add layer" geoms; button "fit" "Fit" (fun () -> Some { Kind = "fit"; Text = ""; Lo = 0.0; Hi = 0.0 }); menu "facet" "Facet by" model.Columns ]
+                ]
             ]
         ]
     | None -> TextBlock.create [ TextBlock.margin (Thickness(8.0, 4.0)); TextBlock.text "Run a script that binds a figure to edit it here." ]
@@ -1157,13 +1267,100 @@ and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Ta
         ]
     ]
 
+/// An action of the window's: its menu and its name there, its shortcut and any other keys that do
+/// the same, the message it sends, and whether it can be taken now. The menus, the toolbar and
+/// the keys are all made from these, so a shortcut always does what its menu entry does.
+type Command =
+    { Menu: string
+      Header: string
+      Gesture: KeyGesture option
+      Also: KeyGesture list
+      Msg: Msg
+      Enabled: Model -> bool }
+
+/// The menus, in the menu bar's order.
+let menus = [ "_File"; "_Edit"; "_Run"; "_Table"; "_View"; "_Help" ]
+
+let commands: Command list =
+    let always (_: Model) = true
+
+    let c menu header (keys: string) (also: string list) msg enabled =
+        { Menu = menu
+          Header = header
+          Gesture = (if keys = "" then None else Some(KeyGesture.Parse keys))
+          Also = also |> List.map KeyGesture.Parse
+          Msg = msg
+          Enabled = enabled }
+
+    [ c "_File" "_Open…" "Ctrl+O" [] (ChooseOpen false) always
+      c "_File" "Open _folder…" "Ctrl+Shift+O" [] (ChooseOpen true) always
+      c "_File" "_Save" "Ctrl+S" [] Save always
+      c "_File" "_Export figure…" "Ctrl+E" [] ChooseExport (fun m -> not (isNull m.Picture))
+      c "_File" "_Quit" "Ctrl+Q" [] Quit always
+      c "_Edit" "_Undo" "Ctrl+Z" [] Undo (fun m -> not m.History.Done.IsEmpty)
+      c "_Edit" "_Redo" "Ctrl+Y" [ "Ctrl+Shift+Z" ] Redo (fun m -> not m.History.Undone.IsEmpty)
+      c "_Run" "_Run" "F5" [ "Ctrl+Enter" ] Run always
+      c "_Run" "_Cancel" "Escape" [] Cancel (fun m -> m.Running)
+      c "_Table" "_New table" "Ctrl+T" [] NewTable always
+      c "_Table" "_Import table…" "Ctrl+Shift+I" [] ChooseImport always
+      c "_Table" "_Plot selected columns" "Ctrl+Shift+P" [] PlotSelected (fun m -> m.TableSelection.IsSome)
+      c "_View" "_Problems" "Ctrl+Shift+M" [] (ShowBottom 0) always
+      c "_View" "_Output" "Ctrl+Shift+U" [] (ShowBottom 1) always
+      c "_View" "_Bottom panel" "Ctrl+J" [] ToggleBottom always
+      c "_View" "_Actions" "Ctrl+Shift+A" [] ToggleActions always
+      c "_Help" "_About Tambour" "" [] About always ]
+
+/// The command a key and its modifiers take, if one does.
+let commandFor (key: Key) (modifiers: KeyModifiers) =
+    commands
+    |> List.tryFind (fun c -> (Option.toList c.Gesture @ c.Also) |> List.exists (fun g -> g.Key = key && g.KeyModifiers = modifiers))
+
+let private commandNamed (header: string) = commands |> List.find (fun c -> c.Header = header)
+
+/// A small drawn icon, in the look's text colour: stroked unless it is a solid shape.
+let private icon (look: Palette.Look) (data: string) (solid: bool) (enabled: bool) : IView =
+    Avalonia.FuncUI.DSL.Path.create [
+        Shapes.Path.data (Geometry.Parse data)
+        Shapes.Path.width 16.0
+        Shapes.Path.height 16.0
+        Shapes.Path.opacity (if enabled then 1.0 else 0.4)
+        if solid then
+            Shapes.Path.fill (SolidColorBrush look.Accent)
+        else
+            Shapes.Path.stroke (SolidColorBrush look.Text)
+            Shapes.Path.strokeThickness 1.5
+            Shapes.Path.strokeLineCap PenLineCap.Round
+            Shapes.Path.strokeJoin PenLineJoin.Round
+    ]
+
+let private icons =
+    Map.ofList
+        [ "_Run", ("M4.5,2.5 L13.5,8 L4.5,13.5 Z", true)
+          "_Cancel", ("M3.5,3.5 H12.5 V12.5 H3.5 Z", true)
+          "_Undo", ("M5.5,3 L2,6.5 L5.5,10 M2,6.5 H10 A3.75,3.75 0 0 1 10,14 H7", false)
+          "_Redo", ("M10.5,3 L14,6.5 L10.5,10 M14,6.5 H6 A3.75,3.75 0 0 0 6,14 H9", false)
+          "_Export figure…", ("M8,2 V10 M4.5,5.5 L8,2 L11.5,5.5 M2.5,10 V13.5 H13.5 V10", false) ]
+
 let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
+    let look = model.Look
+    let brush (c: Color) = SolidColorBrush c
+
     let output =
         String.Join("\n", model.Diagnostics |> Array.map diagnosticLine)
         + (if model.Diagnostics.Length > 0 && model.Output.Length > 0 then "\n" else "")
         + model.Output
 
-    let themeItem (theme: Preferences.Theme) (header: string) =
+    let menuItem (command: Command) : IView =
+        MenuItem.create [
+            MenuItem.header command.Header
+            match command.Gesture with
+            | Some g -> MenuItem.inputGesture g
+            | None -> ()
+            MenuItem.isEnabled (command.Enabled model)
+            MenuItem.onClick ((fun _ -> dispatch command.Msg), SubPatchOptions.Always)
+        ]
+
+    let themeItem (theme: Preferences.Theme) (header: string) : IView =
         MenuItem.create [
             MenuItem.header header
             MenuItem.toggleType MenuItemToggleType.Radio
@@ -1172,68 +1369,230 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
             MenuItem.onClick ((fun _ -> dispatch (ChooseTheme theme)), SubPatchOptions.Always)
         ]
 
-    DockPanel.create [
-        DockPanel.children [
-            Menu.create [
-                Menu.dock Dock.Top
-                Menu.viewItems [
+    let menuBar =
+        Menu.create [
+            Menu.dock Dock.Top
+            Menu.viewItems [
+                for name in menus do
                     MenuItem.create [
-                        MenuItem.header "_View"
+                        MenuItem.header name
                         MenuItem.viewItems [
-                            MenuItem.create [
-                                MenuItem.header "_Theme"
-                                MenuItem.viewItems [
-                                    themeItem Preferences.Light "_Light"
-                                    themeItem Preferences.Dark "_Dark"
-                                    themeItem Preferences.FollowSystem "Follow _system"
+                            for command in commands |> List.filter (fun c -> c.Menu = name) do
+                                menuItem command
+                            if name = "_View" then
+                                Separator.create []
+                                MenuItem.create [
+                                    MenuItem.header "_Theme"
+                                    MenuItem.viewItems [
+                                        themeItem Preferences.Light "_Light"
+                                        themeItem Preferences.Dark "_Dark"
+                                        themeItem Preferences.FollowSystem "Follow _system"
+                                    ]
                                 ]
-                            ]
+                        ]
+                    ]
+            ]
+        ]
+
+    let tool (header: string) : IView =
+        let command = commandNamed header
+        let data, solid = icons.[header]
+        let enabled = command.Enabled model
+        let name = header.Replace("_", "").TrimEnd('…')
+
+        Button.create [
+            Button.content (icon look data solid enabled)
+            Button.isEnabled enabled
+            Button.padding (Thickness(gap, gap * 0.75))
+            Button.background Brushes.Transparent
+            Button.tip (match command.Gesture with Some g -> $"{name} ({g})" | None -> name)
+            Button.onClick ((fun _ -> dispatch command.Msg), SubPatchOptions.Always)
+        ]
+
+    let toolbar =
+        Border.create [
+            Border.dock Dock.Top
+            Border.borderBrush (brush look.Line)
+            Border.borderThickness (Thickness(0.0, 0.0, 0.0, 1.0))
+            Border.child (
+                StackPanel.create [
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.margin (Thickness(gap, gap / 2.0))
+                    StackPanel.spacing (gap / 2.0)
+                    StackPanel.children [
+                        tool "_Run"
+                        tool "_Cancel"
+                        Border.create [ Border.width 1.0; Border.margin (Thickness(gap, gap / 2.0)); Border.background (brush look.Line) ]
+                        tool "_Undo"
+                        tool "_Redo"
+                        Border.create [ Border.width 1.0; Border.margin (Thickness(gap, gap / 2.0)); Border.background (brush look.Line) ]
+                        tool "_Export figure…"
+                        ComboBox.create [
+                            ComboBox.dataItems exportFormats
+                            ComboBox.verticalAlignment VerticalAlignment.Center
+                            ComboBox.tip "the format Export writes"
+                            ComboBox.selectedIndex (exportFormats |> Array.tryFindIndex (fun f -> Some f = model.Inputs.TryFind "export format") |> Option.defaultValue 0)
+                            ComboBox.onSelectedIndexChanged ((fun i -> if i >= 0 then dispatch (Typed("export format", exportFormats.[i]))), SubPatchOptions.Always)
+                        ]
+                        ComboBox.create [
+                            ComboBox.minWidth 140.0
+                            ComboBox.margin (Thickness(gap, 0.0, 0.0, 0.0))
+                            ComboBox.verticalAlignment VerticalAlignment.Center
+                            ComboBox.isVisible (model.Figures.Length > 1)
+                            ComboBox.tip "the figure shown"
+                            ComboBox.dataItems (model.Figures |> Array.map (fun f -> f.Name))
+                            ComboBox.selectedIndex model.Selected
+                            ComboBox.onSelectedIndexChanged (fun i -> dispatch (Select i))
+                        ]
+                        TextBlock.create [
+                            TextBlock.text model.ActionNote
+                            TextBlock.margin (Thickness(gap, 0.0, 0.0, 0.0))
+                            TextBlock.verticalAlignment VerticalAlignment.Center
+                            TextBlock.foreground (brush (if model.ActionNote.Contains "whole expression" || model.ActionNote.StartsWith "not done" then look.Warning else look.Dim))
                         ]
                     ]
                 ]
-            ]
-            StackPanel.create [
-                StackPanel.dock Dock.Top
-                StackPanel.orientation Orientation.Horizontal
-                StackPanel.margin (Thickness 6.0)
-                StackPanel.spacing 6.0
-                StackPanel.children [
-                    Button.create [ Button.content "Open…"; Button.onClick (fun _ -> dispatch (ChooseOpen false)) ]
-                    Button.create [ Button.content "Open folder…"; Button.onClick (fun _ -> dispatch (ChooseOpen true)) ]
-                    Button.create [ Button.content "Save"; Button.onClick (fun _ -> dispatch Save) ]
-                    Button.create [ Button.content "New table"; Button.onClick (fun _ -> dispatch NewTable) ]
-                    Button.create [ Button.content "Import…"; Button.onClick (fun _ -> dispatch ChooseImport) ]
-                    Button.create [ Button.content "Run"; Button.onClick (fun _ -> dispatch Run) ]
-                    Button.create [ Button.content "Cancel"; Button.isEnabled model.Running; Button.onClick (fun _ -> dispatch Cancel) ]
-                    Button.create [ Button.content "Undo"; Button.isEnabled (not model.History.Done.IsEmpty); Button.onClick (fun _ -> dispatch Undo) ]
-                    Button.create [ Button.content "Redo"; Button.isEnabled (not model.History.Undone.IsEmpty); Button.onClick (fun _ -> dispatch Redo) ]
-                    ComboBox.create [
-                        ComboBox.minWidth 140.0
-                        ComboBox.isVisible (model.Figures.Length > 1)
-                        ComboBox.dataItems (model.Figures |> Array.map (fun f -> f.Name))
-                        ComboBox.selectedIndex model.Selected
-                        ComboBox.onSelectedIndexChanged (fun i -> dispatch (Select i))
-                    ]
-                    ComboBox.create [
-                        ComboBox.dataItems exportFormats
-                        ComboBox.selectedIndex (exportFormats |> Array.tryFindIndex (fun f -> Some f = model.Inputs.TryFind "export format") |> Option.defaultValue 0)
-                        ComboBox.onSelectedIndexChanged ((fun i -> if i >= 0 then dispatch (Typed("export format", exportFormats.[i]))), SubPatchOptions.Always)
-                    ]
-                    Button.create [ Button.content "Export…"; Button.isEnabled (not (isNull model.Picture)); Button.onClick (fun _ -> dispatch ChooseExport) ]
-                    label model.Status
-                    TextBlock.create [
-                        TextBlock.text model.ActionNote
-                        TextBlock.verticalAlignment VerticalAlignment.Center
-                        TextBlock.foreground (SolidColorBrush(if model.ActionNote.Contains "whole expression" || model.ActionNote.StartsWith "not done" then model.Look.Warning else model.Look.Dim))
+            )
+        ]
+
+    let errors = model.Problems |> Array.filter (fun d -> d.Severity = "error") |> Array.length
+    let warnings = model.Problems.Length - errors
+
+    let statusText (text: string) (colour: Color) : IView =
+        TextBlock.create [
+            TextBlock.text text
+            TextBlock.fontSize 12.0
+            TextBlock.verticalAlignment VerticalAlignment.Center
+            TextBlock.margin (Thickness(gap, 0.0))
+            TextBlock.foreground (brush colour)
+        ]
+
+    let statusBar =
+        Border.create [
+            Border.dock Dock.Bottom
+            Border.background (brush look.Raised)
+            Border.borderBrush (brush look.Line)
+            Border.borderThickness (Thickness(0.0, 1.0, 0.0, 0.0))
+            Border.child (
+                DockPanel.create [
+                    DockPanel.margin (Thickness(gap, 2.0))
+                    DockPanel.children [
+                        StackPanel.create [
+                            StackPanel.dock Dock.Right
+                            StackPanel.orientation Orientation.Horizontal
+                            StackPanel.children [
+                                Button.create [
+                                    Button.padding (Thickness(gap, 1.0))
+                                    Button.background Brushes.Transparent
+                                    Button.tip "show the problems (Ctrl+Shift+M)"
+                                    Button.onClick ((fun _ -> dispatch (ShowBottom 0)), SubPatchOptions.Always)
+                                    Button.content (
+                                        statusText
+                                            (match errors, warnings with
+                                             | 0, 0 -> "no problems"
+                                             | e, 0 -> $"""{e} error{if e = 1 then "" else "s"}"""
+                                             | 0, w -> $"""{w} warning{if w = 1 then "" else "s"}"""
+                                             | e, w -> $"""{e} error{if e = 1 then "" else "s"}, {w} warning{if w = 1 then "" else "s"}""")
+                                            (if errors > 0 then look.Error elif warnings > 0 then look.Warning else look.Text)
+                                    )
+                                ]
+                                statusText $"Ln {fst model.Caret}, Col {snd model.Caret}" look.Text
+                                statusText $"Marey {Project.mareyVersion}" look.Dim
+                            ]
+                        ]
+                        statusText model.Status look.Text
                     ]
                 ]
+            )
+        ]
+
+    let bottomPanel =
+        TabControl.create [
+            Grid.row 2
+            TabControl.isVisible model.BottomOpen
+            TabControl.selectedIndex model.BottomTab
+            TabControl.onSelectedIndexChanged ((fun i -> if i >= 0 && i <> model.BottomTab then dispatch (ShowBottom i)), SubPatchOptions.Always)
+            TabControl.viewItems [
+                TabItem.create [
+                    TabItem.header (if model.Problems.Length = 0 then "Problems" else $"Problems ({model.Problems.Length})")
+                    TabItem.fontSize 13.0
+                    TabItem.content (
+                        ScrollViewer.create [
+                            ScrollViewer.content (
+                                StackPanel.create [
+                                    StackPanel.children [
+                                        if model.Problems.Length = 0 then
+                                            TextBlock.create [ TextBlock.margin (Thickness gap); TextBlock.text "No problems in the script."; TextBlock.foreground (brush look.Dim) ]
+                                        for d in model.Problems do
+                                            problemView look dispatch d
+                                    ]
+                                ]
+                            )
+                        ]
+                    )
+                ]
+                TabItem.create [
+                    TabItem.header "Output"
+                    TabItem.fontSize 13.0
+                    TabItem.content (
+                        TextBox.create [
+                            TextBox.text output
+                            TextBox.isReadOnly true
+                            TextBox.fontFamily Palette.code
+                            TextBox.textWrapping TextWrapping.Wrap
+                        ]
+                    )
+                ]
             ]
+        ]
+
+    /// Where a divider was let go: the fractions and heights it left, sent to be kept.
+    let dragged (e: VectorEventArgs) =
+        match e.Source with
+        | :? GridSplitter as splitter ->
+            match splitter.Parent with
+            | :? Grid as grid when grid.ColumnDefinitions.Count = 3 ->
+                let a, b = grid.ColumnDefinitions.[0].ActualWidth, grid.ColumnDefinitions.[2].ActualWidth
+                if a + b > 0.0 then dispatch (Resized(a / (a + b), model.Bottom))
+            | :? Grid as grid when grid.RowDefinitions.Count = 3 ->
+                let h = grid.RowDefinitions.[2].ActualHeight
+                if h > 0.0 then dispatch (Resized(model.Split, h))
+            | _ -> ()
+        | _ -> ()
+
+    let split = Math.Clamp(model.Split, 0.05, 0.95)
+    let inv (v: float) = v.ToString(Globalization.CultureInfo.InvariantCulture)
+
+    let actionsHeader =
+        Button.create [
+            Button.dock Dock.Top
+            Button.horizontalAlignment HorizontalAlignment.Stretch
+            Button.horizontalContentAlignment HorizontalAlignment.Left
+            Button.background Brushes.Transparent
+            Button.padding (Thickness(2.0 * gap, gap / 2.0))
+            Button.tip "show or hide the figure's actions (Ctrl+Shift+A)"
+            Button.onClick ((fun _ -> dispatch ToggleActions), SubPatchOptions.Always)
+            Button.content (
+                TextBlock.create [
+                    TextBlock.text ((if model.ActionsOpen then "▾ " else "▸ ") + "Actions")
+                    TextBlock.fontWeight FontWeight.SemiBold
+                    TextBlock.foreground (brush look.Text)
+                ]
+            )
+        ]
+
+    DockPanel.create [
+        DockPanel.background (brush look.Surface)
+        DockPanel.children [
+            menuBar
+            toolbar
+            statusBar
             Grid.create [
-                Grid.columnDefinitions "*,4,*"
+                Grid.columnDefinitions $"{inv split}*,4,{inv (1.0 - split)}*"
                 Grid.children [
                     Grid.create [
                         Grid.column 0
-                        Grid.rowDefinitions "*,4,Auto,160"
+                        Grid.rowDefinitions (if model.BottomOpen then $"*,4,{inv model.Bottom}" else "*,0,0")
                         Grid.children [
                             Editor.create [
                                 Grid.row 0
@@ -1243,43 +1602,37 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                 Editor.goTo model.GoTo
                                 Editor.onEdited (Edited >> dispatch)
                                 Editor.onProblemsChanged (Problems >> dispatch)
+                                Editor.onCaretMoved (Caret >> dispatch)
                             ]
-                            GridSplitter.create [ Grid.row 1 ]
-                            ScrollViewer.create [
-                                Grid.row 2
-                                ScrollViewer.maxHeight 110.0
-                                ScrollViewer.content (
-                                    StackPanel.create [
-                                        StackPanel.children (model.Problems |> Array.map (problemView model.Look dispatch) |> List.ofArray)
-                                    ]
-                                )
+                            GridSplitter.create [
+                                Grid.row 1
+                                GridSplitter.isVisible model.BottomOpen
+                                GridSplitter.background (brush look.Line)
+                                Primitives.Thumb.onDragCompleted dragged
                             ]
-                            TextBox.create [
-                                Grid.row 3
-                                TextBox.text output
-                                TextBox.isReadOnly true
-                                TextBox.fontFamily (FontFamily "monospace")
-                                TextBox.textWrapping TextWrapping.Wrap
-                            ]
+                            bottomPanel
                         ]
                     ]
-                    GridSplitter.create [ Grid.column 1 ]
+                    GridSplitter.create [ Grid.column 1; GridSplitter.background (brush look.Line); Primitives.Thumb.onDragCompleted dragged ]
                     TabControl.create [
                         Grid.column 2
+                        TabControl.name "sheets"
                         TabControl.selectedIndex model.Tab
                         TabControl.onSelectedIndexChanged ((fun i -> if i >= 0 && i <> model.Tab then dispatch (SelectTab i)), SubPatchOptions.Always)
                         TabControl.viewItems [
                             TabItem.create [
                                 TabItem.header "Figure"
+                                TabItem.fontSize 15.0
                                 TabItem.content (
                                     DockPanel.create [
                                         DockPanel.children [
-                                            Expander.create [
-                                                Expander.dock Dock.Top
-                                                Expander.header "Actions"
-                                                Expander.isExpanded true
-                                                Expander.horizontalAlignment HorizontalAlignment.Stretch
-                                                Expander.content (actionsView model dispatch)
+                                            actionsHeader
+                                            Border.create [
+                                                Border.dock Dock.Top
+                                                Border.isVisible model.ActionsOpen
+                                                Border.borderBrush (brush look.Line)
+                                                Border.borderThickness (Thickness(0.0, 0.0, 0.0, 1.0))
+                                                Border.child (actionsView model dispatch)
                                             ]
                                             StackPanel.create [
                                                 StackPanel.dock Dock.Bottom
@@ -1297,7 +1650,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                 )
                             ]
                             for source in model.Tables do
-                                TabItem.create [ TabItem.header source.Table.Name; TabItem.content (tableView model dispatch source.Table) ]
+                                TabItem.create [ TabItem.header source.Table.Name; TabItem.fontSize 15.0; TabItem.content (tableView model dispatch source.Table) ]
                         ]
                     ]
                 ]
@@ -1334,33 +1687,15 @@ let private subscriptions (env: Env) (window: Window) (expose: (Msg -> unit) -> 
         { new IDisposable with
             member _.Dispose() = cts.Cancel() }
 
+    // The commands' keys, wherever the focus is. A command that cannot be taken now leaves its
+    // key to the focused control (Escape to a popup, Ctrl+Z to a text box).
     let keys (dispatch: Msg -> unit) : IDisposable =
         let handler =
             EventHandler<KeyEventArgs>(fun _ e ->
-                match e.Key, e.KeyModifiers with
-                | Key.Enter, KeyModifiers.Control
-                | Key.F5, _ ->
+                match commandFor e.Key e.KeyModifiers with
+                | Some c when c.Enabled model ->
                     e.Handled <- true
-                    dispatch Run
-                | Key.Escape, _ ->
-                    e.Handled <- true
-                    dispatch Cancel
-                // The app's history, wherever the focus is.
-                | Key.Z, KeyModifiers.Control ->
-                    e.Handled <- true
-                    dispatch Undo
-                | Key.Y, KeyModifiers.Control ->
-                    e.Handled <- true
-                    dispatch Redo
-                | Key.Z, m when m = (KeyModifiers.Control ||| KeyModifiers.Shift) ->
-                    e.Handled <- true
-                    dispatch Redo
-                | Key.S, KeyModifiers.Control ->
-                    e.Handled <- true
-                    dispatch Save
-                | Key.O, KeyModifiers.Control ->
-                    e.Handled <- true
-                    dispatch (ChooseOpen false)
+                    dispatch c.Msg
                 | _ -> ())
 
         window.AddHandler(InputElement.KeyDownEvent, handler, RoutingStrategies.Tunnel) |> ignore
@@ -1416,7 +1751,8 @@ let private subscriptions (env: Env) (window: Window) (expose: (Msg -> unit) -> 
         { new IDisposable with member _.Dispose() = () }
 
     [ [ "replies" ], replies
-      [ "keys" ], keys
+      // Made again when what can be taken changes, as the keys read it.
+      [ "keys"; commands |> List.map (fun c -> if c.Enabled model then "1" else "0") |> String.concat "" ], keys
       [ "post" ], exposed
       [ "look" ], look
       [ "title"; title model ], titled (title model)
@@ -1445,6 +1781,9 @@ type MainWindow(script: string, path: string option) as this =
 
     do
         this.Title <- "Tambour"
+        // A button that cannot be taken now shows dimmed, on no box of its own.
+        this.Resources.["ButtonBackgroundDisabled"] <- Brushes.Transparent
+        this.Resources.["ButtonBorderBrushDisabled"] <- Brushes.Transparent
         this.Width <- 1280.0
         this.Height <- 800.0
 
