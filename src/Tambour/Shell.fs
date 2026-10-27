@@ -204,11 +204,10 @@ type Tabs =
       /// Shows the next tab, or with -1 the one before, round the ends.
       Cycle: int -> unit }
 
-/// What a workspace runs with: its workers, the task that has them started, the language service
-/// it shares with the other workspaces, the control it is drawn in, and the window's tabs.
+/// What a workspace runs with: its workers, started when first asked, the language service it
+/// shares with the other workspaces, the control it is drawn in, and the window's tabs.
 type Env =
-    { Workers: Workers
-      Started: Task
+    { Workers: LazyWorkers
       Language: LanguageService
       Host: Control
       Tabs: Tabs }
@@ -400,10 +399,7 @@ let init (script: string) () : Model * Cmd<Msg> =
 
 let private send (env: Env) (request: Request) : Cmd<Msg> =
     let go (r: Request) : Task<unit> =
-        task {
-            do! env.Started
-            do! env.Workers.SendAsync r
-        }
+        task { do! env.Workers.SendAsync r }
 
     Cmd.OfTask.attempt go request Failed
 
@@ -513,8 +509,6 @@ let private toState (env: Env) (model: Model) (state: History.State) (schema: bo
     Cmd.OfTask.either
         (fun () ->
             task {
-                do! env.Started
-
                 for s in changed do
                     do! env.Workers.SendAsync(Tables.request s.Table)
             })
@@ -839,8 +833,6 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             Cmd.OfTask.either
                 (fun () ->
                     task {
-                        do! env.Started
-
                         for t in tables do
                             do! env.Workers.SendAsync(Tables.request t.Table)
                     })
@@ -1989,15 +1981,34 @@ type Workspace(script: string, path: string option, language: LanguageService, t
     let updated = Event<Msg>()
     let mutable latest: Model = Unchecked.defaultof<_>
 
+    // Started when first asked; given the workspace's tables each time they start.
     let workers =
-        new Workers(Command.ofThisApp (), { References = [||]; Prelude = prelude; Skia = { Dpi = float Marey.Space.screenDpi; FontFiles = [||] } })
+        new LazyWorkers(
+            Command.ofThisApp (),
+            { References = [||]; Prelude = prelude; Skia = { Dpi = float Marey.Space.screenDpi; FontFiles = [||] } },
+            fun () -> [ for s in latest.Tables -> Tables.request s.Table ]
+        )
 
     let env =
         { Workers = workers
-          Started = workers.StartAsync()
           Language = language
           Host = this
           Tabs = tabs }
+
+    // A tab in the background, its workers idle past the limit, gives them up and keeps its figure.
+    // Looked at from a timer of the thread pool, on the UI thread, where the workspace's state is.
+    let ui = Dispatcher.UIThread
+
+    let idle =
+        new Timer(
+            TimerCallback(fun _ ->
+                ui.Post(fun () ->
+                    if workers.Live && not this.IsEffectivelyVisible && not latest.Running && workers.Idle > Workspace.IdleLimit then
+                        workers.Drop())),
+            null,
+            (Workspace.IdleCheck: TimeSpan),
+            (Workspace.IdleCheck: TimeSpan)
+        )
 
     let titled (text: string) =
         if text <> title then
@@ -2024,8 +2035,15 @@ type Workspace(script: string, path: string option, language: LanguageService, t
     /// Sends the workspace's loop a message, as its own controls do.
     member _.Post(msg: Msg) = dispatch msg
 
-    /// The workers' start, for whoever waits on it.
-    member _.Started = env.Started
+    /// How long a tab in the background keeps idle workers, and how often that is looked at.
+    static member val IdleLimit = TimeSpan.FromMinutes 10.0 with get, set
+    static member val IdleCheck = TimeSpan.FromSeconds 30.0 with get, set
+
+    /// The workers' start, for whoever waits on it: nothing to wait for before they are asked.
+    member _.Started = workers.Started
+
+    /// Whether the workspace has workers now.
+    member _.HasWorkers = workers.Live
 
     /// The script's name, marked while anything is unsaved, as the window's title shows it.
     member _.Title = title
@@ -2074,7 +2092,9 @@ type Workspace(script: string, path: string option, language: LanguageService, t
         result.Task
 
     interface IDisposable with
-        member _.Dispose() = (workers :> IDisposable).Dispose()
+        member _.Dispose() =
+            idle.Dispose()
+            (workers :> IDisposable).Dispose()
 
 /// The main window: a tab per workspace, and the language service they share, which end when it
 /// closes. Closing a tab or the window asks first about what is unsaved.

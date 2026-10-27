@@ -289,3 +289,68 @@ let ``two tabs each compile against their own tables only`` () =
         press window Key.Tab RawInputModifiers.Control
 
     closeAll window
+
+/// Gate 15 (b): fifteen open tabs hold no workers until one runs, and then only that one; workers
+/// start when a tab first runs.
+[<AvaloniaFact>]
+let ``fifteen tabs hold workers only where something ran`` () =
+    let window = new Shell.MainWindow("let a = 1\n")
+    window.Show()
+
+    for _ in 2..15 do
+        press window Key.N RawInputModifiers.Control
+
+    Assert.Equal(15, window.Workspaces.Length)
+    Assert.All(window.Workspaces, fun w -> Assert.False w.HasWorkers)
+
+    typeInto window "let b = 2\n"
+    press window Key.F5 RawInputModifiers.None
+    pumpUntil 30.0 "the run" (fun () -> window.Active.HasWorkers && window.Active.Started.IsCompleted)
+    Assert.Equal(1, window.Workspaces |> List.filter (fun w -> w.HasWorkers) |> List.length)
+    closeAll window
+
+/// A tab in the background gives its workers up once they are idle past the limit, and keeps its
+/// figure; its next run starts them again with its tables, so a script that reads one still runs.
+[<AvaloniaFact>]
+let ``a tab in the background drops idle workers, and its next run has its tables again`` () =
+    let limit, check = Shell.Workspace.IdleLimit, Shell.Workspace.IdleCheck
+    Shell.Workspace.IdleLimit <- TimeSpan.FromMilliseconds 300.0
+    Shell.Workspace.IdleCheck <- TimeSpan.FromMilliseconds 100.0
+
+    try
+        let dir = (Directory.CreateTempSubdirectory "tambour-idle").FullName
+        Project.makeWorkspace dir
+        Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", "runs.csv")) (trial "runs" "auc")
+
+        let script =
+            Shell.newScriptWithTables
+            + "let fig =\n    plot runs {\n        x U.one (fun r -> r.auc)\n        y U.one (fun r -> r.auc)\n        layer GeomPoint\n    }\n"
+
+        File.WriteAllText(Path.Combine(dir, "figure.fsx"), script)
+        let window = new Shell.MainWindow("", Some dir)
+        window.Show()
+        let pane () = window.Active.GetVisualDescendants().OfType<FigurePane>().Single()
+        pumpUntil 60.0 "the figure" (fun () -> window.Active.HasWorkers && not (isNull (pane ()).Picture))
+        let first = window.Active
+
+        // In the background and idle: its workers go.
+        press window Key.N RawInputModifiers.Control
+        pumpUntil 5.0 "the workers dropped" (fun () -> not first.HasWorkers)
+
+        // Shown again: the figure is still there, with no worker behind it.
+        press window Key.Tab RawInputModifiers.Control
+        Assert.Same(first, window.Active)
+        pumpUntil 5.0 "the pane" (fun () -> window.Active.GetVisualDescendants().OfType<FigurePane>().Any())
+        let kept = (pane ()).Picture
+        Assert.NotNull kept
+        Assert.False first.HasWorkers
+
+        // Run again: started, given the table, and the script reads it.
+        press window Key.F5 RawInputModifiers.None
+        pumpUntil 30.0 "the figure redrawn" (fun () -> not (obj.ReferenceEquals((pane ()).Picture, kept)) && not (isNull (pane ()).Picture))
+        Assert.True first.HasWorkers
+        Assert.DoesNotContain("•", window.Title)
+        closeAll window
+    finally
+        Shell.Workspace.IdleLimit <- limit
+        Shell.Workspace.IdleCheck <- check
