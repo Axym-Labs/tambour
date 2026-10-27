@@ -135,6 +135,9 @@ type FigurePane() as this =
     let mutable readout: ReadoutState option = None
     let mutable image: WriteableBitmap = null
     let mutable imageFailure: exn option = None
+    /// The window's scaling the image was drawn at.
+    let mutable imageScale = 1.0
+    let mutable scalingWatch: IDisposable = null
     /// Made when a picture first needs it: a GL context of its own, on a thread of its own.
     let gpu = lazy (try Ok(new Marey.GpuRenderer(instancedMarkers = true)) with e -> Error e.Message)
     let mutable capture: (SKBitmap -> unit) option = None
@@ -147,7 +150,13 @@ type FigurePane() as this =
 
     let send kind (args: float[]) = input.Trigger { Kind = kind; Args = args }
 
-    /// The image the GPU path draws, at the picture's own extent.
+    let scaling () =
+        match TopLevel.GetTopLevel this with
+        | null -> 1.0
+        | top -> top.RenderScaling
+
+    /// The image the GPU path draws, at the picture's own extent and the window's scaling, so a
+    /// HiDPI window shows it as sharp as the vectors rather than stretched.
     let renderImage () =
         if not (isNull image) then
             image.Dispose()
@@ -160,7 +169,10 @@ type FigurePane() as this =
             | Error reason -> imageFailure <- Some(InvalidOperationException $"the GPU renderer is unavailable: {reason}")
             | Ok renderer ->
                 try
-                    let img = renderer.RenderImage picture.Extent picture.Node
+                    let scale = scaling ()
+                    let img = renderer.RenderImageAt scale picture.Extent picture.Node
+                    // At 96 dpi the bitmap's size is its pixels, which `Render` takes whole as the
+                    // source and draws into the figure's px.
                     let bitmap = new WriteableBitmap(PixelSize(img.Width, img.Height), Avalonia.Vector(96.0, 96.0), PixelFormat.Rgba8888, AlphaFormat.Unpremul)
                     use fb = bitmap.Lock()
                     let row = img.Width * 4
@@ -169,8 +181,16 @@ type FigurePane() as this =
                         Runtime.InteropServices.Marshal.Copy(img.Rgba, y * row, fb.Address + nativeint (y * fb.RowBytes), row)
 
                     image <- bitmap
+                    imageScale <- scale
                 with e ->
                     imageFailure <- Some e
+
+    /// Draws the image again when the window's scaling is no longer the one it was drawn at: the
+    /// pane shown before the window had one, or the window moved to a screen of another scale.
+    let rescale () =
+        if not (isNull picture) && picture.Path = Gpu && scaling () <> imageScale then
+            renderImage ()
+            this.InvalidateVisual()
 
     do
         this.ClipToBounds <- true
@@ -331,6 +351,25 @@ type FigurePane() as this =
         band <- None
         e.Pointer.Capture null |> ignore
         this.InvalidateVisual()
+
+    override _.OnAttachedToVisualTree(e) =
+        base.OnAttachedToVisualTree e
+
+        match TopLevel.GetTopLevel this with
+        | null -> ()
+        | top ->
+            let handler = EventHandler(fun _ _ -> rescale ())
+            top.ScalingChanged.AddHandler handler
+            scalingWatch <- { new IDisposable with member _.Dispose() = top.ScalingChanged.RemoveHandler handler }
+
+        rescale ()
+
+    override _.OnDetachedFromVisualTree(e) =
+        base.OnDetachedFromVisualTree e
+
+        if not (isNull scalingWatch) then
+            scalingWatch.Dispose()
+            scalingWatch <- null
 
     override _.OnPointerExited(e) =
         base.OnPointerExited e
