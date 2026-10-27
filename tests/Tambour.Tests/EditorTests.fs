@@ -62,26 +62,26 @@ let ``a typed dot completes a row's columns, and a binding is renamed wherever i
     Assert.False refused.Result
     window.Close()
 
-/// A name typed letter by letter opens the completion; Enter on a list that came by itself ends
-/// the line, and Tab takes its choice.
+/// A name typed letter by letter opens the completion, the chosen entry's documentation beside it
+/// once the choice rests; Enter and Tab take the choice.
 [<AvaloniaFact>]
-let ``completion comes as a name is typed, and Enter still ends the line`` () =
+let ``completion comes as a name is typed, with the chosen entry's documentation`` () =
     use language = new LanguageService(command, { References = [||]; Prelude = Shell.prelude })
     let editor = ScriptEditor(Language = language)
     let window = Window(Width = 800.0, Height = 500.0, Content = editor)
     window.Show()
-    let script = "let pretrained = [| 1.0 |]\nlet a = "
+    let script = "/// Four times the number given.\nlet quadrupled (x: float) = 4.0 * x\nlet a = "
     editor.Text <- script
     editor.Editor.CaretOffset <- script.Length
     editor.Editor.TextArea.Focus() |> ignore
 
     let typeName () =
-        for letter in [ "p"; "r"; "e" ] do
+        for letter in [ "q"; "u"; "a" ] do
             window.KeyTextInput letter
             Dispatcher.UIThread.RunJobs()
 
         pumpUntil 30.0 "the completion list" (fun () -> editor.Completions.Length > 0)
-        Assert.Contains("pretrained", editor.Completions)
+        Assert.Contains("quadrupled", editor.Completions)
 
     let press (key: Avalonia.Input.Key) =
         window.KeyPress(key, Avalonia.Input.RawInputModifiers.None, Avalonia.Input.PhysicalKey.None, null)
@@ -89,13 +89,26 @@ let ``completion comes as a name is typed, and Enter still ends the line`` () =
         Dispatcher.UIThread.RunJobs()
 
     typeName ()
-    press Avalonia.Input.Key.Enter
-    Assert.StartsWith(script + "pre\n", editor.Text)
-    Assert.Empty editor.Completions
+    pumpUntil 30.0 "the entry's documentation" (fun () -> editor.CompletionDocs <> "")
+    Assert.Contains("quadrupled", editor.CompletionDocs)
+    Assert.Contains("Four times the number given.", editor.CompletionDocs)
+    window.CaptureRenderedFrame().Dispose()
 
-    window.KeyTextInput "let b = "
+    match Environment.GetEnvironmentVariable "TAMBOUR_CHECK_OUT" with
+    | null
+    | "" -> ()
+    | dir ->
+        use frame = window.CaptureRenderedFrame()
+        frame.Save(Path.Combine(dir, "completion-docs.png"), Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default)
+
+    press Avalonia.Input.Key.Enter
+    Assert.EndsWith("let a = quadrupled", editor.Text)
+    Assert.Empty editor.Completions
+    Assert.Equal("", editor.CompletionDocs)
+
+    window.KeyTextInput "\nlet b = "
     Dispatcher.UIThread.RunJobs()
     typeName ()
     press Avalonia.Input.Key.Tab
-    Assert.True(editor.Text.TrimEnd().EndsWith "let b = pretrained", $"text: {editor.Text}; list: %A{editor.Completions}")
+    Assert.EndsWith("let b = quadrupled", editor.Text.TrimEnd())
     window.Close()

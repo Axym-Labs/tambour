@@ -438,12 +438,14 @@ type ScriptEditor() as this =
     let mutable settingText = false
     let mutable completion: CompletionWindow = null
     let mutable typed = Typed()
-    /// Whether the completion open came by itself, as a name was typed; such a list takes Enter
-    /// only once its choice was moved, so that Enter after a name still ends the line.
+    /// Whether the completion open came by itself, as a name was typed.
     let mutable unasked = false
-    let mutable moved = false
     /// Where the name begins whose list, come by itself, was closed: it does not come again in it.
     let mutable quietAt = -1
+    /// Counts the choices made in a completion list, so a description of an earlier one is set aside.
+    let mutable described = 0
+    /// The description shown beside the completion list, as text; empty where none is.
+    let mutable describedText = ""
     let mutable overloads: OverloadInsightWindow = null
     let mutable look = Palette.light
     let mutable dark = false
@@ -532,6 +534,69 @@ type ScriptEditor() as this =
 
         s
 
+    /// A name's signature in its colours, and its documentation below it.
+    let describedView (h: Hovered) : Control =
+        let panel = StackPanel(Spacing = 6.0)
+
+        panel.Children.Add(
+            TextBlock(Inlines = Shown.signature look h.Text, FontFamily = Shown.code, TextWrapping = TextWrapping.Wrap)
+        )
+
+        if not (String.IsNullOrWhiteSpace h.Doc) then
+            panel.Children.Add(Markdown.view look h.Doc)
+
+        panel
+
+    /// Beside a completion list, the chosen entry's signature and documentation, once the choice
+    /// has rested on it: the list and this panel side by side in the list's popup.
+    let withDocs (window: CompletionWindow) =
+        let docs =
+            Border(
+                Background = SolidColorBrush look.Background,
+                BorderBrush = SolidColorBrush look.Line,
+                BorderThickness = Thickness(1.0),
+                Padding = Thickness(10.0, 8.0),
+                Width = 400.0,
+                MaxHeight = 320.0,
+                IsVisible = false
+            )
+
+        let list = window.CompletionList
+        // Wide enough for a long name, as AvaloniaEdit's own width cut them short, and the popup
+        // past its own cap of 550 to hold the panel too.
+        list.Width <- 280.0
+        window.MaxWidth <- list.Width + docs.Width
+        window.Child <- null
+        let side = DockPanel()
+        DockPanel.SetDock(docs, Dock.Right)
+        side.Children.Add docs
+        side.Children.Add list
+        window.Child <- side
+
+        list.SelectionChanged.Add(fun _ ->
+            described <- described + 1
+            let mine = described
+            let current () = mine = described && obj.ReferenceEquals(completion, window)
+
+            match list.SelectedItem with
+            | null ->
+                docs.IsVisible <- false
+                describedText <- ""
+            | item ->
+                after 350 current (fun () ->
+                    let line, column = caret ()
+                    let text = editor.Text
+
+                    ask (fun l -> l.DescribeAsync(text, path, line, column, item.Text)) (fun h ->
+                        if current () then
+                            if String.IsNullOrWhiteSpace h.Text then
+                                docs.IsVisible <- false
+                                describedText <- ""
+                            else
+                                docs.Child <- ScrollViewer(Content = describedView h)
+                                docs.IsVisible <- true
+                                describedText <- h.Text + (if String.IsNullOrWhiteSpace h.Doc then "" else "\n" + h.Doc))))
+
     /// Whether a completion's name takes what was typed of it.
     let takes (typedText: string) (name: string) = typedText = "" || Array.exists id (Shown.matched name typedText)
 
@@ -553,6 +618,7 @@ type ScriptEditor() as this =
             if c.Items.Length > 0 && wanted then
                 if not (isNull completion) then completion.Close()
                 let window = CompletionWindow(editor.TextArea)
+                withDocs window
                 window.StartOffset <- start
                 typed <- Typed()
                 typed.Text <- sofar
@@ -563,11 +629,11 @@ type ScriptEditor() as this =
                 window.Closed.Add(fun _ ->
                     if obj.ReferenceEquals(completion, window) then
                         if unasked then quietAt <- window.StartOffset
+                        describedText <- ""
                         completion <- null)
 
                 completion <- window
                 unasked <- byItself
-                moved <- false
                 window.Show()
                 if sofar <> "" then window.CompletionList.SelectItem sofar)
 
@@ -695,13 +761,6 @@ type ScriptEditor() as this =
         let text () = editor.Text
 
         match e.Key, e.KeyModifiers with
-        | (Key.Up | Key.Down | Key.PageUp | Key.PageDown), _ when not (isNull completion) -> moved <- true
-        | Key.Enter, KeyModifiers.None when not (isNull completion) && unasked && not moved ->
-            // A list that came by itself, its choice not moved: Enter ends the line.
-            completion.Close()
-            e.Handled <- true
-            let s, t = selection ()
-            apply (Typing.enter (text ()) s t)
         | Key.Tab, KeyModifiers.None when not (isNull completion) ->
             // Tab takes the list's choice, as Enter does; past the list it would move the focus.
             e.Handled <- true
@@ -770,14 +829,8 @@ type ScriptEditor() as this =
         match hovered with
         | Some h when not (String.IsNullOrWhiteSpace h.Text) ->
             texts.Add h.Text
-
-            panel.Children.Add(
-                TextBlock(Inlines = Shown.signature look h.Text, FontFamily = Shown.code, TextWrapping = TextWrapping.Wrap)
-            )
-
-            if not (String.IsNullOrWhiteSpace h.Doc) then
-                texts.Add h.Doc
-                panel.Children.Add(Markdown.view look h.Doc)
+            if not (String.IsNullOrWhiteSpace h.Doc) then texts.Add h.Doc
+            panel.Children.Add(describedView h)
         | _ -> ()
 
         tipText <- String.Join("\n", texts)
@@ -1013,6 +1066,9 @@ type ScriptEditor() as this =
     member _.Editor = editor
 
     /// What the open completion list offers, or nothing when none is open.
+    /// The signature and documentation shown beside the completion list; empty where none is.
+    member _.CompletionDocs = describedText
+
     member _.Completions =
         if isNull completion then [||] else completion.CompletionList.CompletionData |> Seq.map (fun d -> d.Text) |> Array.ofSeq
 

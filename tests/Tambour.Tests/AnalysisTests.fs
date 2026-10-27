@@ -219,3 +219,16 @@ let ``a script that loads the prelude completes a table's name`` () =
 
     Assert.Contains("pretrained", namesAt (Shell.newScriptWithTables + "let a = pre"))
     Assert.DoesNotContain("pretrained", namesAt "let a = pre")
+
+/// A completion list's entry is described as its hover would be: its signature and its
+/// documentation; a name the list does not hold has nothing.
+[<Fact>]
+let ``a completion entry is described by its signature and documentation`` () =
+    let text = "/// Twice the number given.\nlet doubled (x: float) = 2.0 * x\nlet a = dou"
+    let entry name : Entry = { Id = 4; Text = text; Path = null; Line = 3; Column = "let a = dou".Length; Name = name }
+    let described = service.Value.Describe(entry "doubled")
+    Assert.Equal(4, described.Id)
+    Assert.Contains("doubled", described.Text)
+    Assert.Contains("float", described.Text)
+    Assert.Contains("Twice the number given.", described.Doc)
+    Assert.Equal("", (service.Value.Describe(entry "nothingLikeThis")).Text)

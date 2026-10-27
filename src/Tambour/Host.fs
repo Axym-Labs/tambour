@@ -567,6 +567,13 @@ type LanguageService(command: Command, init: AnalysisInit) =
             | other -> return failwith $"a hover answered with {other}"
         }
 
+    member this.DescribeAsync(text: string, path: string, line: int, column: int, name: string) : Task<Hovered> =
+        task {
+            match! this.AskAsync(fun id -> AnalysisRequest.Describe { Id = id; Text = text; Path = path; Line = line; Column = column; Name = name }) with
+            | AnalysisReply.Hovered h -> return h
+            | other -> return failwith $"a description answered with {other}"
+        }
+
     member this.SignatureAsync(text: string, path: string, line: int, column: int) : Task<Signatures> =
         task {
             match! this.AskAsync(fun id -> AnalysisRequest.Signature { Id = id; Text = text; Path = path; Line = line; Column = column }) with

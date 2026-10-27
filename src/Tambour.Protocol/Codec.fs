@@ -143,6 +143,7 @@ module Codec =
         | AnalysisRequest.Actions m -> tagged 22uy m
         | AnalysisRequest.Act m -> tagged 23uy m
         | AnalysisRequest.Plotted m -> tagged 24uy m
+        | AnalysisRequest.Describe m -> tagged 25uy m
 
     let decodeAnalysisRequest (bytes: byte[]) : AnalysisRequest =
         nonEmpty bytes
@@ -157,6 +158,7 @@ module Codec =
         | 22uy -> AnalysisRequest.Actions(body bytes)
         | 23uy -> AnalysisRequest.Act(body bytes)
         | 24uy -> AnalysisRequest.Plotted(body bytes)
+        | 25uy -> AnalysisRequest.Describe(body bytes)
         | tag -> raise (ProtocolException $"no analysis request has the tag {tag}")
 
     let encodeAnalysisReply (reply: AnalysisReply) : byte[] =
