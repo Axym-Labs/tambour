@@ -14,6 +14,7 @@ given.
 | AvaloniaEdit, AvaloniaEdit.TextMate | 12.0.0 | MIT | https://github.com/AvaloniaUI/AvaloniaEdit |
 | TextMateSharp, TextMateSharp.Grammars | 2.0.4 | MIT | https://github.com/danipen/TextMateSharp |
 | The F# grammar in TextMateSharp.Grammars, from Ionide | — | MIT | https://github.com/ionide/ionide-fsgrammar |
+| The editor's two grammar themes (`src/Tambour/Themes`), from Visual Studio Code's Light+ and Dark+, a few colours changed | — | MIT | https://github.com/microsoft/vscode |
 | Onigwrap, and the Oniguruma it wraps | 1.0.11 | MIT, BSD-2-Clause | https://github.com/aikawayataro/Onigwrap |
 | Avalonia.FuncUI, Avalonia.FuncUI.Elmish | 2.0.0 | MIT | https://github.com/fsprojects/Avalonia.FuncUI |
 | Elmish | 5.0.2 | Apache-2.0 | https://github.com/elmish/elmish |
