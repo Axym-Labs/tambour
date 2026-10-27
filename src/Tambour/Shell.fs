@@ -193,14 +193,25 @@ let newScriptWithTables = "#load \"prelude.fsx\"\nopen Prelude\n\n"
 let prelude =
     "open Marey\nopen Marey.UnitsOfMeasure\nopen Microsoft.FSharp.Data.UnitSystems.SI.UnitSymbols\n"
 
+/// What a workspace asks of the window that holds it, whose tabs are workspaces.
+type Tabs =
+    { /// A new tab, with an empty script.
+      New: unit -> unit
+      /// The tab of a script or a project directory: the one showing it already, or a new one.
+      Open: string -> unit
+      /// Closes the workspace's own tab, asking first about what is unsaved in it.
+      Close: unit -> unit
+      /// Shows the next tab, or with -1 the one before, round the ends.
+      Cycle: int -> unit }
+
 /// What a workspace runs with: its workers, the task that has them started, the language service
-/// it shares with the other workspaces, the control it is drawn in, and what it asks of the window
-/// that holds it.
+/// it shares with the other workspaces, the control it is drawn in, and the window's tabs.
 type Env =
     { Workers: Workers
       Started: Task
       Language: LanguageService
-      Host: Control }
+      Host: Control
+      Tabs: Tabs }
 
 /// The window the workspace is in, whose pickers ask where a file is.
 let private topOf (env: Env) : TopLevel = TopLevel.GetTopLevel env.Host
@@ -333,6 +344,11 @@ type Msg =
     | Grid of GridCommand.Kind
     | About
     | Quit
+    | NewScript
+    /// A script or a project directory, opened in a tab of its own.
+    | OpenTab of string
+    | CloseTab
+    | CycleTab of int
     | Failed of exn
 
 /// The bottom panel's height where a project has none.
@@ -831,7 +847,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 Failed
         with e ->
             { model with Status = $"{path} did not open: {e.Message}" }, Cmd.none
-    | ChooseOpen folder -> model, Cmd.OfTask.either (fun () -> pickOpen (topOf env) folder) () (Option.map OpenPath >> Option.defaultValue Dismissed) Failed
+    | ChooseOpen folder -> model, Cmd.OfTask.either (fun () -> pickOpen (topOf env) folder) () (Option.map OpenTab >> Option.defaultValue Dismissed) Failed
     | Save ->
         match model.Path with
         | Some path ->
@@ -1016,6 +1032,18 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         | :? Window as w -> w.Close()
         | _ -> ()
 
+        model, Cmd.none
+    | NewScript ->
+        env.Tabs.New()
+        model, Cmd.none
+    | OpenTab path ->
+        env.Tabs.Open path
+        model, Cmd.none
+    | CloseTab ->
+        env.Tabs.Close()
+        model, Cmd.none
+    | CycleTab step ->
+        env.Tabs.Cycle step
         model, Cmd.none
     | Failed e -> { model with Status = e.Message }, Cmd.none
 
@@ -1355,9 +1383,11 @@ let commands: Command list =
           Enabled = enabled
           InGrid = false }
 
-    [ c "_File" "_Open…" "Ctrl+O" [] (ChooseOpen false) always
+    [ c "_File" "_New script" "Ctrl+N" [] NewScript always
+      c "_File" "_Open…" "Ctrl+O" [] (ChooseOpen false) always
       c "_File" "Open _folder…" "Ctrl+Shift+O" [] (ChooseOpen true) always
       c "_File" "_Save" "Ctrl+S" [] Save always
+      c "_File" "_Close tab" "Ctrl+W" [] CloseTab always
       c "_File" "_Export figure…" "Ctrl+E" [] ChooseExport (fun m -> not (isNull m.Picture))
       c "_File" "_Quit" "Ctrl+Q" [] Quit always
       c "_Edit" "_Undo" "Ctrl+Z" [] Undo (fun m -> not m.History.Done.IsEmpty)
@@ -1373,6 +1403,8 @@ let commands: Command list =
       c "_View" "_Output" "Ctrl+Shift+U" [] (ShowBottom 1) always
       c "_View" "_Bottom panel" "Ctrl+J" [] ToggleBottom always
       c "_View" "_Actions" "Ctrl+Shift+A" [] ToggleActions always
+      c "_View" "_Next tab" "Ctrl+Tab" [] (CycleTab 1) always
+      c "_View" "Pre_vious tab" "Ctrl+Shift+Tab" [] (CycleTab -1) always
       c "_Help" "_About Tambour" "" [] About always ]
 
 /// The command a key and its modifiers take, if one does.
@@ -1739,15 +1771,27 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
         ]
     ]
 
-/// The window's title: the script's name, marked while it has unsaved changes.
-let title (model: Model) =
-    let name = model.Path |> Option.map Path.GetFileName |> Option.defaultValue "untitled"
-    let tablesChanged =
-        model.Tables.Length <> model.SavedTables.Count
-        || model.Tables |> List.exists (fun s -> match model.SavedTables.TryFind s.Table.Name with Some t -> not (obj.ReferenceEquals(t, s.Table)) | None -> true)
+/// The script's name, as its tab and the window's title show it.
+let scriptName (model: Model) = model.Path |> Option.map Path.GetFileName |> Option.defaultValue "untitled"
 
-    let unsaved = if model.Script <> model.Saved || tablesChanged then " •" else ""
-    $"{name}{unsaved} — Tambour"
+/// What a workspace holds that is not on disk, each named as the question before dropping it
+/// names it: the script, and each table changed, added or removed since it was last saved.
+let unsaved (model: Model) : string list =
+    [ if model.Script <> model.Saved then scriptName model
+
+      for s in model.Tables do
+          match model.SavedTables.TryFind s.Table.Name with
+          | Some t when obj.ReferenceEquals(t, s.Table) -> ()
+          | _ -> $"the table {s.Table.Name}"
+
+      for name in model.SavedTables.Keys do
+          if not (model.Tables |> List.exists (fun s -> s.Table.Name = name)) then
+              $"the removal of the table {name}" ]
+
+/// The window's title: the script's name, marked while anything is unsaved.
+let title (model: Model) =
+    let mark = if (unsaved model).IsEmpty then "" else " •"
+    $"{scriptName model}{mark} — Tambour"
 
 /// The worker's replies, the keys, the clock of a playing time control, the script's file on
 /// disk, and the window's title.
@@ -1871,16 +1915,65 @@ let private subscriptions (env: Env) (host: Control) (titled: string -> unit) (e
       | _ -> ()
       if not model.Playing.IsEmpty then [ "clock" ], clock ]
 
+/// What to do with unsaved work before it would be dropped.
+type Unsaved =
+    | SaveIt
+    | Discard
+    | Keep
+
+/// Asks what to do with what is unsaved, by name: Save, Don't save, or Cancel, which keeps it.
+let askToSave (owner: Window) (look: Palette.Look) (names: string list) : Task<Unsaved> =
+    let answer = TaskCompletionSource<Unsaved>()
+
+    let listed =
+        match names with
+        | [ one ] -> one
+        | _ -> String.Join(", ", names |> List.take (names.Length - 1)) + " and " + List.last names
+
+    let text =
+        TextBlock(
+            Text = $"Save {listed}?\n\nWhat is not saved is lost.",
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = SolidColorBrush look.Text
+        )
+
+    let save = Button(Content = "Save", IsDefault = true)
+    let discard = Button(Content = "Don't save")
+    let keep = Button(Content = "Cancel", IsCancel = true)
+    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = 8.0, HorizontalAlignment = HorizontalAlignment.Right)
+    buttons.Children.Add discard
+    buttons.Children.Add keep
+    buttons.Children.Add save
+    let panel = StackPanel(Spacing = 12.0, Margin = Thickness 18.0)
+    panel.Children.Add text
+    panel.Children.Add buttons
+
+    let window =
+        Window(Title = "Unsaved changes", Width = 440.0, SizeToContent = SizeToContent.Height, CanResize = false, Content = panel, WindowStartupLocation = WindowStartupLocation.CenterOwner)
+
+    let choose (a: Unsaved) =
+        answer.TrySetResult a |> ignore
+        window.Close()
+
+    save.Click.Add(fun _ -> choose SaveIt)
+    discard.Click.Add(fun _ -> choose Discard)
+    keep.Click.Add(fun _ -> choose Keep)
+    window.Closed.Add(fun _ -> answer.TrySetResult Keep |> ignore)
+    window.ShowDialog owner |> ignore
+    answer.Task
+
 /// A workspace: everything a window held before there were tabs. Its script or project, figure,
 /// tables, history and layout, run by its own program on its own workers, which end when it is
 /// disposed. The language service is the window's, shared by its workspaces. It opens `path` once
 /// started, if one is given, and `script` otherwise.
-type Workspace(script: string, path: string option, language: LanguageService) as this =
+type Workspace(script: string, path: string option, language: LanguageService, tabs: Tabs) as this =
     inherit HostControl()
 
     let mutable dispatch: Msg -> unit = ignore
     let mutable title = "Tambour"
     let titleChanged = Event<string>()
+    let updated = Event<Msg>()
+    let mutable latest: Model = Unchecked.defaultof<_>
 
     let workers =
         new Workers(Command.ofThisApp (), { References = [||]; Prelude = prelude; Skia = { Dpi = float Marey.Space.screenDpi; FontFiles = [||] } })
@@ -1889,7 +1982,8 @@ type Workspace(script: string, path: string option, language: LanguageService) a
         { Workers = workers
           Started = workers.StartAsync()
           Language = language
-          Host = this }
+          Host = this
+          Tabs = tabs }
 
     let titled (text: string) =
         if text <> title then
@@ -1899,9 +1993,16 @@ type Workspace(script: string, path: string option, language: LanguageService) a
     do
         let init () =
             let model, cmd = init script ()
+            latest <- model
             model, (match path with Some p -> Cmd.batch [ cmd; Cmd.ofMsg (OpenPath p) ] | None -> cmd)
 
-        Program.mkProgram init (update env) (view env)
+        let step (msg: Msg) (model: Model) =
+            let next, cmd = update env msg model
+            latest <- next
+            updated.Trigger msg
+            next, cmd
+
+        Program.mkProgram init step (view env)
         |> Program.withHost this
         |> Program.withSubscription (subscriptions env this titled (fun d -> dispatch <- d))
         |> Program.runWithAvaloniaSyncDispatch ()
@@ -1917,16 +2018,163 @@ type Workspace(script: string, path: string option, language: LanguageService) a
 
     member _.TitleChanged = titleChanged.Publish
 
+    /// Each message the workspace has taken, once its model is updated.
+    member _.Updated = updated.Publish
+
+    /// The script's name, as its tab shows it.
+    member _.ScriptName = scriptName latest
+
+    /// What is unsaved in it, by name; empty when everything is on disk.
+    member _.Unsaved = unsaved latest
+
+    /// Where its script is, and its project directory, if it has them.
+    member _.Path = latest.Path
+    member _.Project = latest.Project
+
+    /// Whether nothing has been done in it: no file, nothing typed, nothing in its history. Opening
+    /// a file into such a tab takes it rather than leaving it empty beside a new one.
+    member _.Untouched =
+        latest.Path.IsNone && (unsaved latest).IsEmpty && latest.History.Done.IsEmpty && latest.Tables.IsEmpty
+
+    /// Saves it: true once everything is on disk, false where the save failed or its file was not
+    /// chosen.
+    member _.SaveAsync() : Task<bool> =
+        let result = TaskCompletionSource<bool>()
+        let mutable watching: IDisposable = null
+
+        watching <-
+            updated.Publish.Subscribe(fun msg ->
+                let finish (ok: bool) =
+                    result.TrySetResult ok |> ignore
+                    if not (isNull watching) then watching.Dispose()
+
+                if (unsaved latest).IsEmpty then finish true
+                else
+                    match msg with
+                    | Save when latest.Path.IsSome -> finish false
+                    | Dismissed
+                    | Failed _ -> finish false
+                    | _ -> ())
+
+        dispatch Save
+        result.Task
+
     interface IDisposable with
         member _.Dispose() = (workers :> IDisposable).Dispose()
 
-/// The main window: its workspaces, and the language service they share, which end when it
-/// closes.
+/// The main window: a tab per workspace, and the language service they share, which end when it
+/// closes. Closing a tab or the window asks first about what is unsaved.
 type MainWindow(script: string, path: string option) as this =
     inherit Window()
 
     let language = new LanguageService(Command.ofThisApp (), { References = [||]; Prelude = prelude })
-    let workspace = new Workspace(script, path, language)
+    let workspaces = ResizeArray<Workspace>()
+    let mutable active = -1
+    let strip = StackPanel(Orientation = Orientation.Horizontal)
+    let deck = Avalonia.Controls.Grid()
+    let mutable labels: string list = []
+    /// Set once the window's unsaved work has been asked about, so that closing goes ahead.
+    let mutable closing = false
+    let mutable ask: string list -> Task<Unsaved> = fun _ -> Task.FromResult Keep
+
+    let look () = Palette.forVariant this.ActualThemeVariant
+
+    let labelOf (w: Workspace) = w.ScriptName + (if w.Unsaved.IsEmpty then "" else " •")
+
+    let rec refresh (force: bool) =
+        let now = [ for w in workspaces -> labelOf w ] @ [ string active ]
+
+        if force || now <> labels then
+            labels <- now
+            let look = look ()
+            strip.Children.Clear()
+
+            workspaces
+            |> Seq.iteri (fun i w ->
+                let shown = i = active
+                let name = TextBlock(Text = labelOf w, VerticalAlignment = VerticalAlignment.Center, Foreground = SolidColorBrush(if shown then look.Text else look.Dim))
+                let close = Button(Content = "×", Padding = Thickness(4.0, 0.0), Background = Brushes.Transparent, VerticalAlignment = VerticalAlignment.Center)
+                ToolTip.SetTip(close, "Close tab (Ctrl+W)")
+                close.Click.Add(fun _ -> closeTab w |> ignore)
+                let row = StackPanel(Orientation = Orientation.Horizontal, Spacing = 6.0)
+                row.Children.Add name
+                row.Children.Add close
+
+                let tab =
+                    Button(
+                        Content = row,
+                        Padding = Thickness(10.0, 3.0, 4.0, 3.0),
+                        CornerRadius = CornerRadius(4.0, 4.0, 0.0, 0.0),
+                        Background = SolidColorBrush(if shown then look.Surface else look.Raised),
+                        BorderThickness = Thickness(0.0)
+                    )
+
+                ToolTip.SetTip(tab, (match w.Path with Some p -> p | None -> "not saved yet"))
+                tab.Click.Add(fun _ -> show i)
+                strip.Children.Add tab)
+
+    and show (i: int) =
+        if i >= 0 && i < workspaces.Count then
+            active <- i
+            workspaces |> Seq.iteri (fun j w -> w.IsVisible <- (j = i))
+            this.Title <- workspaces.[i].Title
+            refresh false
+
+    and add (script: string) (path: string option) =
+        let mutable self: Workspace = Unchecked.defaultof<_>
+
+        let tabs =
+            { New = fun () -> add "" None
+              Open = openPath
+              Close = fun () -> closeTab self |> ignore
+              Cycle = fun step -> if workspaces.Count > 0 then show ((active + step + workspaces.Count) % workspaces.Count) }
+
+        let w = new Workspace(script, path, language, tabs)
+        self <- w
+        w.TitleChanged.Add(fun t -> if workspaces.IndexOf w = active then this.Title <- t)
+        w.Updated.Add(fun _ -> refresh false)
+        workspaces.Add w
+        deck.Children.Add w
+        show (workspaces.Count - 1)
+
+    and openPath (path: string) =
+        let full = Path.GetFullPath path
+        let showing (w: Workspace) = w.Path = Some full || w.Project = Some full
+
+        match workspaces |> Seq.tryFindIndex showing with
+        | Some i -> show i
+        | None when active >= 0 && workspaces.[active].Untouched -> workspaces.[active].Post(OpenPath full)
+        | None -> add "" (Some full)
+
+    /// Asks about a workspace's unsaved work: true once it may be dropped (saved, or not wanted).
+    and settle (w: Workspace) : Task<bool> =
+        task {
+            match w.Unsaved with
+            | [] -> return true
+            | names ->
+                show (workspaces.IndexOf w)
+
+                match! ask names with
+                | SaveIt -> return! w.SaveAsync()
+                | Discard -> return true
+                | Keep -> return false
+        }
+
+    and closeTab (w: Workspace) : Task =
+        task {
+            let! settled = settle w
+
+            if settled && workspaces.Contains w then
+                let i = workspaces.IndexOf w
+                workspaces.RemoveAt i
+                deck.Children.Remove w |> ignore
+                (w :> IDisposable).Dispose()
+
+                if workspaces.Count = 0 then add "" None
+                else show (min i (workspaces.Count - 1))
+
+                refresh true
+        }
 
     do
         this.Title <- "Tambour"
@@ -1935,22 +2183,59 @@ type MainWindow(script: string, path: string option) as this =
         this.Resources.["ButtonBorderBrushDisabled"] <- Brushes.Transparent
         this.Width <- 1280.0
         this.Height <- 800.0
-        this.Content <- workspace
-        workspace.TitleChanged.Add(fun t -> this.Title <- t)
-        this.Title <- workspace.Title
+        ask <- fun names -> askToSave this (look ()) names
+        let tabsRow = ScrollViewer(Content = strip, HorizontalScrollBarVisibility = Primitives.ScrollBarVisibility.Auto, VerticalScrollBarVisibility = Primitives.ScrollBarVisibility.Disabled)
+        let layout = DockPanel()
+        DockPanel.SetDock(tabsRow, Dock.Top)
+        layout.Children.Add tabsRow
+        layout.Children.Add deck
+        this.Content <- layout
+        add script path
+        this.ActualThemeVariantChanged.Add(fun _ -> refresh true)
+
+        // Closing asks about every workspace's unsaved work first, one at a time; Cancel on any
+        // keeps the window open.
+        this.Closing.Add(fun e ->
+            if not closing && workspaces |> Seq.exists (fun w -> not w.Unsaved.IsEmpty) then
+                e.Cancel <- true
+
+                task {
+                    let mutable settled = true
+
+                    for w in List.ofSeq workspaces do
+                        if settled then
+                            let! ok = settle w
+                            settled <- ok
+
+                    if settled then
+                        closing <- true
+                        this.Close()
+                }
+                |> ignore)
 
         this.Closed.Add(fun _ ->
-            (workspace :> IDisposable).Dispose()
+            for w in workspaces do
+                (w :> IDisposable).Dispose()
+
             (language :> IDisposable).Dispose())
 
     new() = new MainWindow(example, None)
     new(script: string) = new MainWindow(script, None)
 
+    /// The workspaces, in their tabs' order, and the one shown.
+    member _.Workspaces = List.ofSeq workspaces
+    member _.Active = workspaces.[active]
+
     /// Sends the shown workspace's loop a message.
-    member _.Post(msg: Msg) = workspace.Post msg
+    member _.Post(msg: Msg) = workspaces.[active].Post msg
 
     /// The shown workspace's workers' start, for whoever waits on it.
-    member _.Started = workspace.Started
+    member _.Started = workspaces.[active].Started
 
     /// The language service's start.
     member _.LanguageReady = language.Ready
+
+    /// What is asked before unsaved work is dropped; a test answers it itself.
+    member _.Ask
+        with get () = ask
+        and set (value: string list -> Task<Unsaved>) = ask <- value
