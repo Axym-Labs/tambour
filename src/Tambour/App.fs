@@ -25,4 +25,8 @@ type App() =
 
 module App =
 
-    let builder () = AppBuilder.Configure<App>().UsePlatformDetect()
+    /// Popups (tooltips, the completion list, menus) drawn inside the window on Linux. As X11
+    /// windows of their own they are placed by whatever manages windows, and under XWayland a
+    /// compositor may move them: Hyprland showed a problem's tooltip at the screen's centre.
+    let builder () =
+        AppBuilder.Configure<App>().UsePlatformDetect().With(X11PlatformOptions(OverlayPopups = true))
