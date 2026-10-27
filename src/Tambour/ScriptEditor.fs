@@ -694,6 +694,34 @@ type ScriptEditor() as this =
         tipText <- String.Join("\n", texts)
         panel
 
+    /// The hovered word's box in the editor, which the tooltip sits on.
+    let mutable hovered = Rect()
+
+    /// The word at an offset, or the one character there, as a box in the editor: from the top of
+    /// its line to the bottom.
+    let wordBox (offset: int) =
+        let doc = editor.Document
+        let view = editor.TextArea.TextView
+        let inWord i = i >= 0 && i < doc.TextLength && (let c = doc.GetCharAt i in Char.IsLetterOrDigit c || c = '_' || c = '\'')
+        let mutable first = offset
+        let mutable last = offset
+
+        while inWord (first - 1) do
+            first <- first - 1
+
+        while inWord last do
+            last <- last + 1
+
+        if last = first then last <- min doc.TextLength (first + 1)
+
+        let at (o: int) (y: VisualYPosition) =
+            let p = view.GetVisualPosition(TextViewPosition(doc.GetLocation o), y) - view.ScrollOffset
+            view.TranslatePoint(p, editor) |> Option.ofNullable |> Option.defaultValue p
+
+        let top = at first VisualYPosition.LineTop
+        let bottom = at last VisualYPosition.LineBottom
+        Rect(top, Point(max bottom.X (top.X + 1.0), bottom.Y))
+
     let showTip (content: Control) =
         ToolTip.SetTip(editor, content)
         ToolTip.SetIsOpen(editor, true)
@@ -707,6 +735,7 @@ type ScriptEditor() as this =
         let location = editor.Document.GetLocation offset
         let text = editor.Text
         tipText <- ""
+        hovered <- wordBox offset
 
         if problems.Length > 0 then
             showTip (tipView problems None)
@@ -741,6 +770,25 @@ type ScriptEditor() as this =
         editor.Options.HighlightCurrentLine <- true
         this.Content <- editor
         applyLook ()
+
+        // On the hovered word, as an editor's hover is: above its line and starting where it
+        // starts, or below the line where there is no room above.
+        ToolTip.SetPlacement(editor, PlacementMode.Custom)
+
+        ToolTip.SetCustomPopupPlacementCallback(
+            editor,
+            Primitives.PopupPositioning.CustomPopupPlacementCallback(fun p ->
+                // The rectangle Avalonia offers is the editor's own bounds in the window's
+                // coordinates; the word's box is in the editor's.
+                p.AnchorRectangle <- hovered.Translate(Vector(p.AnchorRectangle.X, p.AnchorRectangle.Y))
+                p.Anchor <- Primitives.PopupPositioning.PopupAnchor.TopLeft
+                p.Gravity <- Primitives.PopupPositioning.PopupGravity.TopRight
+                // Not the tooltip's own 20 px below the pointer.
+                p.Offset <- Point()
+                p.ConstraintAdjustment <-
+                    Primitives.PopupPositioning.PopupPositionerConstraintAdjustment.FlipY
+                    ||| Primitives.PopupPositioning.PopupPositionerConstraintAdjustment.SlideX)
+        )
         this.ActualThemeVariantChanged.Add(fun _ -> applyLook ())
 
         // The app keeps the history, so AvaloniaEdit keeps none.

@@ -14,6 +14,7 @@ open Avalonia.Headless.XUnit
 open Avalonia.Media
 open Avalonia.Styling
 open Avalonia.Threading
+open Avalonia.VisualTree
 open AvaloniaEdit.Rendering
 open Tambour
 open Tambour.Protocol
@@ -237,8 +238,15 @@ let ``a pause in typing is checked once, and classified within half a second`` (
 let ``a problem's message shows on hover anywhere in its range`` () =
     use language = new LanguageService(command, init)
     let script = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "scripts", "unit-error.fsx"))
-    let editor = ScriptEditor(Language = language)
-    let window = Window(Width = 1000.0, Height = 700.0, Content = editor)
+    let editor = ScriptEditor(Language = language, Margin = Avalonia.Thickness(13.0, 0.0, 0.0, 0.0))
+    // Below a bar and in from the window's edge, as in the app, so that a box taken in the wrong
+    // coordinates shows.
+    let bar = Border(Height = 47.0)
+    DockPanel.SetDock(bar, Dock.Top)
+    let panel = DockPanel()
+    panel.Children.Add bar
+    panel.Children.Add editor
+    let window = Window(Width = 1000.0, Height = 700.0, Content = panel)
     window.Show()
     editor.Text <- script
     pumpUntil 30.0 "the unit error" (fun () -> editor.Problems |> Array.exists (fun p -> p.Code = "FS0001"))
@@ -260,7 +268,23 @@ let ``a problem's message shows on hover anywhere in its range`` () =
     editor.HoverAt o
     pumpUntil 30.0 "the symbol's tooltip" (fun () -> editor.TipText.Contains "Displacement")
     Assert.StartsWith("FS0001", editor.TipText)
-    log $"{hovered} places hovered"
+
+    // The tooltip sits on the hovered word: its bottom on the top of the word's line, its left
+    // where the word starts.
+    let tipOf () = (ToolTip.GetTip editor.Editor :?> Control).FindAncestorOfType<ToolTip>()
+    pumpUntil 10.0 "the tooltip open" (fun () -> not (isNull (tipOf ())) && (tipOf ()).Bounds.Height > 0.0)
+    let tip = tipOf ()
+    let view = editor.Editor.TextArea.TextView
+    let mutable start = o
+
+    while start > 0 && Char.IsLetterOrDigit(doc.GetCharAt(start - 1)) do
+        start <- start - 1
+
+    let word = view.GetVisualPosition(AvaloniaEdit.TextViewPosition(doc.GetLocation start), VisualYPosition.LineTop) - view.ScrollOffset
+    let word = Avalonia.VisualExtensions.PointToScreen(view, word)
+    let corner = Avalonia.VisualExtensions.PointToScreen(tip, Avalonia.Point(0.0, tip.Bounds.Height))
+    log $"{hovered} places hovered; the tooltip's bottom left at {corner}, the word's top left at {word}"
+    Assert.True(abs (corner.Y - word.Y) <= 1 && abs (corner.X - word.X) <= 1, $"the tooltip's bottom left is at {corner}, the word's top left at {word}")
     window.Close()
 
 /// Gate: every kind of completion has a glyph, and a colour in both looks.
