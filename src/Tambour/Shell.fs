@@ -22,6 +22,7 @@ open Avalonia.Layout
 open Avalonia.Media
 open Avalonia.Platform.Storage
 open Avalonia.Threading
+open Avalonia.VisualTree
 open Tambour.Protocol
 
 /// The figure pane in FuncUI's terms.
@@ -167,6 +168,7 @@ module Sheet =
     let onSelectionChanged f = subscription "SelectionChanged" (fun g -> g.SelectionChanged) f
     let onRefused f = subscription "Refused" (fun g -> g.Refused) f
     let onHeaderActivated f = subscription "HeaderActivated" (fun g -> g.HeaderActivated) f
+    let onInsertColumnAt f = subscription "InsertColumnAt" (fun g -> g.InsertColumnAt) f
 
 /// The script the window opens with.
 let example =
@@ -243,7 +245,8 @@ type Model =
       TableFiles: string list
       /// The tab on the right: the figure's, then one per table.
       Tab: int
-      /// The column whose header is being edited, by table and place (-1 for a new column).
+      /// The column whose header is being edited, by table and place; a new column as -1 - the
+      /// place it goes.
       Header: (string * int) option
       /// The columns selected in a table's grid.
       TableSelection: (string * int list) option
@@ -297,6 +300,7 @@ type Msg =
     | Dismissed
     | SelectTab of int
     | TableEdited of Tambour.Data.TableEdit list
+    /// A column's header form opened: a column there is, or a new one at -1 - its place.
     | EditHeader of table: string * column: int
     | ApplyHeader
     | CloseHeader
@@ -316,6 +320,8 @@ type Msg =
     | ToggleActions
     /// A divider dragged: where the script's side ends, as a fraction, and the bottom panel's height.
     | Resized of split: float * bottom: float
+    /// A grid command from the Table menu or its key, for the table shown.
+    | Grid of GridCommand.Kind
     | About
     | Quit
     | Failed of exn
@@ -903,7 +909,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
 
             let edit =
                 if i < 0 then
-                    Ok(Tambour.Data.TableEdit.addColumn t t.Columns.Length (field "header name") kind unit)
+                    Ok(Tambour.Data.TableEdit.addColumn t (min (-1 - i) t.Columns.Length) (field "header name") kind unit)
                 else
                     retype t.Columns.[i].Values kind
                     |> Result.map (fun v -> Tambour.Data.TableEdit.changeColumn t i { Name = field "header name"; Unit = unit; Values = v })
@@ -979,6 +985,10 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | ToggleBottom -> { model with BottomOpen = not model.BottomOpen }, Cmd.none
     | ShowBottom tab -> { model with BottomOpen = true; BottomTab = tab }, Cmd.none
     | ToggleActions -> { model with ActionsOpen = not model.ActionsOpen }, Cmd.none
+    | Grid kind ->
+        // The grid of the table shown, the only one in the window's tree.
+        env.Window.GetVisualDescendants() |> Seq.tryPick (function :? TableGrid as g -> Some g | _ -> None) |> Option.iter (fun g -> g.Run kind)
+        model, Cmd.none
     | Resized(split, bottom) ->
         let next = { model with Split = split; Bottom = bottom }
         writeProject next
@@ -1241,14 +1251,14 @@ and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Ta
                 StackPanel.spacing 6.0
                 StackPanel.margin (Thickness(6.0, 4.0))
                 StackPanel.children [
-                    Button.create [ Button.content "Add column"; Button.onClick ((fun _ -> dispatch (EditHeader(t.Name, -1))), SubPatchOptions.Always) ]
+                    Button.create [ Button.content "Add column"; Button.onClick ((fun _ -> dispatch (EditHeader(t.Name, -1 - t.Columns.Length))), SubPatchOptions.Always) ]
                     Button.create [
                         Button.content "Add 10 rows"
                         Button.onClick ((fun _ -> dispatch (TableEdited [ Tambour.Data.TableEdit.addRows t t.Rows 10 ])), SubPatchOptions.Always)
                     ]
                     Button.create [ Button.content "Remove table"; Button.onClick ((fun _ -> dispatch (RemoveTable t.Name)), SubPatchOptions.Always) ]
                     Button.create [ Button.content "Plot selected columns"; Button.onClick (fun _ -> dispatch PlotSelected) ]
-                    label $"{t.Rows} rows. Double-click a header to change its column; Ctrl+= adds a row, Ctrl+- removes the selected ones; Ctrl+click or Alt+drag in a figure picks rows."
+                    label $"{t.Rows} rows. Right-click, or the Table menu, for what can be done to cells, rows and columns; Ctrl+click or Alt+drag in a figure picks rows."
                 ]
             ]
             // Always there, and hidden when no header is being edited, so the grid after it keeps its
@@ -1263,6 +1273,7 @@ and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Ta
                 Sheet.onEdited (TableEdited >> dispatch)
                 Sheet.onRefused (fun why -> dispatch (Failed(FormatException why)))
                 Sheet.onHeaderActivated (fun column -> dispatch (EditHeader(t.Name, column)))
+                Sheet.onInsertColumnAt (fun at -> dispatch (EditHeader(t.Name, -1 - at)))
             ]
         ]
     ]
@@ -1276,7 +1287,10 @@ type Command =
       Gesture: KeyGesture option
       Also: KeyGesture list
       Msg: Msg
-      Enabled: Model -> bool }
+      Enabled: Model -> bool
+      /// Whether its keys act only while a table's grid has the focus (Ctrl+C there copies cells,
+      /// and in the editor text).
+      InGrid: bool }
 
 /// The menus, in the menu bar's order.
 let menus = [ "_File"; "_Edit"; "_Run"; "_Table"; "_View"; "_Help" ]
@@ -1290,7 +1304,8 @@ let commands: Command list =
           Gesture = (if keys = "" then None else Some(KeyGesture.Parse keys))
           Also = also |> List.map KeyGesture.Parse
           Msg = msg
-          Enabled = enabled }
+          Enabled = enabled
+          InGrid = false }
 
     [ c "_File" "_Open…" "Ctrl+O" [] (ChooseOpen false) always
       c "_File" "Open _folder…" "Ctrl+Shift+O" [] (ChooseOpen true) always
@@ -1304,6 +1319,8 @@ let commands: Command list =
       c "_Table" "_New table" "Ctrl+T" [] NewTable always
       c "_Table" "_Import table…" "Ctrl+Shift+I" [] ChooseImport always
       c "_Table" "_Plot selected columns" "Ctrl+Shift+P" [] PlotSelected (fun m -> m.TableSelection.IsSome)
+      for kind, header, keys in GridCommand.all do
+          { c "_Table" header keys [] (Grid kind) (fun m -> m.Tab > 0) with InGrid = true }
       c "_View" "_Problems" "Ctrl+Shift+M" [] (ShowBottom 0) always
       c "_View" "_Output" "Ctrl+Shift+U" [] (ShowBottom 1) always
       c "_View" "_Bottom panel" "Ctrl+J" [] ToggleBottom always
@@ -1378,6 +1395,10 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                         MenuItem.header name
                         MenuItem.viewItems [
                             for command in commands |> List.filter (fun c -> c.Menu = name) do
+                                match command.Msg with
+                                | Grid kind when kind = GridCommand.Copy || GridCommand.startsGroup kind -> Separator.create []
+                                | _ -> ()
+
                                 menuItem command
                             if name = "_View" then
                                 Separator.create []
@@ -1692,8 +1713,16 @@ let private subscriptions (env: Env) (window: Window) (expose: (Msg -> unit) -> 
     let keys (dispatch: Msg -> unit) : IDisposable =
         let handler =
             EventHandler<KeyEventArgs>(fun _ e ->
+                let inGrid () =
+                    match window.FocusManager with
+                    | null -> false
+                    | f ->
+                        match f.GetFocusedElement() with
+                        | :? Visual as v -> v :? TableGrid || v.GetVisualAncestors() |> Seq.exists (fun a -> a :? TableGrid)
+                        | _ -> false
+
                 match commandFor e.Key e.KeyModifiers with
-                | Some c when c.Enabled model ->
+                | Some c when c.Enabled model && (not c.InGrid || inGrid ()) ->
                     e.Handled <- true
                     dispatch c.Msg
                 | _ -> ())

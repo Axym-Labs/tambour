@@ -125,3 +125,29 @@ let ``a frame over a million rows is drawn within 16 ms wherever it is scrolled`
         frame.Save(Path.Combine(dir, "grid.png"), Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default)
 
     Assert.True(sorted.[19] < limit 16.0, $"the slowest frame took {sorted.[19]:F1} ms")
+
+/// A row's header selects the row, Shift or Ctrl extends it; the context menu offers every grid
+/// command, as the Table menu does; a command taken there is one change, as its edits.
+[<AvaloniaFact>]
+let ``a row header selects its row, and the grid's commands are on its context menu`` () =
+    let grid, window, edits, _ = shown trials
+    // Row 1's header: left of the cells, below the column headers (40 px) and row 0 (22 px).
+    let header row = Avalonia.Point(6.0, 40.0 + 22.0 * float row + 11.0)
+    window.MouseDown(header 1, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    window.MouseUp(header 1, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    Assert.Equal(({ Column = 0; Row = 1 }, { Column = 2; Row = 1 }), grid.Selection)
+    window.MouseDown(header 2, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.Shift)
+    window.MouseUp(header 2, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.Shift)
+    Assert.Equal(({ Column = 0; Row = 1 }, { Column = 2; Row = 2 }), grid.Selection)
+
+    let names =
+        grid.ContextMenu.Items
+        |> Seq.choose (function :? MenuItem as m -> Some(string m.Header) | _ -> None)
+        |> List.ofSeq
+
+    Assert.Equal<string list>(GridCommand.all |> List.map (fun (_, name, _) -> name), names)
+
+    grid.Run GridCommand.DuplicateRows
+    let expected = AddRows("trials", 3, trials.Columns |> List.map (fun c -> Values.slice 1 2 c.Values))
+    Assert.Equal<TableEdit list>([ expected ], Seq.exactlyOne edits)
+    window.Close()
