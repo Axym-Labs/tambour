@@ -193,13 +193,17 @@ let newScriptWithTables = "#load \"prelude.fsx\"\nopen Prelude\n\n"
 let prelude =
     "open Marey\nopen Marey.UnitsOfMeasure\nopen Microsoft.FSharp.Data.UnitSystems.SI.UnitSymbols\n"
 
-/// The workers, the task that has them started, the language service, and the window, whose
-/// pickers ask where a file is.
+/// What a workspace runs with: its workers, the task that has them started, the language service
+/// it shares with the other workspaces, the control it is drawn in, and what it asks of the window
+/// that holds it.
 type Env =
     { Workers: Workers
       Started: Task
       Language: LanguageService
-      Window: TopLevel }
+      Host: Control }
+
+/// The window the workspace is in, whose pickers ask where a file is.
+let private topOf (env: Env) : TopLevel = TopLevel.GetTopLevel env.Host
 
 /// The most output kept, in characters; older text goes first.
 [<Literal>]
@@ -827,7 +831,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 Failed
         with e ->
             { model with Status = $"{path} did not open: {e.Message}" }, Cmd.none
-    | ChooseOpen folder -> model, Cmd.OfTask.either (fun () -> pickOpen env.Window folder) () (Option.map OpenPath >> Option.defaultValue Dismissed) Failed
+    | ChooseOpen folder -> model, Cmd.OfTask.either (fun () -> pickOpen (topOf env) folder) () (Option.map OpenPath >> Option.defaultValue Dismissed) Failed
     | Save ->
         match model.Path with
         | Some path ->
@@ -839,7 +843,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             with e ->
                 { model with Status = $"not saved: {e.Message}" }, Cmd.none
         | None ->
-            model, Cmd.OfTask.either (fun () -> pickSave env.Window "Save the script" "figure.fsx" "fsx") () (Option.map SaveAs >> Option.defaultValue Dismissed) Failed
+            model, Cmd.OfTask.either (fun () -> pickSave (topOf env) "Save the script" "figure.fsx" "fsx") () (Option.map SaveAs >> Option.defaultValue Dismissed) Failed
     | SaveAs path -> { model with Path = Some path }, Cmd.ofMsg Save
     | DiskChanged ->
         match model.Path with
@@ -873,7 +877,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
 
         model,
         Cmd.OfTask.either
-            (fun () -> pickSave env.Window "Export the figure" name format)
+            (fun () -> pickSave (topOf env) "Export the figure" name format)
             ()
             (Option.map (fun path -> ExportTo(path, format, width, height)) >> Option.defaultValue Dismissed)
             Failed
@@ -942,7 +946,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         let pick () =
             task {
                 let types = FilePickerFileType("Tables", Patterns = [| "*.csv"; "*.arrow" |])
-                let! picked = env.Window.StorageProvider.OpenFilePickerAsync(FilePickerOpenOptions(Title = "Import a table", FileTypeFilter = [| types |]))
+                let! picked = (topOf env).StorageProvider.OpenFilePickerAsync(FilePickerOpenOptions(Title = "Import a table", FileTypeFilter = [| types |]))
                 return picked |> Seq.tryHead |> Option.bind (fun f -> Option.ofObj (f.TryGetLocalPath()))
             }
 
@@ -997,18 +1001,18 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | ToggleActions -> { model with ActionsOpen = not model.ActionsOpen }, Cmd.none
     | Grid kind ->
         // The grid of the table shown, the only one in the window's tree.
-        env.Window.GetVisualDescendants() |> Seq.tryPick (function :? TableGrid as g -> Some g | _ -> None) |> Option.iter (fun g -> g.Run kind)
+        env.Host.GetVisualDescendants() |> Seq.tryPick (function :? TableGrid as g -> Some g | _ -> None) |> Option.iter (fun g -> g.Run kind)
         model, Cmd.none
     | Resized(split, bottom) ->
         let next = { model with Split = split; Bottom = bottom }
         writeProject next
         next, Cmd.none
     | About ->
-        match env.Window with
+        match topOf env with
         | :? Window as owner -> model, Cmd.OfTask.attempt (fun () -> (aboutWindow model.Look).ShowDialog owner) () Failed
         | _ -> model, Cmd.none
     | Quit ->
-        match env.Window with
+        match topOf env with
         | :? Window as w -> w.Close()
         | _ -> ()
 
@@ -1747,7 +1751,7 @@ let title (model: Model) =
 
 /// The worker's replies, the keys, the clock of a playing time control, the script's file on
 /// disk, and the window's title.
-let private subscriptions (env: Env) (window: Window) (expose: (Msg -> unit) -> unit) (model: Model) : Sub<Msg> =
+let private subscriptions (env: Env) (host: Control) (titled: string -> unit) (expose: (Msg -> unit) -> unit) (model: Model) : Sub<Msg> =
     let replies (dispatch: Msg -> unit) : IDisposable =
         let cts = new CancellationTokenSource()
 
@@ -1764,29 +1768,50 @@ let private subscriptions (env: Env) (window: Window) (expose: (Msg -> unit) -> 
         { new IDisposable with
             member _.Dispose() = cts.Cancel() }
 
-    // The commands' keys, wherever the focus is. A command that cannot be taken now leaves its
-    // key to the focused control (Escape to a popup, Ctrl+Z to a text box).
+    // The commands' keys, wherever in the window the focus is, while this workspace is the one
+    // shown. A command that cannot be taken now leaves its key to the focused control (Escape to a
+    // popup, Ctrl+Z to a text box).
     let keys (dispatch: Msg -> unit) : IDisposable =
+        let mutable top: TopLevel = null
+
         let handler =
             EventHandler<KeyEventArgs>(fun _ e ->
                 let inGrid () =
-                    match window.FocusManager with
+                    match top.FocusManager with
                     | null -> false
                     | f ->
                         match f.GetFocusedElement() with
                         | :? Visual as v -> v :? TableGrid || v.GetVisualAncestors() |> Seq.exists (fun a -> a :? TableGrid)
                         | _ -> false
 
-                match commandFor e.Key e.KeyModifiers with
-                | Some c when c.Enabled model && (not c.InGrid || inGrid ()) ->
-                    e.Handled <- true
-                    dispatch c.Msg
-                | _ -> ())
+                if host.IsEffectivelyVisible then
+                    match commandFor e.Key e.KeyModifiers with
+                    | Some c when c.Enabled model && (not c.InGrid || inGrid ()) ->
+                        e.Handled <- true
+                        dispatch c.Msg
+                    | _ -> ())
 
-        window.AddHandler(InputElement.KeyDownEvent, handler, RoutingStrategies.Tunnel) |> ignore
+        let detach () =
+            if not (isNull top) then
+                top.RemoveHandler(InputElement.KeyDownEvent, handler)
+                top <- null
+
+        let attach () =
+            detach ()
+            top <- TopLevel.GetTopLevel host
+            if not (isNull top) then top.AddHandler(InputElement.KeyDownEvent, handler, RoutingStrategies.Tunnel) |> ignore
+
+        let attached = EventHandler<VisualTreeAttachmentEventArgs>(fun _ _ -> attach ())
+        let detached = EventHandler<VisualTreeAttachmentEventArgs>(fun _ _ -> detach ())
+        host.AttachedToVisualTree.AddHandler attached
+        host.DetachedFromVisualTree.AddHandler detached
+        attach ()
 
         { new IDisposable with
-            member _.Dispose() = window.RemoveHandler(InputElement.KeyDownEvent, handler) }
+            member _.Dispose() =
+                host.AttachedToVisualTree.RemoveHandler attached
+                host.DetachedFromVisualTree.RemoveHandler detached
+                detach () }
 
     let clock (dispatch: Msg -> unit) : IDisposable =
         let started = Diagnostics.Stopwatch.StartNew()
@@ -1820,16 +1845,16 @@ let private subscriptions (env: Env) (window: Window) (expose: (Msg -> unit) -> 
         watcher.EnableRaisingEvents <- true
         watcher :> IDisposable
 
-    let titled (text: string) (_: Msg -> unit) : IDisposable =
-        window.Title <- text
+    let retitle (text: string) (_: Msg -> unit) : IDisposable =
+        titled text
         { new IDisposable with member _.Dispose() = () }
 
-    /// The look the window is drawn in, now and whenever its theme changes.
+    /// The look the workspace is drawn in, now and whenever its theme changes.
     let look (dispatch: Msg -> unit) : IDisposable =
-        let changed = EventHandler(fun _ _ -> dispatch (LookChanged(Palette.forVariant window.ActualThemeVariant)))
-        window.ActualThemeVariantChanged.AddHandler changed
-        dispatch (LookChanged(Palette.forVariant window.ActualThemeVariant))
-        { new IDisposable with member _.Dispose() = window.ActualThemeVariantChanged.RemoveHandler changed }
+        let changed = EventHandler(fun _ _ -> dispatch (LookChanged(Palette.forVariant host.ActualThemeVariant)))
+        host.ActualThemeVariantChanged.AddHandler changed
+        dispatch (LookChanged(Palette.forVariant host.ActualThemeVariant))
+        { new IDisposable with member _.Dispose() = host.ActualThemeVariantChanged.RemoveHandler changed }
 
     let exposed (dispatch: Msg -> unit) : IDisposable =
         expose dispatch
@@ -1840,29 +1865,68 @@ let private subscriptions (env: Env) (window: Window) (expose: (Msg -> unit) -> 
       [ "keys"; commands |> List.map (fun c -> if c.Enabled model then "1" else "0") |> String.concat "" ], keys
       [ "post" ], exposed
       [ "look" ], look
-      [ "title"; title model ], titled (title model)
+      [ "title"; title model ], retitle (title model)
       match model.Path with
       | Some path when Directory.Exists(Path.GetDirectoryName path) -> [ "watch"; path ], watch path
       | _ -> ()
       if not model.Playing.IsEmpty then [ "clock" ], clock ]
 
-/// The main window, with its workers, which end when it closes. It opens `path` once started, if
-/// one is given, and the example script otherwise.
-type MainWindow(script: string, path: string option) as this =
-    inherit HostWindow()
+/// A workspace: everything a window held before there were tabs. Its script or project, figure,
+/// tables, history and layout, run by its own program on its own workers, which end when it is
+/// disposed. The language service is the window's, shared by its workspaces. It opens `path` once
+/// started, if one is given, and `script` otherwise.
+type Workspace(script: string, path: string option, language: LanguageService) as this =
+    inherit HostControl()
 
     let mutable dispatch: Msg -> unit = ignore
+    let mutable title = "Tambour"
+    let titleChanged = Event<string>()
 
     let workers =
         new Workers(Command.ofThisApp (), { References = [||]; Prelude = prelude; Skia = { Dpi = float Marey.Space.screenDpi; FontFiles = [||] } })
-
-    let language = new LanguageService(Command.ofThisApp (), { References = [||]; Prelude = prelude })
 
     let env =
         { Workers = workers
           Started = workers.StartAsync()
           Language = language
-          Window = this }
+          Host = this }
+
+    let titled (text: string) =
+        if text <> title then
+            title <- text
+            titleChanged.Trigger text
+
+    do
+        let init () =
+            let model, cmd = init script ()
+            model, (match path with Some p -> Cmd.batch [ cmd; Cmd.ofMsg (OpenPath p) ] | None -> cmd)
+
+        Program.mkProgram init (update env) (view env)
+        |> Program.withHost this
+        |> Program.withSubscription (subscriptions env this titled (fun d -> dispatch <- d))
+        |> Program.runWithAvaloniaSyncDispatch ()
+
+    /// Sends the workspace's loop a message, as its own controls do.
+    member _.Post(msg: Msg) = dispatch msg
+
+    /// The workers' start, for whoever waits on it.
+    member _.Started = env.Started
+
+    /// The script's name, marked while anything is unsaved, as the window's title shows it.
+    member _.Title = title
+
+    member _.TitleChanged = titleChanged.Publish
+
+    interface IDisposable with
+        member _.Dispose() = (workers :> IDisposable).Dispose()
+
+/// The main window: its workspaces, and the language service they share, which end when it
+/// closes.
+type MainWindow(script: string, path: string option) as this =
+    inherit Window()
+
+    let language = new LanguageService(Command.ofThisApp (), { References = [||]; Prelude = prelude })
+    let workspace = new Workspace(script, path, language)
 
     do
         this.Title <- "Tambour"
@@ -1871,28 +1935,22 @@ type MainWindow(script: string, path: string option) as this =
         this.Resources.["ButtonBorderBrushDisabled"] <- Brushes.Transparent
         this.Width <- 1280.0
         this.Height <- 800.0
+        this.Content <- workspace
+        workspace.TitleChanged.Add(fun t -> this.Title <- t)
+        this.Title <- workspace.Title
 
         this.Closed.Add(fun _ ->
-            (workers :> IDisposable).Dispose()
+            (workspace :> IDisposable).Dispose()
             (language :> IDisposable).Dispose())
-
-        let init () =
-            let model, cmd = init script ()
-            model, (match path with Some p -> Cmd.batch [ cmd; Cmd.ofMsg (OpenPath p) ] | None -> cmd)
-
-        Program.mkProgram init (update env) (view env)
-        |> Program.withHost this
-        |> Program.withSubscription (subscriptions env this (fun d -> dispatch <- d))
-        |> Program.runWithAvaloniaSyncDispatch ()
 
     new() = new MainWindow(example, None)
     new(script: string) = new MainWindow(script, None)
 
-    /// Sends the window's loop a message, as its own controls do.
-    member _.Post(msg: Msg) = dispatch msg
+    /// Sends the shown workspace's loop a message.
+    member _.Post(msg: Msg) = workspace.Post msg
 
-    /// The workers' start, for whoever waits on it.
-    member _.Started = env.Started
+    /// The shown workspace's workers' start, for whoever waits on it.
+    member _.Started = workspace.Started
 
     /// The language service's start.
     member _.LanguageReady = language.Ready
