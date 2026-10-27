@@ -202,7 +202,15 @@ type Tabs =
       /// Closes the workspace's own tab, asking first about what is unsaved in it.
       Close: unit -> unit
       /// Shows the next tab, or with -1 the one before, round the ends.
-      Cycle: int -> unit }
+      Cycle: int -> unit
+      /// A script or project opened or saved under a new name, for the recent list.
+      Opened: string -> unit
+      /// The recent list emptied, or with `true` only of what is no longer on disk.
+      ForgetRecent: bool -> unit
+      /// Saves every tab with unsaved work.
+      SaveAll: unit -> unit
+      /// Closes every tab of a project directory, asking first about what is unsaved.
+      CloseProject: string -> unit }
 
 /// What a workspace runs with: its workers, started when first asked, the language service it
 /// shares with the other workspaces, the control it is drawn in, and the window's tabs.
@@ -288,7 +296,9 @@ type Model =
       BottomTab: int
       Bottom: float
       /// Whether the figure's actions are shown.
-      ActionsOpen: bool }
+      ActionsOpen: bool
+      /// The scripts and projects opened, most recent first, as the window keeps them.
+      Recent: string list }
 
 type Msg =
     | Edited of History.TextEdit * string
@@ -346,6 +356,11 @@ type Msg =
     | NewScript
     /// A script or a project directory, opened in a tab of its own.
     | OpenTab of string
+    | ChooseSaveAs
+    | SaveAll
+    | CloseProject
+    | ForgetRecent of missingOnly: bool
+    | RecentChanged of string list
     | CloseTab
     | CycleTab of int
     | Failed of exn
@@ -394,7 +409,8 @@ let init (script: string) () : Model * Cmd<Msg> =
       BottomOpen = true
       BottomTab = 0
       Bottom = defaultBottom
-      ActionsOpen = true },
+      ActionsOpen = true
+      Recent = [] },
     Cmd.none
 
 let private send (env: Env) (request: Request) : Cmd<Msg> =
@@ -784,6 +800,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | OpenPath path ->
         try
             let opened = Project.resolve path
+            env.Tabs.Opened(Path.GetFullPath path)
 
             // The project's tables, their prelude written if it changed, and their columns sent.
             let tables, unread =
@@ -872,6 +889,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             let dir = Path.Combine(Path.GetDirectoryName path, name)
             Directory.CreateDirectory dir |> ignore
             Project.makeWorkspace dir
+            env.Tabs.Opened dir
             { model with Path = Some(Path.Combine(dir, name + ".fsx")); Project = Some dir }, Cmd.ofMsg Save
         with e ->
             { model with Status = $"not saved: {e.Message}" }, Cmd.none
@@ -1048,6 +1066,22 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | NewScript ->
         env.Tabs.New()
         model, Cmd.none
+    | ChooseSaveAs ->
+        let name = model.Path |> Option.map Path.GetFileName |> Option.defaultValue "figure.fsx"
+        model, Cmd.OfTask.either (fun () -> pickSave (topOf env) "Save the workspace as: a folder named as its script" name "fsx") () (Option.map SaveAs >> Option.defaultValue Dismissed) Failed
+    | SaveAll ->
+        env.Tabs.SaveAll()
+        model, Cmd.none
+    | CloseProject ->
+        match model.Project with
+        | Some dir -> env.Tabs.CloseProject dir
+        | None -> env.Tabs.Close()
+
+        model, Cmd.none
+    | ForgetRecent missingOnly ->
+        env.Tabs.ForgetRecent missingOnly
+        model, Cmd.none
+    | RecentChanged recent -> { model with Recent = recent }, Cmd.none
     | OpenTab path ->
         env.Tabs.Open path
         model, Cmd.none
@@ -1399,7 +1433,10 @@ let commands: Command list =
       c "_File" "_Open…" "Ctrl+O" [] (ChooseOpen false) always
       c "_File" "Open _folder…" "Ctrl+Shift+O" [] (ChooseOpen true) always
       c "_File" "_Save" "Ctrl+S" [] Save always
+      c "_File" "Save _as…" "Ctrl+Shift+S" [] ChooseSaveAs always
+      c "_File" "Save a_ll" "Ctrl+Alt+S" [] SaveAll always
       c "_File" "_Close tab" "Ctrl+W" [] CloseTab always
+      c "_File" "Close _project" "" [] CloseProject (fun m -> m.Project.IsSome)
       c "_File" "_Export figure…" "Ctrl+E" [] ChooseExport (fun m -> not (isNull m.Picture))
       c "_File" "_Quit" "Ctrl+Q" [] Quit always
       c "_Edit" "_Undo" "Ctrl+Z" [] Undo (fun m -> not m.History.Done.IsEmpty)
@@ -1492,6 +1529,30 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                 | _ -> ()
 
                                 menuItem command
+
+                                if command.Msg = ChooseOpen true then
+                                    MenuItem.create [
+                                        MenuItem.header "Open _recent"
+                                        MenuItem.isEnabled (not model.Recent.IsEmpty)
+                                        MenuItem.viewItems [
+                                            for path in model.Recent do
+                                                MenuItem.create [
+                                                    MenuItem.header path
+                                                    // Gone from disk: shown, not taken.
+                                                    MenuItem.isEnabled (File.Exists path || Directory.Exists path)
+                                                    MenuItem.onClick ((fun _ -> dispatch (OpenTab path)), SubPatchOptions.Always)
+                                                ]
+                                            Separator.create []
+                                            MenuItem.create [
+                                                MenuItem.header "Remove _missing"
+                                                MenuItem.onClick ((fun _ -> dispatch (ForgetRecent true)), SubPatchOptions.Always)
+                                            ]
+                                            MenuItem.create [
+                                                MenuItem.header "_Clear"
+                                                MenuItem.onClick ((fun _ -> dispatch (ForgetRecent false)), SubPatchOptions.Always)
+                                            ]
+                                        ]
+                                    ]
                             if name = "_View" then
                                 Separator.create []
                                 MenuItem.create [
@@ -2109,6 +2170,27 @@ type MainWindow(script: string, path: string option) as this =
     let mutable labels: string list = []
     /// Set once the window's unsaved work has been asked about, so that closing goes ahead.
     let mutable closing = false
+
+    /// The scripts and projects opened, most recent first: kept in the user's settings, or for this
+    /// run only where there are none (a test's).
+    let mutable recent: string list =
+        match App.SettingsDirectory with
+        | null -> []
+        | dir -> (Preferences.read dir).Recent
+
+    let setRecent (next: string list) =
+        recent <- next
+
+        match App.SettingsDirectory with
+        | null -> ()
+        | dir ->
+            try
+                Preferences.write dir { Preferences.read dir with Recent = next }
+            with _ ->
+                ()
+
+        for w in workspaces do
+            w.Post(RecentChanged next)
     let mutable ask: string list -> Task<Unsaved> = fun _ -> Task.FromResult Keep
 
     let look () = Palette.forVariant this.ActualThemeVariant
@@ -2161,7 +2243,13 @@ type MainWindow(script: string, path: string option) as this =
             { New = fun () -> add "" None
               Open = openPath
               Close = fun () -> closeTab self |> ignore
-              Cycle = fun step -> if workspaces.Count > 0 then show ((active + step + workspaces.Count) % workspaces.Count) }
+              Cycle = fun step -> if workspaces.Count > 0 then show ((active + step + workspaces.Count) % workspaces.Count)
+              Opened = fun path -> setRecent (Preferences.opened path recent)
+              ForgetRecent =
+                fun missingOnly ->
+                    setRecent (if missingOnly then recent |> List.filter (fun p -> File.Exists p || Directory.Exists p) else [])
+              SaveAll = fun () -> saveAll () |> ignore
+              CloseProject = fun dir -> closeProject dir |> ignore }
 
         let w = new Workspace(script, path, language, tabs)
         self <- w
@@ -2169,6 +2257,7 @@ type MainWindow(script: string, path: string option) as this =
         w.Updated.Add(fun _ -> refresh false)
         workspaces.Add w
         deck.Children.Add w
+        w.Post(RecentChanged recent)
         show (workspaces.Count - 1)
 
     and openPath (path: string) =
@@ -2176,7 +2265,9 @@ type MainWindow(script: string, path: string option) as this =
         let showing (w: Workspace) = w.Path = Some full || w.Project = Some full
 
         match workspaces |> Seq.tryFindIndex showing with
-        | Some i -> show i
+        | Some i ->
+            setRecent (Preferences.opened full recent)
+            show i
         | None when active >= 0 && workspaces.[active].Untouched -> workspaces.[active].Post(OpenPath full)
         | None -> add "" (Some full)
 
@@ -2192,6 +2283,24 @@ type MainWindow(script: string, path: string option) as this =
                 | SaveIt -> return! w.SaveAsync()
                 | Discard -> return true
                 | Keep -> return false
+        }
+
+    /// Saves each tab with unsaved work in turn, showing it while its file is asked for.
+    and saveAll () : Task =
+        task {
+            for w in List.ofSeq workspaces do
+                if not w.Unsaved.IsEmpty then
+                    show (workspaces.IndexOf w)
+                    let! _ = w.SaveAsync()
+                    ()
+        }
+
+    /// Closes the tabs of a project directory, asking about each one's unsaved work.
+    and closeProject (dir: string) : Task =
+        task {
+            for w in List.ofSeq workspaces do
+                if w.Project = Some dir then
+                    do! closeTab w
         }
 
     and closeTab (w: Workspace) : Task =
@@ -2274,6 +2383,9 @@ type MainWindow(script: string, path: string option) as this =
 
     /// The language service's start.
     member _.LanguageReady = language.Ready
+
+    /// The scripts and projects opened, most recent first.
+    member _.Recent = recent
 
     /// What is asked before unsaved work is dropped; a test answers it itself.
     member _.Ask

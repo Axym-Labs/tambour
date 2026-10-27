@@ -33,8 +33,9 @@ let private press (window: Window) (key: Key) (modifiers: RawInputModifiers) =
     window.KeyRelease(key, modifiers, PhysicalKey.None, null)
     Dispatcher.UIThread.RunJobs()
 
-/// The editor of the workspace shown.
+/// The editor of the workspace shown, once its tab is laid out.
 let private editorOf (window: Shell.MainWindow) =
+    pumpUntil 10.0 "the tab's editor" (fun () -> window.Active.GetVisualDescendants().OfType<ScriptEditor>().Any())
     window.Active.GetVisualDescendants().OfType<ScriptEditor>().Single()
 
 let private typeInto (window: Shell.MainWindow) (text: string) =
@@ -275,7 +276,6 @@ let ``two tabs each compile against their own tables only`` () =
     pumpUntil 10.0 "the second tab" (fun () -> window.Workspaces.Length = 2)
 
     let problems () =
-        pumpUntil 10.0 "the tab's editor" (fun () -> window.Active.GetVisualDescendants().OfType<ScriptEditor>().Any())
         let editor = editorOf window
         pumpUntil 60.0 "the check" (fun () -> editor.Problems.Length > 0)
         editor.Problems
@@ -354,3 +354,86 @@ let ``a tab in the background drops idle workers, and its next run has its table
     finally
         Shell.Workspace.IdleLimit <- limit
         Shell.Workspace.IdleCheck <- check
+
+/// Gate 15 (d): what was opened is listed most recent first, kept in the user's settings for the
+/// next start; the list drops what is gone from disk only when asked, and nothing still there.
+[<AvaloniaFact>]
+let ``the recent list is kept across starts and drops only what is gone`` () =
+    let settings = (Directory.CreateTempSubdirectory "tambour-settings").FullName
+    let before = App.SettingsDirectory
+    App.SettingsDirectory <- settings
+
+    try
+        let dir = (Directory.CreateTempSubdirectory "tambour-recent").FullName
+        let a = Path.Combine(dir, "a.fsx")
+        let b = Path.Combine(dir, "b.fsx")
+        File.WriteAllText(a, "let a = 1\n")
+        File.WriteAllText(b, "let b = 2\n")
+        let window = new Shell.MainWindow("")
+        window.Show()
+        window.Post(Shell.OpenTab a)
+        window.Post(Shell.OpenTab b)
+        window.Post(Shell.OpenTab a)
+        pumpUntil 10.0 "both opened" (fun () -> window.Workspaces.Length = 2)
+        Assert.Equal<string list>([ a; b ], window.Recent)
+        closeAll window
+
+        // The next start has them, and a file deleted since is dropped only on Remove missing.
+        File.Delete b
+        let again = new Shell.MainWindow("")
+        again.Show()
+        Assert.Equal<string list>([ a; b ], again.Recent)
+        again.Post(Shell.ForgetRecent true)
+        Assert.Equal<string list>([ a ], again.Recent)
+        Assert.Equal<string list>([ a ], (Preferences.read settings).Recent)
+        closeAll again
+    finally
+        App.SettingsDirectory <- before
+
+/// Save all saves every tab with unsaved work; Close project closes the tabs of that project and
+/// leaves the others.
+[<AvaloniaFact>]
+let ``save all saves every tab, and close project closes only its tabs`` () =
+    let project = (Directory.CreateTempSubdirectory "tambour-project").FullName
+    File.WriteAllText(Path.Combine(project, "one.fsx"), "let one = 1\n")
+    let other = Path.Combine((Directory.CreateTempSubdirectory "tambour-other").FullName, "other.fsx")
+    File.WriteAllText(other, "let other = 1\n")
+    let window = new Shell.MainWindow("", Some project)
+    window.Show()
+    pumpUntil 10.0 "the project" (fun () -> (editorOf window).Text = "let one = 1\n")
+    typeInto window "// one\n"
+    window.Post(Shell.OpenTab other)
+    pumpUntil 10.0 "the other" (fun () -> window.Workspaces.Length = 2 && (editorOf window).Text = "let other = 1\n")
+    typeInto window "// other\n"
+
+    press window Key.S (RawInputModifiers.Control ||| RawInputModifiers.Alt)
+    pumpUntil 10.0 "both saved" (fun () -> window.Workspaces |> List.forall (fun w -> w.Unsaved.IsEmpty))
+    Assert.Equal("let one = 1\n// one\n", File.ReadAllText(Path.Combine(project, "one.fsx")))
+    Assert.Equal("let other = 1\n// other\n", File.ReadAllText other)
+
+    press window Key.Tab RawInputModifiers.Control
+    Assert.Equal(Some project, window.Active.Project)
+    window.Post Shell.CloseProject
+    pumpUntil 5.0 "the project's tab closed" (fun () -> window.Workspaces.Length = 1)
+    Assert.Equal(Some other, window.Active.Path)
+    closeAll window
+
+/// Save as puts the workspace in a directory of its own, named as the script, with its tables.
+[<AvaloniaFact>]
+let ``save as makes a new workspace of the tab, its tables with it`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-saveas").FullName
+    Project.makeWorkspace dir
+    Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", "runs.csv")) (trial "runs" "auc")
+    File.WriteAllText(Path.Combine(dir, "figure.fsx"), "let x = 1\n")
+    let parent = (Directory.CreateTempSubdirectory "tambour-saveas-to").FullName
+    let window = new Shell.MainWindow("", Some dir)
+    window.Show()
+    pumpUntil 10.0 "the workspace" (fun () -> (editorOf window).Text = "let x = 1\n")
+    window.Post(Shell.SaveAs(Path.Combine(parent, "copy.fsx")))
+    let copy = Path.Combine(parent, "copy")
+    pumpUntil 10.0 "the copy" (fun () -> File.Exists(Path.Combine(copy, "copy.fsx")))
+    Assert.Equal("let x = 1\n", File.ReadAllText(Path.Combine(copy, "copy.fsx")))
+    Assert.True(File.Exists(Path.Combine(copy, "tables", "runs.csv")))
+    Assert.True(File.Exists(Path.Combine(dir, "tables", "runs.csv")))
+    Assert.Equal(Some copy, window.Active.Project)
+    closeAll window

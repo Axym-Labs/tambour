@@ -77,7 +77,7 @@ let ``the theme is kept as chosen, and a new user's follows the system`` () =
         Assert.Equal(Preferences.FollowSystem, (Preferences.read dir).Theme)
 
         for theme in [ Preferences.Dark; Preferences.Light; Preferences.FollowSystem ] do
-            Preferences.write dir { Theme = theme }
+            Preferences.write dir { Preferences.defaults with Theme = theme }
             Assert.Equal(theme, (Preferences.read dir).Theme)
 
         File.WriteAllText(Path.Combine(dir, Preferences.FileName), "{ not json")
