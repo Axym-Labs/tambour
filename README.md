@@ -43,6 +43,23 @@ A script may take `open Marey`, `open Marey.UnitsOfMeasure` and the SI unit symb
 everything else it states itself, and it runs as it is in `dotnet fsi` with Marey referenced.
 `#r "nuget: …"` works where a .NET SDK is installed, and says what to install where none is.
 
+### On Windows
+
+Tambour comes as a zip, `tambour-<version>-win-x64.zip`. Unpack it anywhere and run `tambour.exe`
+from the folder; nothing is installed, and deleting the folder removes it (settings stay in
+`%APPDATA%`). The first start is slower while Windows scans the newly unpacked files.
+
+The package is not code-signed yet, so Windows treats it as coming from an unknown publisher:
+
+- **SmartScreen** says "Windows protected your PC" on the first start. *More info* → *Run anyway*
+  starts it, and it does not ask again. Unblocking the zip before unpacking it (its *Properties* →
+  *Unblock*) avoids the prompt.
+- **Smart App Control**, where it is on, blocks Tambour or one of its libraries ("Smart App Control
+  has blocked part of this app") and has no exception for a single app. Tambour runs only with it
+  off: *Windows Security* → *App & browser control* → *Smart App Control settings* → *Off*. Recent
+  Windows 11 builds let it be turned on again afterwards; older ones only through a reinstall.
+  Most machines have it off already, including every machine upgraded from Windows 10.
+
 ## Building
 
 The .NET 10 SDK (`global.json`), and a checkout of [Marey](https://github.com/Axym-Labs/marey)
