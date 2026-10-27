@@ -210,7 +210,15 @@ type Tabs =
       /// Saves every tab with unsaved work.
       SaveAll: unit -> unit
       /// Closes every tab of a project directory, asking first about what is unsaved.
-      CloseProject: string -> unit }
+      CloseProject: string -> unit
+      /// Asks for a name, under a title, the current one given; none where it was cancelled.
+      AskName: string -> string -> Task<string option>
+      /// Asks to go ahead with deleting the files named; Cancel is the default.
+      ConfirmDelete: string list -> Task<bool>
+      /// A script moved: the tab showing it follows it.
+      Renamed: string -> string -> unit
+      /// Files deleted: a tab showing one of them closes, as there is nothing left to save.
+      Deleted: string list -> unit }
 
 /// What a workspace runs with: its workers, started when first asked, the language service it
 /// shares with the other workspaces, the control it is drawn in, and the window's tabs.
@@ -298,7 +306,12 @@ type Model =
       /// Whether the figure's actions are shown.
       ActionsOpen: bool
       /// The scripts and projects opened, most recent first, as the window keeps them.
-      Recent: string list }
+      Recent: string list
+      /// The project's scripts on disk, as the file list shows them, and whether it is shown.
+      Files: string list
+      FilesOpen: bool
+      /// The scripts open in the window's tabs, and whether each has unsaved work.
+      OpenTabs: Map<string, bool> }
 
 type Msg =
     | Edited of History.TextEdit * string
@@ -361,6 +374,23 @@ type Msg =
     | CloseProject
     | ForgetRecent of missingOnly: bool
     | RecentChanged of string list
+    /// The project directory's scripts read again.
+    | FilesChanged
+    | ToggleFiles
+    | TabsChanged of Map<string, bool>
+    | RenameFile of string
+    | RenameTo of path: string * name: string
+    | DuplicateFile of string
+    | DeleteFile of string
+    | DeleteNow of string list
+    | RevealFile of string
+    /// The shown script's file: renamed, duplicated, deleted or revealed, from the File menu.
+    | RenameScript
+    | DuplicateScript
+    | DeleteScript
+    | RevealScript
+    /// This workspace's script was moved to a new path.
+    | Renamed of string
     | CloseTab
     | CycleTab of int
     | Failed of exn
@@ -410,7 +440,10 @@ let init (script: string) () : Model * Cmd<Msg> =
       BottomTab = 0
       Bottom = defaultBottom
       ActionsOpen = true
-      Recent = [] },
+      Recent = []
+      Files = []
+      FilesOpen = true
+      OpenTabs = Map.empty },
     Cmd.none
 
 let private send (env: Env) (request: Request) : Cmd<Msg> =
@@ -829,6 +862,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 Path = Some opened.Script
                 Project = opened.Project
                 Settings = opened.Settings
+                Files = (match opened.Project with Some dir -> Project.scripts dir |> Array.map (fun n -> Path.Combine(dir, n)) |> List.ofArray | None -> [])
                 Split = (match opened.Settings with Some s when s.Split > 0.05 && s.Split < 0.95 -> s.Split | _ -> model.Split)
                 Bottom = (match opened.Settings with Some s when s.Bottom > 0.0 -> s.Bottom | _ -> model.Bottom)
                 History = History.empty
@@ -890,7 +924,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             Directory.CreateDirectory dir |> ignore
             Project.makeWorkspace dir
             env.Tabs.Opened dir
-            { model with Path = Some(Path.Combine(dir, name + ".fsx")); Project = Some dir }, Cmd.ofMsg Save
+            { model with Path = Some(Path.Combine(dir, name + ".fsx")); Project = Some dir }, Cmd.batch [ Cmd.ofMsg Save; Cmd.ofMsg FilesChanged ]
         with e ->
             { model with Status = $"not saved: {e.Message}" }, Cmd.none
     | DiskChanged ->
@@ -1082,6 +1116,103 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         env.Tabs.ForgetRecent missingOnly
         model, Cmd.none
     | RecentChanged recent -> { model with Recent = recent }, Cmd.none
+    | FilesChanged ->
+        let files =
+            match model.Project with
+            | Some dir when Directory.Exists dir -> Project.scripts dir |> Array.map (fun n -> Path.Combine(dir, n)) |> List.ofArray
+            | _ -> []
+
+        { model with Files = files }, Cmd.none
+    | ToggleFiles -> { model with FilesOpen = not model.FilesOpen }, Cmd.none
+    | TabsChanged tabs -> { model with OpenTabs = tabs }, Cmd.none
+    | RenameFile path ->
+        model,
+        Cmd.OfTask.either
+            (fun () -> env.Tabs.AskName "Rename the script" (Path.GetFileNameWithoutExtension path))
+            ()
+            (function
+            | Some name -> RenameTo(path, name)
+            | None -> Dismissed)
+            Failed
+    | RenameTo(path, name) ->
+        let name = (if name.EndsWith ".fsx" then name.Substring(0, name.Length - 4) else name).Trim()
+        let target = Path.Combine(Path.GetDirectoryName path, name + ".fsx")
+
+        if name = "" || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 then
+            { model with Status = $"not renamed: {name} is not a file's name" }, Cmd.none
+        elif File.Exists target then
+            { model with Status = $"not renamed: {Path.GetFileName target} is there already" }, Cmd.none
+        else
+            try
+                File.Move(path, target)
+
+                // The project's settings name the open script by its file.
+                let dir = Path.GetDirectoryName path
+
+                match Project.read dir with
+                | Some s when s.Script = Path.GetFileName path -> Project.write dir { s with Script = Path.GetFileName target }
+                | _ -> ()
+
+                env.Tabs.Renamed path target
+                { model with Status = $"renamed {Path.GetFileName path} to {Path.GetFileName target}" }, Cmd.ofMsg FilesChanged
+            with e ->
+                { model with Status = $"not renamed: {e.Message}" }, Cmd.none
+    | Renamed target ->
+        let settings = model.Settings |> Option.map (fun s -> { s with Script = Path.GetFileName target })
+        { model with Path = Some target; Settings = settings }, Cmd.ofMsg FilesChanged
+    | DuplicateFile path ->
+        let dir = Path.GetDirectoryName path
+        let stem = Path.GetFileNameWithoutExtension path
+
+        let target =
+            Seq.initInfinite (fun i -> Path.Combine(dir, (if i = 0 then $"{stem} copy.fsx" else $"{stem} copy {i + 1}.fsx")))
+            |> Seq.find (File.Exists >> not)
+
+        try
+            File.Copy(path, target)
+            { model with Status = $"duplicated as {Path.GetFileName target}" }, Cmd.ofMsg FilesChanged
+        with e ->
+            { model with Status = $"not duplicated: {e.Message}" }, Cmd.none
+    | DeleteFile path ->
+        // A workspace's only script takes its workspace with it: tables, settings and prelude.
+        let dir = Path.GetDirectoryName path
+
+        let files =
+            if Project.isWorkspace dir && Project.scripts dir = [| Path.GetFileName path |] then
+                [ path
+                  yield! Directory.GetFiles(Path.Combine(dir, Project.TablesDirectory)) |> Array.sort
+                  for f in [ Project.WorkspaceFile; Tambour.Data.Prelude.FileName ] do
+                      let full = Path.Combine(dir, f)
+                      if File.Exists full then full ]
+            else
+                [ path ]
+
+        model, Cmd.OfTask.either (fun () -> env.Tabs.ConfirmDelete files) () (fun ok -> if ok then DeleteNow files else Dismissed) Failed
+    | DeleteNow files ->
+        try
+            for f in files do
+                if File.Exists f then File.Delete f
+
+            env.Tabs.Deleted files
+            { model with Status = $"deleted {files.Length} file(s)" }, Cmd.ofMsg FilesChanged
+        with e ->
+            { model with Status = $"not all deleted: {e.Message}" }, Cmd.ofMsg FilesChanged
+    | RevealFile path ->
+        try
+            if OperatingSystem.IsWindows() then
+                Diagnostics.Process.Start("explorer.exe", $"/select,\"{path}\"") |> ignore
+            elif OperatingSystem.IsMacOS() then
+                Diagnostics.Process.Start("open", [| "-R"; path |]) |> ignore
+            else
+                Diagnostics.Process.Start("xdg-open", [| Path.GetDirectoryName path |]) |> ignore
+
+            model, Cmd.none
+        with e ->
+            { model with Status = $"not shown: {e.Message}" }, Cmd.none
+    | RenameScript -> model, (match model.Path with Some p -> Cmd.ofMsg (RenameFile p) | None -> Cmd.none)
+    | DuplicateScript -> model, (match model.Path with Some p -> Cmd.ofMsg (DuplicateFile p) | None -> Cmd.none)
+    | DeleteScript -> model, (match model.Path with Some p -> Cmd.ofMsg (DeleteFile p) | None -> Cmd.none)
+    | RevealScript -> model, (match model.Path with Some p -> Cmd.ofMsg (RevealFile p) | None -> Cmd.none)
     | OpenTab path ->
         env.Tabs.Open path
         model, Cmd.none
@@ -1437,6 +1568,10 @@ let commands: Command list =
       c "_File" "Save a_ll" "Ctrl+Alt+S" [] SaveAll always
       c "_File" "_Close tab" "Ctrl+W" [] CloseTab always
       c "_File" "Close _project" "" [] CloseProject (fun m -> m.Project.IsSome)
+      c "_File" "Rena_me script…" "" [] RenameScript (fun m -> m.Path.IsSome)
+      c "_File" "_Duplicate script" "" [] DuplicateScript (fun m -> m.Path.IsSome)
+      c "_File" "Dele_te script…" "" [] DeleteScript (fun m -> m.Path.IsSome)
+      c "_File" "Reveal in file _manager" "" [] RevealScript (fun m -> m.Path.IsSome)
       c "_File" "_Export figure…" "Ctrl+E" [] ChooseExport (fun m -> not (isNull m.Picture))
       c "_File" "_Quit" "Ctrl+Q" [] Quit always
       c "_Edit" "_Undo" "Ctrl+Z" [] Undo (fun m -> not m.History.Done.IsEmpty)
@@ -1452,6 +1587,7 @@ let commands: Command list =
       c "_View" "_Output" "Ctrl+Shift+U" [] (ShowBottom 1) always
       c "_View" "_Bottom panel" "Ctrl+J" [] ToggleBottom always
       c "_View" "_Actions" "Ctrl+Shift+A" [] ToggleActions always
+      c "_View" "_Files" "Ctrl+Shift+E" [] ToggleFiles (fun m -> m.Project.IsSome)
       c "_View" "_Next tab" "Ctrl+Tab" [] (CycleTab 1) always
       c "_View" "Pre_vious tab" "Ctrl+Shift+Tab" [] (CycleTab -1) always
       c "_Help" "_About Tambour" "" [] About always ]
@@ -1486,6 +1622,28 @@ let private icons =
           "_Undo", ("M5.5,3 L2,6.5 L5.5,10 M2,6.5 H10 A3.75,3.75 0 0 1 10,14 H7", false)
           "_Redo", ("M10.5,3 L14,6.5 L10.5,10 M14,6.5 H6 A3.75,3.75 0 0 0 6,14 H9", false)
           "_Export figure…", ("M8,2 V10 M4.5,5.5 L8,2 L11.5,5.5 M2.5,10 V13.5 H13.5 V10", false) ]
+
+/// The script's name, as its tab and the window's title show it.
+let scriptName (model: Model) = model.Path |> Option.map Path.GetFileName |> Option.defaultValue "untitled"
+
+/// What a workspace holds that is not on disk, each named as the question before dropping it
+/// names it: the script, and each table changed, added or removed since it was last saved.
+let unsaved (model: Model) : string list =
+    [ if model.Script <> model.Saved then scriptName model
+
+      for s in model.Tables do
+          match model.SavedTables.TryFind s.Table.Name with
+          | Some t when obj.ReferenceEquals(t, s.Table) -> ()
+          | _ -> $"the table {s.Table.Name}"
+
+      for name in model.SavedTables.Keys do
+          if not (model.Tables |> List.exists (fun s -> s.Table.Name = name)) then
+              $"the removal of the table {name}" ]
+
+/// The window's title: the script's name, marked while anything is unsaved.
+let title (model: Model) =
+    let mark = if (unsaved model).IsEmpty then "" else " •"
+    $"{scriptName model}{mark} — Tambour"
 
 let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
     let look = model.Look
@@ -1754,12 +1912,90 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
             )
         ]
 
+    // The project's scripts, each open one in the text colour and dotted while unsaved, the shown
+    // one in bold with its workspace's tables under it.
+    let fileItem (path: string) : IView =
+        let shown = model.Path = Some path
+        let unsaved = if shown then not (unsaved model).IsEmpty else model.OpenTabs.TryFind path = Some true
+        let opened = shown || model.OpenTabs.ContainsKey path
+
+        Button.create [
+            Button.background Brushes.Transparent
+            Button.horizontalAlignment HorizontalAlignment.Stretch
+            Button.horizontalContentAlignment HorizontalAlignment.Left
+            Button.padding (Thickness(gap, 1.0))
+            Button.onDoubleTapped ((fun _ -> dispatch (OpenTab path)), SubPatchOptions.Always)
+            Button.tip path
+            Button.contextMenu (
+                ContextMenu.create [
+                    ContextMenu.viewItems [
+                        MenuItem.create [ MenuItem.header "_Open"; MenuItem.onClick ((fun _ -> dispatch (OpenTab path)), SubPatchOptions.Always) ]
+                        MenuItem.create [ MenuItem.header "_Rename…"; MenuItem.onClick ((fun _ -> dispatch (RenameFile path)), SubPatchOptions.Always) ]
+                        MenuItem.create [ MenuItem.header "_Duplicate"; MenuItem.onClick ((fun _ -> dispatch (DuplicateFile path)), SubPatchOptions.Always) ]
+                        MenuItem.create [ MenuItem.header "Dele_te…"; MenuItem.onClick ((fun _ -> dispatch (DeleteFile path)), SubPatchOptions.Always) ]
+                        Separator.create []
+                        MenuItem.create [ MenuItem.header "Reveal in file _manager"; MenuItem.onClick ((fun _ -> dispatch (RevealFile path)), SubPatchOptions.Always) ]
+                        MenuItem.create [ MenuItem.header "_New script"; MenuItem.onClick ((fun _ -> dispatch NewScript), SubPatchOptions.Always) ]
+                    ]
+                ]
+            )
+            Button.content (
+                TextBlock.create [
+                    TextBlock.text (Path.GetFileName path + (if unsaved then " •" else ""))
+                    TextBlock.fontWeight (if shown then FontWeight.SemiBold else FontWeight.Normal)
+                    TextBlock.foreground (brush (if opened then look.Text else look.Dim))
+                    TextBlock.textTrimming TextTrimming.CharacterEllipsis
+                ]
+            )
+        ]
+
+    let filesPanel (dir: string) : IView =
+        Border.create [
+            DockPanel.dock Dock.Left
+            Border.width 200.0
+            Border.background (brush look.Raised)
+            Border.borderBrush (brush look.Line)
+            Border.borderThickness (Thickness(0.0, 0.0, 1.0, 0.0))
+            Border.child (
+                ScrollViewer.create [
+                    ScrollViewer.content (
+                        StackPanel.create [
+                            StackPanel.margin (Thickness(0.0, gap))
+                            StackPanel.children [
+                                TextBlock.create [
+                                    TextBlock.text (Path.GetFileName dir)
+                                    TextBlock.fontWeight FontWeight.SemiBold
+                                    TextBlock.margin (Thickness(gap * 1.5, 0.0, gap, gap))
+                                    TextBlock.foreground (brush look.Text)
+                                    TextBlock.textTrimming TextTrimming.CharacterEllipsis
+                                    TextBlock.tip dir
+                                ]
+                                for f in model.Files do
+                                    fileItem f
+
+                                    if model.Path = Some f then
+                                        for t in model.Tables do
+                                            TextBlock.create [
+                                                TextBlock.text $"▦ {t.Table.Name}"
+                                                TextBlock.margin (Thickness(gap * 3.0, 1.0, gap, 1.0))
+                                                TextBlock.foreground (brush look.Dim)
+                                            ]
+                            ]
+                        ]
+                    )
+                ]
+            )
+        ]
+
     DockPanel.create [
         DockPanel.background (brush look.Surface)
         DockPanel.children [
             menuBar
             toolbar
             statusBar
+            match model.Project with
+            | Some dir when model.FilesOpen -> filesPanel dir
+            | _ -> ()
             Grid.create [
                 Grid.columnDefinitions $"{inv split}*,4,{inv (1.0 - split)}*"
                 Grid.children [
@@ -1844,27 +2080,6 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
         ]
     ]
 
-/// The script's name, as its tab and the window's title show it.
-let scriptName (model: Model) = model.Path |> Option.map Path.GetFileName |> Option.defaultValue "untitled"
-
-/// What a workspace holds that is not on disk, each named as the question before dropping it
-/// names it: the script, and each table changed, added or removed since it was last saved.
-let unsaved (model: Model) : string list =
-    [ if model.Script <> model.Saved then scriptName model
-
-      for s in model.Tables do
-          match model.SavedTables.TryFind s.Table.Name with
-          | Some t when obj.ReferenceEquals(t, s.Table) -> ()
-          | _ -> $"the table {s.Table.Name}"
-
-      for name in model.SavedTables.Keys do
-          if not (model.Tables |> List.exists (fun s -> s.Table.Name = name)) then
-              $"the removal of the table {name}" ]
-
-/// The window's title: the script's name, marked while anything is unsaved.
-let title (model: Model) =
-    let mark = if (unsaved model).IsEmpty then "" else " •"
-    $"{scriptName model}{mark} — Tambour"
 
 /// The worker's replies, the keys, the clock of a playing time control, the script's file on
 /// disk, and the window's title.
@@ -1962,6 +2177,22 @@ let private subscriptions (env: Env) (host: Control) (titled: string -> unit) (e
         watcher.EnableRaisingEvents <- true
         watcher :> IDisposable
 
+    /// Scripts added, removed or renamed in the project directory, a moment after they settle.
+    let watchFiles (dir: string) (dispatch: Msg -> unit) : IDisposable =
+        let watcher = new FileSystemWatcher(dir, "*.fsx")
+        watcher.NotifyFilter <- NotifyFilters.FileName
+        let mutable changes = 0
+
+        let changed _ =
+            let change = Interlocked.Increment &changes
+            Task.Delay(200).ContinueWith(fun (_: Task) -> if change = changes then dispatch FilesChanged) |> ignore
+
+        watcher.Created.Add changed
+        watcher.Deleted.Add changed
+        watcher.Renamed.Add changed
+        watcher.EnableRaisingEvents <- true
+        watcher :> IDisposable
+
     let retitle (text: string) (_: Msg -> unit) : IDisposable =
         titled text
         { new IDisposable with member _.Dispose() = () }
@@ -1985,6 +2216,9 @@ let private subscriptions (env: Env) (host: Control) (titled: string -> unit) (e
       [ "title"; title model ], retitle (title model)
       match model.Path with
       | Some path when Directory.Exists(Path.GetDirectoryName path) -> [ "watch"; path ], watch path
+      | _ -> ()
+      match model.Project with
+      | Some dir when Directory.Exists dir -> [ "files"; dir ], watchFiles dir
       | _ -> ()
       if not model.Playing.IsEmpty then [ "clock" ], clock ]
 
@@ -2026,6 +2260,65 @@ let askToSave (owner: Window) (look: Palette.Look) (names: string list) : Task<U
     discard.Click.Add(fun _ -> choose Discard)
     keep.Click.Add(fun _ -> choose Keep)
     window.Closed.Add(fun _ -> answer.TrySetResult Keep |> ignore)
+    window.ShowDialog owner |> ignore
+    answer.Task
+
+/// Asks for a name, the current one given and selected: OK takes it, Cancel or closing does not.
+let askForName (owner: Window) (title: string) (current: string) : Task<string option> =
+    let answer = TaskCompletionSource<string option>()
+    let box = TextBox(Text = current, SelectionStart = 0, SelectionEnd = current.Length)
+    let ok = Button(Content = "OK", IsDefault = true)
+    let cancel = Button(Content = "Cancel", IsCancel = true)
+    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = 8.0, HorizontalAlignment = HorizontalAlignment.Right)
+    buttons.Children.Add cancel
+    buttons.Children.Add ok
+    let panel = StackPanel(Spacing = 12.0, Margin = Thickness 18.0)
+    panel.Children.Add box
+    panel.Children.Add buttons
+
+    let window =
+        Window(Title = title, Width = 380.0, SizeToContent = SizeToContent.Height, CanResize = false, Content = panel, WindowStartupLocation = WindowStartupLocation.CenterOwner)
+
+    ok.Click.Add(fun _ ->
+        answer.TrySetResult(Some box.Text) |> ignore
+        window.Close())
+
+    cancel.Click.Add(fun _ -> window.Close())
+    window.Closed.Add(fun _ -> answer.TrySetResult None |> ignore)
+    window.Opened.Add(fun _ -> box.Focus() |> ignore)
+    window.ShowDialog owner |> ignore
+    answer.Task
+
+/// Asks to delete files for good, naming each: Delete, or Cancel, the default.
+let confirmDeleting (owner: Window) (look: Palette.Look) (files: string list) : Task<bool> =
+    let answer = TaskCompletionSource<bool>()
+
+    let text =
+        TextBlock(
+            Text = "Delete these for good? They do not go to the bin.\n\n" + String.Join("\n", files),
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = SolidColorBrush look.Text
+        )
+
+    let delete = Button(Content = "Delete")
+    let cancel = Button(Content = "Cancel", IsDefault = true, IsCancel = true)
+    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = 8.0, HorizontalAlignment = HorizontalAlignment.Right)
+    buttons.Children.Add delete
+    buttons.Children.Add cancel
+    let panel = StackPanel(Spacing = 12.0, Margin = Thickness 18.0)
+    panel.Children.Add text
+    panel.Children.Add buttons
+
+    let window =
+        Window(Title = "Delete", Width = 480.0, SizeToContent = SizeToContent.Height, CanResize = false, Content = panel, WindowStartupLocation = WindowStartupLocation.CenterOwner)
+
+    delete.Click.Add(fun _ ->
+        answer.TrySetResult true |> ignore
+        window.Close())
+
+    cancel.Click.Add(fun _ -> window.Close())
+    window.Closed.Add(fun _ -> answer.TrySetResult false |> ignore)
+    window.Opened.Add(fun _ -> cancel.Focus() |> ignore)
     window.ShowDialog owner |> ignore
     answer.Task
 
@@ -2192,6 +2485,10 @@ type MainWindow(script: string, path: string option) as this =
         for w in workspaces do
             w.Post(RecentChanged next)
     let mutable ask: string list -> Task<Unsaved> = fun _ -> Task.FromResult Keep
+    let mutable askName: string -> string -> Task<string option> = fun _ _ -> Task.FromResult None
+    let mutable confirmDelete: string list -> Task<bool> = fun _ -> Task.FromResult false
+    /// The open scripts as last told to the tabs.
+    let mutable told: Map<string, bool> = Map.empty
 
     let look () = Palette.forVariant this.ActualThemeVariant
 
@@ -2199,6 +2496,14 @@ type MainWindow(script: string, path: string option) as this =
 
     let rec refresh (force: bool) =
         let now = [ for w in workspaces -> labelOf w ] @ [ string active ]
+
+        let opened = Map.ofList [ for w in workspaces do match w.Path with Some p -> p, not w.Unsaved.IsEmpty | None -> () ]
+
+        if opened <> told then
+            told <- opened
+
+            for w in workspaces do
+                w.Post(TabsChanged opened)
 
         if force || now <> labels then
             labels <- now
@@ -2249,7 +2554,19 @@ type MainWindow(script: string, path: string option) as this =
                 fun missingOnly ->
                     setRecent (if missingOnly then recent |> List.filter (fun p -> File.Exists p || Directory.Exists p) else [])
               SaveAll = fun () -> saveAll () |> ignore
-              CloseProject = fun dir -> closeProject dir |> ignore }
+              CloseProject = fun dir -> closeProject dir |> ignore
+              AskName = fun title current -> askName title current
+              ConfirmDelete = fun files -> confirmDelete files
+              Renamed =
+                fun before after ->
+                    for w in workspaces do
+                        if w.Path = Some before then w.Post(Renamed after)
+              Deleted =
+                fun files ->
+                    for w in List.ofSeq workspaces do
+                        match w.Path with
+                        | Some p when List.contains p files -> forget w
+                        | _ -> () }
 
         let w = new Workspace(script, path, language, tabs)
         self <- w
@@ -2303,6 +2620,19 @@ type MainWindow(script: string, path: string option) as this =
                     do! closeTab w
         }
 
+    /// Closes a tab without asking: what it showed is gone.
+    and forget (w: Workspace) =
+        if workspaces.Contains w then
+            let i = workspaces.IndexOf w
+            workspaces.RemoveAt i
+            deck.Children.Remove w |> ignore
+            (w :> IDisposable).Dispose()
+
+            if workspaces.Count = 0 then add "" None
+            else show (min i (workspaces.Count - 1))
+
+            refresh true
+
     and closeTab (w: Workspace) : Task =
         task {
             let! settled = settle w
@@ -2331,6 +2661,13 @@ type MainWindow(script: string, path: string option) as this =
                 match App.AnswerUnsaved with
                 | Some answer -> Task.FromResult answer
                 | None -> askToSave this (look ()) names
+
+        // A test run answers no dialog it did not mean to: no name, no delete.
+        askName <-
+            fun title current ->
+                if App.AnswerUnsaved.IsSome then Task.FromResult None else askForName this title current
+
+        confirmDelete <- fun files -> if App.AnswerUnsaved.IsSome then Task.FromResult false else confirmDeleting this (look ()) files
         let tabsRow = ScrollViewer(Content = strip, HorizontalScrollBarVisibility = Primitives.ScrollBarVisibility.Auto, VerticalScrollBarVisibility = Primitives.ScrollBarVisibility.Disabled)
         let layout = DockPanel()
         DockPanel.SetDock(tabsRow, Dock.Top)
@@ -2386,6 +2723,15 @@ type MainWindow(script: string, path: string option) as this =
 
     /// The scripts and projects opened, most recent first.
     member _.Recent = recent
+
+    /// What is asked for a new name, and before files are deleted; a test answers them itself.
+    member _.AskName
+        with get () = askName
+        and set (value: string -> string -> Task<string option>) = askName <- value
+
+    member _.ConfirmDelete
+        with get () = confirmDelete
+        and set (value: string list -> Task<bool>) = confirmDelete <- value
 
     /// What is asked before unsaved work is dropped; a test answers it itself.
     member _.Ask

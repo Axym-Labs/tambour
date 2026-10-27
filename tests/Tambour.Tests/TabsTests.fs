@@ -437,3 +437,85 @@ let ``save as makes a new workspace of the tab, its tables with it`` () =
     Assert.True(File.Exists(Path.Combine(dir, "tables", "runs.csv")))
     Assert.Equal(Some copy, window.Active.Project)
     closeAll window
+
+/// The project's scripts in the file list, and what it does to them: duplicate, rename (the
+/// project's settings and the tab showing it follow), and delete, which asks first, naming each
+/// file; Cancel removes none, and Delete exactly those named, closing a tab that showed one.
+[<AvaloniaFact>]
+let ``the file list duplicates, renames and deletes a project's scripts`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-files").FullName
+    let one = Path.Combine(dir, "one.fsx")
+    File.WriteAllText(one, "let one = 1\n")
+    File.WriteAllText(Path.Combine(dir, "two.fsx"), "let two = 2\n")
+    Project.write dir (Project.defaults "one.fsx")
+    let window = new Shell.MainWindow("", Some dir)
+    window.Show()
+    pumpUntil 10.0 "the project" (fun () -> (editorOf window).Text = "let one = 1\n")
+    let listed () = window.Active.GetVisualDescendants().OfType<TextBlock>() |> Seq.map (fun t -> t.Text) |> Seq.filter (fun t -> not (isNull t)) |> List.ofSeq
+    pumpUntil 5.0 "the list" (fun () -> listed () |> List.exists (fun t -> t.StartsWith "two.fsx"))
+
+    // Duplicate: a copy beside it, listed.
+    window.Post(Shell.DuplicateFile(Path.Combine(dir, "two.fsx")))
+    pumpUntil 5.0 "the copy listed" (fun () -> listed () |> List.exists (fun t -> t.StartsWith "two copy.fsx"))
+    Assert.Equal("let two = 2\n", File.ReadAllText(Path.Combine(dir, "two copy.fsx")))
+
+    match Environment.GetEnvironmentVariable "TAMBOUR_CHECK_OUT" with
+    | null
+    | "" -> ()
+    | out ->
+        use frame = window.CaptureRenderedFrame()
+        frame.Save(Path.Combine(out, "files.png"), Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default)
+
+    // Rename the shown script: moved, named so in the settings, and the tab follows it.
+    window.AskName <- fun _ current -> Assert.Equal("one", current); Task.FromResult(Some "first")
+    window.Post(Shell.RenameFile one)
+    let first = Path.Combine(dir, "first.fsx")
+    pumpUntil 5.0 "the tab following" (fun () -> window.Active.Path = Some first)
+    Assert.False(File.Exists one)
+    Assert.Equal("let one = 1\n", File.ReadAllText first)
+    Assert.Equal("first.fsx", (Project.read dir).Value.Script)
+
+    // Delete, cancelled: nothing goes.
+    let asked = ref []
+    window.ConfirmDelete <- fun files -> asked.Value <- files; Task.FromResult false
+    window.Post(Shell.DeleteFile first)
+    pumpUntil 5.0 "the question" (fun () -> not asked.Value.IsEmpty)
+    Assert.Equal<string list>([ first ], asked.Value)
+    Assert.True(File.Exists first)
+
+    // Delete: exactly the file named goes, and its tab with it.
+    window.ConfirmDelete <- fun _ -> Task.FromResult true
+    window.Post(Shell.DeleteFile first)
+    pumpUntil 5.0 "the tab closed" (fun () -> window.Active.Path.IsNone)
+    Assert.False(File.Exists first)
+    Assert.Equal<string list>([ "two copy.fsx"; "two.fsx"; Project.FileName ], Directory.GetFiles dir |> Array.map Path.GetFileName |> Array.sort |> List.ofArray |> List.sortBy (fun f -> f.EndsWith ".json", f))
+    closeAll window
+
+/// A workspace's only script, deleted, takes the workspace with it, and the question names each
+/// of its files.
+[<AvaloniaFact>]
+let ``deleting a workspace's only script names its tables, settings and prelude`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-only").FullName
+    Project.makeWorkspace dir
+    Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", "runs.csv")) (trial "runs" "auc")
+    let script = Path.Combine(dir, "figure.fsx")
+    File.WriteAllText(script, "let x = 1\n")
+    Project.write dir (Project.defaults "figure.fsx")
+    let window = new Shell.MainWindow("", Some dir)
+    window.Show()
+    pumpUntil 10.0 "the workspace" (fun () -> (editorOf window).Text = "let x = 1\n")
+    let asked = ref []
+    window.ConfirmDelete <- fun files -> asked.Value <- files; Task.FromResult false
+    window.Post(Shell.DeleteFile script)
+    pumpUntil 5.0 "the question" (fun () -> not asked.Value.IsEmpty)
+
+    Assert.Equal<string list>(
+        [ script
+          Path.Combine(dir, "tables", "runs.csv")
+          Path.Combine(dir, Project.WorkspaceFile)
+          Path.Combine(dir, "prelude.fsx") ],
+        asked.Value
+    )
+
+    Assert.True(File.Exists(Path.Combine(dir, "tables", "runs.csv")))
+    closeAll window
