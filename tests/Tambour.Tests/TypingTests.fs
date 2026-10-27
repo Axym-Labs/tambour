@@ -234,3 +234,19 @@ let ``completion comes by itself where a name is used`` () =
 
     for quiet in [ "let p‸"; "let mutable p‸"; "fun r‸"; "type R‸"; "// pre‸"; "let s = \"pre‸"; "let n = 1e‸"; "let a = ‸" ] do
         Assert.False(at quiet, quiet)
+
+/// The call the caret is in: the nearest parenthesis before it not closed before it, past lists
+/// and records; none outside every call, or in a string or comment only.
+[<Fact>]
+let ``the call the caret is in is found by its opening parenthesis`` () =
+    let at (marked: string) = Typing.enclosingCall (marked.Replace("‸", "")) (marked.IndexOf '‸')
+
+    Assert.Equal(Some 12, at "Array.sortBy(‸")
+    Assert.Equal(Some 12, at "Array.sortBy(fun r -> r.x‸")
+    Assert.Equal(Some 12, at "Array.sortBy(f (g x) [1; 2]‸")
+    Assert.Equal(Some 12, at "Array.sortBy(xs, [1; ‸")
+    Assert.Equal(Some 14, at "Array.sortBy(f(‸")
+    Assert.Equal(None, at "Array.sortBy(f)‸")
+    Assert.Equal(None, at "let a = 1\nlet b = ‸")
+    Assert.Equal(None, at "let s = \"(‸")
+    Assert.Equal(None, at "// (‸")

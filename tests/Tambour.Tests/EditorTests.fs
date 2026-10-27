@@ -112,3 +112,42 @@ let ``completion comes as a name is typed, with the chosen entry's documentation
     press Avalonia.Input.Key.Tab
     Assert.EndsWith("let b = quadrupled", editor.Text.TrimEnd())
     window.Close()
+
+/// A call's overloads, shown on its opening parenthesis, go once the caret leaves the call: the
+/// parenthesis taken back, or the caret on to another line.
+[<AvaloniaFact>]
+let ``a call's overloads go once the caret leaves the call`` () =
+    use language = new LanguageService(command, { References = [||]; Prelude = Shell.prelude })
+    let editor = ScriptEditor(Language = language)
+    let window = Window(Width = 800.0, Height = 500.0, Content = editor)
+    window.Show()
+    let script = "let xs = [| 3.0; 1.0 |]\n\nlet s = Array.sortBy"
+    editor.Text <- script
+    editor.Editor.CaretOffset <- script.Length
+    editor.Editor.TextArea.Focus() |> ignore
+
+    let press (key: Avalonia.Input.Key) =
+        window.KeyPress(key, Avalonia.Input.RawInputModifiers.None, Avalonia.Input.PhysicalKey.None, null)
+        window.KeyRelease(key, Avalonia.Input.RawInputModifiers.None, Avalonia.Input.PhysicalKey.None, null)
+        Dispatcher.UIThread.RunJobs()
+
+    let opened () =
+        window.KeyTextInput "("
+        Dispatcher.UIThread.RunJobs()
+        pumpUntil 30.0 "the overloads" (fun () -> editor.ShowsOverloads)
+
+    // Taken back: Backspace removes the parenthesis and the closer put in with it.
+    opened ()
+    press Avalonia.Input.Key.Back
+    Assert.Equal(script, editor.Text)
+    Assert.False editor.ShowsOverloads
+
+    // Typed on inside the call, they stay; on to another line, outside it, they go.
+    opened ()
+    window.KeyTextInput "fun x"
+    Dispatcher.UIThread.RunJobs()
+    Assert.True editor.ShowsOverloads
+    editor.Editor.CaretOffset <- script.IndexOf "\n\n" + 1
+    Dispatcher.UIThread.RunJobs()
+    Assert.False editor.ShowsOverloads
+    window.Close()

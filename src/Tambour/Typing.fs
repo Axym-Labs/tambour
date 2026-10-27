@@ -442,3 +442,24 @@ let completesAsTyped (text: string) (caret: int) =
         let b = wordStart text e
         let before = text.Substring(b, e - b)
         not (declaring.Contains before)
+
+/// The opening parenthesis of the call the caret is in: the nearest one before it that is not
+/// closed before it, past any list or record the caret is also in. None outside every call.
+let enclosingCall (text: string) (caret: int) : int option =
+    let caret = min caret text.Length
+    let mask = codeMask text
+    let mutable depth = 0
+    let mutable found = None
+    let mutable i = caret - 1
+
+    while found.IsNone && i >= 0 do
+        if mask.[i] then
+            match text.[i] with
+            | ')' | ']' | '}' -> depth <- depth + 1
+            | '(' when depth = 0 -> found <- Some i
+            | '(' | '[' | '{' when depth > 0 -> depth <- depth - 1
+            | _ -> ()
+
+        i <- i - 1
+
+    found

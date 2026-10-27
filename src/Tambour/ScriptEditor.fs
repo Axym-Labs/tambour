@@ -447,6 +447,9 @@ type ScriptEditor() as this =
     /// The description shown beside the completion list, as text; empty where none is.
     let mutable describedText = ""
     let mutable overloads: OverloadInsightWindow = null
+    /// The opening parenthesis of the call whose overloads are shown; they go once the caret is
+    /// in another call or none.
+    let mutable overloadsCall: int option = None
     let mutable look = Palette.light
     let mutable dark = false
 
@@ -644,10 +647,17 @@ type ScriptEditor() as this =
         ask (fun l -> l.SignatureAsync(text, path, line, column)) (fun s ->
             if not (isNull overloads) then overloads.Close()
 
-            if s.Methods.Length > 0 then
+            let call = Typing.enclosingCall editor.Text editor.CaretOffset
+
+            if s.Methods.Length > 0 && call.IsSome then
                 let window = OverloadInsightWindow(editor.TextArea, Provider = Overloads(s.Methods, s.Active))
-                window.Closed.Add(fun _ -> overloads <- null)
+
+                window.Closed.Add(fun _ ->
+                    if obj.ReferenceEquals(overloads, window) then
+                        overloads <- null)
+
                 overloads <- window
+                overloadsCall <- call
                 window.Show())
 
     /// What typing a character sets off: completion after a dot, the overloads after an opening
@@ -966,6 +976,11 @@ type ScriptEditor() as this =
             let line = editor.TextArea.Caret.Line
             closers.RemoveAll(fun a -> a.IsDeleted || a.Line <> line) |> ignore
             marks.Brackets <- Typing.matching editor.Text editor.CaretOffset
+
+            // The overloads go once the caret has left their call: its parenthesis deleted, the
+            // caret past its closer or on to another line outside it.
+            if not (isNull overloads) && Typing.enclosingCall editor.Text editor.CaretOffset <> overloadsCall then
+                overloads.Close()
             redraw ()
 
             if not (isNull completion) && editor.CaretOffset >= completion.StartOffset then
@@ -1068,6 +1083,9 @@ type ScriptEditor() as this =
     /// What the open completion list offers, or nothing when none is open.
     /// The signature and documentation shown beside the completion list; empty where none is.
     member _.CompletionDocs = describedText
+
+    /// Whether a call's overloads are shown.
+    member _.ShowsOverloads = not (isNull overloads)
 
     member _.Completions =
         if isNull completion then [||] else completion.CompletionList.CompletionData |> Seq.map (fun d -> d.Text) |> Array.ofSeq
