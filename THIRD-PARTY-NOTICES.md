@@ -9,7 +9,8 @@ given.
 | .NET runtime | 10.0 | MIT | https://github.com/dotnet/runtime |
 | FSharp.Core, FSharp.Compiler.Service | 10.1.202, 43.12.202 | MIT | https://github.com/dotnet/fsharp |
 | Marey | 1.0 (pre-release) | MIT | https://github.com/Axym-Labs/marey |
-| Avalonia (Avalonia, .Desktop, .Skia, .Themes.Fluent, .X11, .Win32, .Native, .FreeDesktop, .HarfBuzz) | 12.1.4 | MIT | https://github.com/AvaloniaUI/Avalonia |
+| Avalonia (Avalonia, .Desktop, .Skia, .Themes.Fluent, .Fonts.Inter, .X11, .Win32, .Native, .FreeDesktop, .HarfBuzz) | 12.1.4 | MIT | https://github.com/AvaloniaUI/Avalonia |
+| The Inter font, in Avalonia.Fonts.Inter | — | OFL-1.1 | https://github.com/rsms/inter |
 | ANGLE for Windows (Avalonia.Angle.Windows.Natives) | 2.1.27548 | BSD-3-Clause | https://github.com/google/angle |
 | AvaloniaEdit, AvaloniaEdit.TextMate | 12.0.0 | MIT | https://github.com/AvaloniaUI/AvaloniaEdit |
 | TextMateSharp, TextMateSharp.Grammars | 2.0.4 | MIT | https://github.com/danipen/TextMateSharp |
