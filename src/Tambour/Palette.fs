@@ -39,8 +39,9 @@ type Look =
 
 let private rgb (hex: string) = Color.Parse hex
 
-/// The font code is shown in: the editor, the output, a signature.
-let code = FontFamily "Cascadia Code,Consolas,DejaVu Sans Mono,monospace"
+/// The font code is shown in (the editor, the output, a signature): JetBrains Mono, carried in the
+/// app so the editor looks the same on every OS.
+let code = FontFamily "avares://tambour/Fonts#JetBrains Mono, Cascadia Code, Consolas, DejaVu Sans Mono, monospace"
 
 /// The editor's colours are Visual Studio Code's Light+, as its grammar theme is.
 let light =

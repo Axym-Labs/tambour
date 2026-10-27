@@ -34,6 +34,7 @@
   <ItemGroup>
     <EmbeddedResource Include="Themes/light.json" LogicalName="Tambour.Themes.light.json" />
     <EmbeddedResource Include="Themes/dark.json" LogicalName="Tambour.Themes.dark.json" />
+    <AvaloniaResource Include="Fonts/*.ttf" />
   </ItemGroup>
 
   <ItemGroup>

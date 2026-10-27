@@ -11,6 +11,7 @@ given.
 | Marey | 1.0 (pre-release) | MIT | https://github.com/Axym-Labs/marey |
 | Avalonia (Avalonia, .Desktop, .Skia, .Themes.Fluent, .Fonts.Inter, .X11, .Win32, .Native, .FreeDesktop, .HarfBuzz) | 12.1.4 | MIT | https://github.com/AvaloniaUI/Avalonia |
 | The Inter font, in Avalonia.Fonts.Inter | — | OFL-1.1 | https://github.com/rsms/inter |
+| JetBrains Mono, the editor's font (Regular and Bold; the licence is `OFL-JetBrainsMono.txt` beside this file) | 2.305 | OFL-1.1 | https://github.com/JetBrains/JetBrainsMono |
 | ANGLE for Windows (Avalonia.Angle.Windows.Natives) | 2.1.27548 | BSD-3-Clause | https://github.com/google/angle |
 | AvaloniaEdit, AvaloniaEdit.TextMate | 12.0.0 | MIT | https://github.com/AvaloniaUI/AvaloniaEdit |
 | TextMateSharp, TextMateSharp.Grammars | 2.0.4 | MIT | https://github.com/danipen/TextMateSharp |

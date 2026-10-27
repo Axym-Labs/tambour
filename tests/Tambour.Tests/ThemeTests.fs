@@ -105,3 +105,11 @@ let ``choosing a theme draws the window in it`` () =
     finally
         App.Choose Preferences.FollowSystem
         window.Close()
+
+/// The editor's font is the JetBrains Mono the app carries, on any machine, in both weights.
+[<AvaloniaFact>]
+let ``code is shown in the bundled JetBrains Mono`` () =
+    for weight in [ FontWeight.Normal; FontWeight.Bold ] do
+        let face = Typeface(Palette.code, FontStyle.Normal, weight).GlyphTypeface
+        Assert.Equal("JetBrains Mono", face.FamilyName)
+        Assert.Equal(weight, face.Weight)

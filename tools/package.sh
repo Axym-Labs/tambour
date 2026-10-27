@@ -17,7 +17,7 @@ publish() {
   rm -rf "$dir"
   dotnet publish src/Tambour -c Release -r "$rid" --self-contained -o "$dir" \
     -p:InformationalVersion="$version" -p:DebugType=none -p:GenerateDocumentationFile=false >/dev/null
-  cp LICENSE THIRD-PARTY-NOTICES.md README.md "$dir"/
+  cp LICENSE THIRD-PARTY-NOTICES.md README.md src/Tambour/Fonts/OFL-JetBrainsMono.txt "$dir"/
   echo "$dir"
 }
 
