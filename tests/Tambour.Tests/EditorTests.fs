@@ -151,3 +151,29 @@ let ``a call's overloads go once the caret leaves the call`` () =
     Dispatcher.UIThread.RunJobs()
     Assert.False editor.ShowsOverloads
     window.Close()
+
+/// The grammar's colouring is held while the editor is in a window and given back when it leaves:
+/// TextMate's tokenizer holds a thread-pool thread while installed, and twenty editors left behind
+/// by closed tabs held twenty. Shown again, the editor colours again, the compiler's classes still
+/// drawn over the grammar's.
+[<AvaloniaFact>]
+let ``an editor gives its colouring back when its window closes, and takes it again when shown`` () =
+    let editor = ScriptEditor()
+    Assert.True editor.Coloured
+    let first = Window(Width = 400.0, Height = 300.0, Content = editor)
+    first.Show()
+    editor.Text <- "let x = 1\n"
+    Dispatcher.UIThread.RunJobs()
+    first.Close()
+    Dispatcher.UIThread.RunJobs()
+    Assert.False editor.Coloured
+
+    first.Content <- null
+    let second = Window(Width = 400.0, Height = 300.0, Content = editor)
+    second.Show()
+    Dispatcher.UIThread.RunJobs()
+    Assert.True editor.Coloured
+    let transformers = editor.Editor.TextArea.TextView.LineTransformers
+    Assert.Equal("Classes", (Seq.last transformers).GetType().Name)
+    Assert.Equal(1, transformers |> Seq.filter (fun t -> t.GetType().Name = "Classes") |> Seq.length)
+    second.Close()

@@ -472,8 +472,10 @@ type LanguageService(command: Command, init: AnalysisInit) =
 
             pending.Clear())
 
+    /// Starts the process, on the thread pool, as a worker is: its replies are read there rather
+    /// than on the dispatcher of whoever made the service, which may not be the one running.
     let start () : Task<ChildProcess<AnalysisRequest, AnalysisReply>> =
-        task {
+        Task.Run<ChildProcess<AnalysisRequest, AnalysisReply>>(fun () -> task {
             let! p = ChildProcess<AnalysisRequest, AnalysisReply>.StartAsync(Role.analysis, command)
             do! p.SendAsync(AnalysisRequest.Start init)
 
@@ -530,7 +532,7 @@ type LanguageService(command: Command, init: AnalysisInit) =
 
             pump () |> ignore
             return p
-        }
+        })
 
     let mutable child = start ()
 

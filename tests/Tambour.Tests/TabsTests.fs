@@ -43,7 +43,6 @@ let private typeInto (window: Shell.MainWindow) (text: string) =
     editor.Editor.TextArea.PerformTextInput text
     Dispatcher.UIThread.RunJobs()
 
-/// Answers the question before unsaved work is dropped, counting each time it is asked.
 /// Closes the window, answering Don't save, and waits until it has closed, workers and all.
 let private closeAll (window: Shell.MainWindow) =
     let closed = ref false
@@ -52,6 +51,7 @@ let private closeAll (window: Shell.MainWindow) =
     window.Close()
     pumpUntil 5.0 "the window closed" (fun () -> closed.Value)
 
+/// Answers the question before unsaved work is dropped, counting each time it is asked.
 let private answering (window: Shell.MainWindow) (answer: Unsaved) =
     let asked = ref 0
 
