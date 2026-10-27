@@ -390,6 +390,43 @@ let ``a worker stuck in a script ends when the app does`` () : Task =
     }
 
 [<Fact>]
+let ``killing a worker ends what its script started`` () : Task =
+    task {
+        if OperatingSystem.IsLinux() then
+            let file = Path.GetTempFileName()
+            let! worker = WorkerProcess.StartAsync(Role.worker, command)
+            do! worker.SendAsync(Request.Init init)
+            let! ready = worker.Replies.ReadAsync().AsTask()
+            Assert.True(ready.IsReady, sprintf "%A" ready)
+
+            let script =
+                $"let sleeper = System.Diagnostics.Process.Start(\"sleep\", \"60\")\nSystem.IO.File.WriteAllText(@\"{file}\", string sleeper.Id)\n"
+
+            do! worker.SendAsync(Request.Evaluate { Text = script; Path = null })
+            let clock = Diagnostics.Stopwatch.StartNew()
+
+            while (File.ReadAllText file).Length = 0 && clock.Elapsed.TotalSeconds < 30.0 do
+                do! Task.Delay 50
+
+            let sleeper = int (File.ReadAllText file)
+            worker.Kill()
+
+            // Running, or stopped: not yet dead.
+            let alive (pid: int) =
+                try
+                    let stat = File.ReadAllText $"/proc/{pid}/stat"
+                    stat.[stat.LastIndexOf ')' + 2] <> 'Z'
+                with _ ->
+                    false
+
+            while (alive worker.Pid || alive sleeper) && clock.Elapsed.TotalSeconds < 40.0 do
+                do! Task.Delay 50
+
+            Assert.False(alive worker.Pid, "the worker outlived its kill")
+            Assert.False(alive sleeper, $"the script's process {sleeper} outlived its worker")
+    }
+
+[<Fact>]
 let ``the worker does not load Avalonia`` () : Task =
     task {
         // Read from the process's mapped files, which Linux lists; the assemblies are the same
