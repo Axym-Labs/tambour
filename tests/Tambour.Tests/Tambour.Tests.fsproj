@@ -16,6 +16,7 @@
     <Compile Include="TypingTests.fs" />
     <Compile Include="HighlightTests.fs" />
     <Compile Include="ThemeTests.fs" />
+    <Compile Include="MarkdownTests.fs" />
     <Compile Include="EditsTests.fs" />
     <Compile Include="HistoryTests.fs" />
     <Compile Include="FilesTests.fs" />

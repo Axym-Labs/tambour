@@ -127,17 +127,18 @@ let tokensOf (offset: int) (items: SemanticClassificationItem[]) : Token[] =
 
     tokens.ToArray()
 
-/// Documentation as a reader reads it: the summary's text, a code element or a reference by its
-/// name, paragraphs apart.
+/// Documentation as a reader reads it, as Markdown: the summary's lines as they were written, less
+/// their common indent; a code element as code, a reference by its name, paragraphs apart. Inside
+/// a fenced block every space is kept; outside, a run of them is one.
 let readable (xml: string) =
     try
-        let root = Xml.Linq.XElement.Parse("<doc>" + xml + "</doc>", Xml.Linq.LoadOptions.None)
+        let root = Xml.Linq.XElement.Parse("<doc>" + xml + "</doc>", Xml.Linq.LoadOptions.PreserveWhitespace)
         let summary = root.Element(Xml.Linq.XName.Get "summary") |> Option.ofObj |> Option.defaultValue root
         let out = Text.StringBuilder()
 
         let rec walk (node: Xml.Linq.XNode) =
             match node with
-            | :? Xml.Linq.XText as t -> out.Append(Text.RegularExpressions.Regex.Replace(t.Value, @"\s+", " ")) |> ignore
+            | :? Xml.Linq.XText as t -> out.Append(t.Value.Replace("\r", "")) |> ignore
             | :? Xml.Linq.XElement as e ->
                 match e.Name.LocalName with
                 | "see"
@@ -153,6 +154,8 @@ let readable (xml: string) =
                     // `T:Marey.Plot.Geom` reads as `Geom`.
                     let name = if name.Length > 2 && name.[1] = ':' then name.Substring 2 else name
                     out.Append(name.Split('.') |> Array.last) |> ignore
+                | "c" -> out.Append('`').Append(e.Value).Append('`') |> ignore
+                | "code" -> out.Append("\n```\n").Append(e.Value.Trim('\n', '\r')).Append("\n```\n") |> ignore
                 | "para" ->
                     out.Append "\n\n" |> ignore
 
@@ -168,7 +171,28 @@ let readable (xml: string) =
         for n in summary.Nodes() do
             walk n
 
-        Text.RegularExpressions.Regex.Replace(out.ToString(), @" *\n\s*\n\s*", "\n\n").Trim()
+        let lines = out.ToString().Split('\n')
+        let indent (l: string) = l.Length - l.TrimStart(' ').Length
+
+        let common =
+            lines |> Array.filter (fun l -> l.Trim() <> "") |> Array.map indent |> Array.fold min Int32.MaxValue
+
+        let mutable fenced = false
+
+        let kept =
+            [ for l in lines ->
+                  let l = if l.Trim() = "" then "" else l.Substring(min common (indent l)).TrimEnd()
+
+                  if l.TrimStart().StartsWith "```" then
+                      fenced <- not fenced
+                      l.Trim()
+                  elif fenced then
+                      l
+                  else
+                      let lead = indent l
+                      l.Substring(0, lead) + Text.RegularExpressions.Regex.Replace(l.Substring lead, @"\s+", " ") ]
+
+        Text.RegularExpressions.Regex.Replace(String.Join("\n", kept), @"\n{3,}", "\n\n").Trim('\n', ' ')
     with _ ->
         ""
 

@@ -172,4 +172,8 @@ let ``hover on a library's name shows its documentation`` () =
 [<Fact>]
 let ``documentation reads as text`` () =
     let xml = """<summary>Draws <c>points</c>; see <see cref="T:Marey.Plot.Geom"/>.<para>Second   paragraph.</para></summary><param name="x">ignored</param>"""
-    Assert.Equal("Draws points; see Geom.\n\nSecond paragraph.", Analysis.readable xml)
+    Assert.Equal("Draws `points`; see Geom.\n\nSecond paragraph.", Analysis.readable xml)
+
+    // Markdown as Marey writes it: its lines, less their indent, a code block's spaces kept.
+    let markdown = "<summary>\n **Bold** words,\n two   lines.\n\n ```fsharp\n let x =\n     1\n ```\n</summary>"
+    Assert.Equal("**Bold** words,\ntwo lines.\n\n```fsharp\nlet x =\n    1\n```", Analysis.readable markdown)

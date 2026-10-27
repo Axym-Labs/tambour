@@ -167,7 +167,8 @@ let pairs (look: Look) : (string * Color * Color) list =
       "panel note", look.Dim, look.Surface
       "panel error", look.Error, look.Surface
       "panel warning", look.Warning, look.Surface
-      "readout", look.Text, look.Raised ]
+      "readout", look.Text, look.Raised
+      "a doc's code block", look.Foreground, look.Raised ]
 
 /// A completion's glyph, by the name of its `FSharpGlyph` case: the mark it shows, and the kind
 /// whose colour it takes (or `error`).

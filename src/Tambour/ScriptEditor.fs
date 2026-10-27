@@ -34,7 +34,8 @@ type private Typed() =
 
     member _.Changed = changed.Publish
 
-module private Shown =
+/// How the editor shows things outside its text: a completion's name, a signature in a tooltip.
+module Shown =
 
     /// The editor's font, and the code in its tooltips.
     let code = Palette.code
@@ -68,6 +69,21 @@ module private Shown =
 
         block.Inlines <- inlines
 
+    /// What a keyword makes the name after it.
+    let private naming =
+        Map.ofList
+            [ "module", "namespace"
+              "namespace", "namespace"
+              "from", "namespace"
+              "type", "type"
+              "class", "type"
+              "struct", "struct"
+              "interface", "interface"
+              "union", "type"
+              "exception", "type"
+              "enum", "enum"
+              "delegate", "type" ]
+
     let private keywords =
         set [ "val"; "member"; "property"; "type"; "module"; "namespace"; "new"; "static"; "abstract"; "override"
               "union"; "case"; "active"; "pattern"; "field"; "event"; "mutable"; "inherit"; "interface"; "exception"
@@ -84,6 +100,9 @@ module private Shown =
         let mutable expectType = false
         let mutable depth = 0
         let mutable previous = ""
+        let mutable lineStart = true
+        // The kind the next name is, after `module`, `type` and the like.
+        let mutable nameKind = "function"
 
         for m in pieces.Matches text do
             let p = m.Value
@@ -94,17 +113,31 @@ module private Shown =
                         named <- false
                         expectType <- false
                         depth <- 0
+                        lineStart <- true
+                        nameKind <- "function"
 
                     plain
                 elif Char.IsLetter p.[0] || p.[0] = '_' then
-                    if depth = 0 && not expectType && keywords.Contains p then brush "keyword"
-                    elif depth > 0 || expectType then brush "type"
+                    // `from Marey` under a module's or type's name: where it is from.
+                    let isFrom = p = "from" && lineStart
+                    lineStart <- false
+
+                    if depth = 0 && not expectType && (keywords.Contains p || isFrom) then
+                        match naming.TryFind p with
+                        | Some kind when not named -> nameKind <- kind
+                        | _ -> ()
+
+                        brush "keyword"
+                    elif depth > 0 || expectType then
+                        brush "type"
                     elif not named then
                         named <- true
-                        brush "function"
+                        brush nameKind
                     else
                         brush "parameter"
                 else
+                    lineStart <- false
+
                     match p with
                     | "<" -> depth <- depth + 1
                     | ">" when previous = "-" -> expectType <- true
@@ -689,7 +722,7 @@ type ScriptEditor() as this =
 
             if not (String.IsNullOrWhiteSpace h.Doc) then
                 texts.Add h.Doc
-                panel.Children.Add(TextBlock(Text = h.Doc, TextWrapping = TextWrapping.Wrap, Opacity = 0.85))
+                panel.Children.Add(Markdown.view look h.Doc)
         | _ -> ()
 
         tipText <- String.Join("\n", texts)
@@ -757,6 +790,10 @@ type ScriptEditor() as this =
         editor.TextArea.SelectionBrush <- SolidColorBrush look.Selection
         editor.TextArea.TextView.CurrentLineBackground <- SolidColorBrush look.CurrentLine
         editor.TextArea.TextView.CurrentLineBorder <- Pen(Brushes.Transparent, 0.0)
+        // The tips on the editor's page, so code in them is drawn on what its colours are for.
+        this.Resources.["ToolTipBackground"] <- SolidColorBrush look.Background
+        this.Resources.["ToolTipForeground"] <- SolidColorBrush look.Foreground
+        this.Resources.["ToolTipBorderBrush"] <- SolidColorBrush look.Line
         classes.Look <- look
         marks.Look <- look
         editor.TextArea.TextView.Redraw()
