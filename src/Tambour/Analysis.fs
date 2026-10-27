@@ -202,9 +202,17 @@ let private docOf (doc: FSharpXmlDoc) =
 
 let private glyphOf (glyph: FSharpGlyph) = string glyph
 
-/// The assemblies a script is checked against: the runtime's own, FSharp.Core and Marey from
-/// this app's directory, and whatever else the app states. The runtime's are its implementation
-/// assemblies, as FSI compiles against them; no reference pack is needed.
+/// The assemblies this app supplies a script: FSharp.Core and Marey from its directory, and the
+/// table binder a project's prelude reads its tables with.
+let private ownReferences () =
+    [| Path.Combine(AppContext.BaseDirectory, "FSharp.Core.dll")
+       yield! Directory.GetFiles(AppContext.BaseDirectory, "Marey*.dll") |> Array.sort
+       Path.Combine(AppContext.BaseDirectory, "Tambour.Data.dll")
+       Path.Combine(AppContext.BaseDirectory, "Apache.Arrow.dll") |]
+
+/// The assemblies a script is checked against: the runtime's own, this app's, and whatever else
+/// the app states. The runtime's are its implementation assemblies, as FSI compiles against them;
+/// no reference pack is needed.
 let private referencesFor (stated: string[]) =
     let runtime = Path.GetDirectoryName(typeof<obj>.Assembly.Location)
 
@@ -213,12 +221,18 @@ let private referencesFor (stated: string[]) =
 
            if (n.StartsWith "System." || n = "netstandard.dll" || n = "mscorlib.dll") && not (n.Contains "Native") then
                f
-       Path.Combine(AppContext.BaseDirectory, "FSharp.Core.dll")
-       yield! Directory.GetFiles(AppContext.BaseDirectory, "Marey*.dll") |> Array.sort
-       // The table binder a project's prelude reads its tables with in Tambour.
-       Path.Combine(AppContext.BaseDirectory, "Tambour.Data.dll")
-       Path.Combine(AppContext.BaseDirectory, "Apache.Arrow.dll")
+       yield! ownReferences ()
        yield! stated |]
+
+/// A script's options without the references its directives make to an assembly this app
+/// supplies. `#r "nuget: Marey.Sim"` restores the newest Marey on nuget.org, which the checker
+/// would take before the app's, while the worker's session runs on the app's, loaded first.
+let withoutShadowed (own: string[]) (options: string[]) =
+    let names = own |> Array.map Path.GetFileName |> Set.ofArray |> Set.map (fun n -> n.ToLowerInvariant())
+
+    options
+    |> Array.filter (fun o ->
+        not (o.StartsWith "-r:" && names.Contains((Path.GetFileName(o.Substring 3)).ToLowerInvariant())))
 
 /// A plain identifier: what a theme, a placement or a geom is named by.
 let private identifier = Text.RegularExpressions.Regex(@"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -266,6 +280,7 @@ type Service(init: AnalysisInit) =
     /// The lines the prelude puts before the script.
     let offset = prelude.Split('\n').Length - 1
     let references = referencesFor init.References |> Array.map (fun r -> "-r:" + r)
+    let own = ownReferences ()
 
     let mutable options: (string * string * FSharpProjectOptions) option = None
 
@@ -287,7 +302,7 @@ type Service(init: AnalysisInit) =
                 )
                 |> Async.RunSynchronously
 
-            let o = { o with OtherOptions = Array.append o.OtherOptions references }
+            let o = { o with OtherOptions = Array.append (withoutShadowed own o.OtherOptions) references }
             options <- Some(path, directives, o)
             o
 

@@ -50,6 +50,39 @@ let ``a script that compiles has no errors, and the prelude's lines are not coun
     let first = service.Value.Check { Id = 2; Text = "let a: int = \"x\"\n"; Path = null }
     Assert.Equal(1, (first.Diagnostics |> Array.find (fun d -> d.Severity = "error")).StartLine)
 
+/// A directive's reference to an assembly the app supplies gives way to the app's; any other stays.
+[<Fact>]
+let ``a script's reference to an assembly the app supplies is dropped, and no other`` () =
+    let own = [| "/app/FSharp.Core.dll"; "/app/Marey.Plot.dll"; "/app/Marey.Units.dll" |]
+
+    let options =
+        [| "--define:TAMBOUR"
+           "-r:/home/u/.nuget/packages/marey.plot/0.7.0/lib/netstandard2.1/Marey.Plot.dll"
+           "-r:/home/u/.nuget/packages/marey.units/0.7.0/lib/netstandard2.1/marey.units.dll"
+           "-r:/home/u/.nuget/packages/newtonsoft.json/13.0.3/lib/net6.0/Newtonsoft.Json.dll" |]
+
+    Assert.Equal<string[]>(
+        [| "--define:TAMBOUR"; "-r:/home/u/.nuget/packages/newtonsoft.json/13.0.3/lib/net6.0/Newtonsoft.Json.dll" |],
+        Analysis.withoutShadowed own options
+    )
+
+/// `#r "nuget: Marey.Sim"` restores the newest Marey on nuget.org; the script is still checked
+/// against the app's, as the worker runs it, so names newer than that release are known.
+[<Fact>]
+let ``a script that fetches Marey from nuget is checked against the app's Marey`` () =
+    if not (Tambour.Evaluation.sdkInstalled ()) then
+        Assert.Skip "no .NET SDK, so no package restore"
+
+    let script =
+        "#r \"nuget: Marey.Sim\"\n"
+        + "let energy = U.joule\n"
+        + "let figure = Chart.lineIn U.radian U.second [| 1.0<rad> |] [| 2.0<s> |]\n"
+
+    let path = Path.Combine(Path.GetTempPath(), "tambour-nuget-marey.fsx")
+    let answer = service.Value.Check { Id = 3; Text = script; Path = path }
+    let errors = answer.Diagnostics |> Array.filter (fun d -> d.Severity = "error")
+    Assert.True(errors.Length = 0, String.Join("\n", errors |> Array.map (fun d -> $"{d.Code} {d.Message}")))
+
 [<Fact>]
 let ``completion after a row's dot offers its columns`` () =
     let text = unitError.Replace("        layer GeomPoint\n", "        color (fun r -> r.)\n        layer GeomPoint\n")
