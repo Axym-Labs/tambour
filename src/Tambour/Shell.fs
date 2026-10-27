@@ -1586,8 +1586,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
 
     let actionsHeader =
         Button.create [
-            Button.dock Dock.Top
-            Button.horizontalAlignment HorizontalAlignment.Stretch
+            Button.horizontalAlignment HorizontalAlignment.Left
             Button.horizontalContentAlignment HorizontalAlignment.Left
             Button.background Brushes.Transparent
             Button.padding (Thickness(2.0 * gap, gap / 2.0))
@@ -1647,7 +1646,20 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                 TabItem.content (
                                     DockPanel.create [
                                         DockPanel.children [
-                                            actionsHeader
+                                            DockPanel.create [
+                                                DockPanel.dock Dock.Top
+                                                DockPanel.children [
+                                                    TextBlock.create [
+                                                        TextBlock.dock Dock.Right
+                                                        TextBlock.margin (Thickness(gap, 0.0, 2.0 * gap, 0.0))
+                                                        TextBlock.verticalAlignment VerticalAlignment.Center
+                                                        TextBlock.fontSize 12.0
+                                                        TextBlock.foreground (brush look.Dim)
+                                                        TextBlock.text "drag to zoom · Shift+drag pans · double-click resets"
+                                                    ]
+                                                    actionsHeader
+                                                ]
+                                            ]
                                             Border.create [
                                                 Border.dock Dock.Top
                                                 Border.isVisible model.ActionsOpen
