@@ -491,6 +491,126 @@ let ``the file list duplicates, renames and deletes a project's scripts`` () =
     Assert.Equal<string list>([ "two copy.fsx"; "two.fsx"; Project.FileName ], Directory.GetFiles dir |> Array.map Path.GetFileName |> Array.sort |> List.ofArray |> List.sortBy (fun f -> f.EndsWith ".json", f))
     closeAll window
 
+/// Every file under a directory, by its path there, with its bytes.
+let private filesUnder (dir: string) =
+    Directory.GetFiles(dir, "*", SearchOption.AllDirectories)
+    |> Array.map (fun f -> Path.GetRelativePath(dir, f), File.ReadAllBytes f)
+    |> Array.sortBy fst
+    |> List.ofArray
+
+/// A table's uses in a script are its prelude binding and its rows' type, in code only.
+[<Fact>]
+let ``a table's uses are renamed in code, not in strings, comments or other records' fields`` () =
+    let script = "let n = runs.Length\nlet r: Run = Prelude.runs.[0]\n// runs\nlet s = \"runs\"\nlet a = x.runs + reruns\n"
+    let renamed, uses = Tables.renameUses script "runs" "trials"
+    Assert.Equal(3, uses)
+    Assert.Equal("let n = trials.Length\nlet r: Trial = Prelude.trials.[0]\n// runs\nlet s = \"runs\"\nlet a = x.runs + reruns\n", renamed)
+    Assert.Equal(("let t = ``two words``\n", 1), Tables.renameUses "let t = runs\n" "runs" "two words")
+
+/// Gate 15 (c), tables: a table renamed has its file moved on the next save, the prelude written
+/// again and the script's uses renamed, as one entry; one undo takes it all back, and the files
+/// saved then are byte for byte those before. A duplicate is a table of its own.
+[<AvaloniaFact>]
+let ``a table's rename follows into the prelude and the script, and one undo takes it back`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-tablename").FullName
+    Project.makeWorkspace dir
+    Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", "runs.csv")) (trial "runs" "auc")
+    let script = Shell.newScriptWithTables + "let n = runs.Length\n// runs, in a comment\nlet s = \"runs\"\n"
+    File.WriteAllText(Path.Combine(dir, "figure.fsx"), script)
+    let window = new Shell.MainWindow("", Some dir)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    let editor = editorOf window
+    pumpUntil 10.0 "the script" (fun () -> editor.Text = script)
+    window.Post Shell.Save
+    pumpUntil 10.0 "the first save" (fun () -> File.Exists(Path.Combine(dir, Project.WorkspaceFile)))
+    let before = filesUnder dir
+
+    let asked = ref ""
+    window.AskName <- fun _ current -> Assert.Equal("runs", current); Task.FromResult(Some "trials")
+    window.Confirm <- fun question _ _ -> asked.Value <- question; Task.FromResult true
+    window.Post(Shell.RenameTable "runs")
+    pumpUntil 10.0 "the uses renamed" (fun () -> editor.Text.Contains "trials.Length")
+    Assert.Contains("1 place", asked.Value)
+    Assert.Contains("// runs, in a comment", editor.Text)
+    Assert.Contains("\"runs\"", editor.Text)
+    let prelude () = File.ReadAllText(Path.Combine(dir, "prelude.fsx"))
+    Assert.Contains("\"tables/trials.csv\"", prelude ())
+    Assert.Contains("let mutable trials: Trial[]", prelude ())
+    let status () = window.Active.GetVisualDescendants().OfType<TextBlock>() |> Seq.exists (fun b -> not (isNull b.Text) && b.Text.StartsWith "ran in")
+    pumpUntil 30.0 "a clean run on the renamed table" status
+
+    press window Key.S RawInputModifiers.Control
+    pumpUntil 10.0 "the save" (fun () -> window.Active.Unsaved.IsEmpty)
+    Assert.True(File.Exists(Path.Combine(dir, "tables", "trials.csv")))
+    Assert.False(File.Exists(Path.Combine(dir, "tables", "runs.csv")))
+
+    // One undo: the table's name and the script's use, both.
+    window.Post Shell.Undo
+    pumpUntil 10.0 "the undo" (fun () -> editor.Text = script)
+    Assert.Contains("\"tables/runs.csv\"", prelude ())
+    press window Key.S RawInputModifiers.Control
+    pumpUntil 10.0 "the save after the undo" (fun () -> window.Active.Unsaved.IsEmpty)
+    let after = filesUnder dir
+    Assert.Equal<string list>(List.map fst before, List.map fst after)
+
+    for (name, bytes), (_, again) in List.zip before after do
+        Assert.True((bytes = again), $"{name} is not as it was")
+
+    // A duplicate: a second table, shown in its own tab, its own file on saving.
+    window.Post(Shell.DuplicateTable "runs")
+    pumpUntil 10.0 "the duplicate" (fun () -> not window.Active.Unsaved.IsEmpty)
+    press window Key.S RawInputModifiers.Control
+    pumpUntil 10.0 "the duplicate saved" (fun () -> File.Exists(Path.Combine(dir, "tables", "runs_copy.csv")))
+    Assert.Equal<byte[]>(File.ReadAllBytes(Path.Combine(dir, "tables", "runs.csv")), File.ReadAllBytes(Path.Combine(dir, "tables", "runs_copy.csv")))
+    closeAll window
+
+/// Gate 15 (c), undo: a script's rename and duplicate are on the history, and taken back to the
+/// files before, byte for byte, the tab and the settings following. A copy changed since is not
+/// deleted by an undo.
+[<AvaloniaFact>]
+let ``a script's rename and duplicate are undone to the files before`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-fileundo").FullName
+    let one = Path.Combine(dir, "one.fsx")
+    let copy = Path.Combine(dir, "two copy.fsx")
+    File.WriteAllText(one, "let one = 1\n")
+    File.WriteAllText(Path.Combine(dir, "two.fsx"), "let two = 2\n")
+    Project.write dir (Project.defaults "one.fsx")
+    let window = new Shell.MainWindow("", Some dir)
+    window.Show()
+    pumpUntil 10.0 "the project" (fun () -> (editorOf window).Text = "let one = 1\n")
+    let before = filesUnder dir
+
+    window.AskName <- fun _ _ -> Task.FromResult(Some "first")
+    window.Post(Shell.RenameFile one)
+    let first = Path.Combine(dir, "first.fsx")
+    pumpUntil 5.0 "the rename" (fun () -> window.Active.Path = Some first)
+    window.Post(Shell.DuplicateFile(Path.Combine(dir, "two.fsx")))
+    pumpUntil 5.0 "the copy" (fun () -> File.Exists copy)
+
+    window.Post Shell.Undo
+    pumpUntil 5.0 "the copy taken back" (fun () -> not (File.Exists copy))
+    window.Post Shell.Undo
+    pumpUntil 5.0 "the rename taken back" (fun () -> window.Active.Path = Some one)
+    let after = filesUnder dir
+    Assert.Equal<string list>(List.map fst before, List.map fst after)
+
+    for (name, bytes), (_, again) in List.zip before after do
+        Assert.True((bytes = again), $"{name} is not as it was")
+
+    // Done again, then the copy changed on disk: its undo is refused, and nothing goes.
+    window.Post Shell.Redo
+    pumpUntil 5.0 "the rename redone" (fun () -> window.Active.Path = Some first)
+    window.Post Shell.Redo
+    pumpUntil 5.0 "the copy redone" (fun () -> File.Exists copy)
+    Assert.Equal("first.fsx", (Project.read dir).Value.Script)
+    File.AppendAllText(copy, "// changed\n")
+    window.Post Shell.Undo
+    pumpUntil 5.0 "the refusal" (fun () -> window.Active.GetVisualDescendants().OfType<TextBlock>() |> Seq.exists (fun b -> not (isNull b.Text) && b.Text.Contains "not undone"))
+    Assert.True(File.Exists copy)
+    Assert.True(File.Exists first)
+    closeAll window
+
 /// A workspace's only script, deleted, takes the workspace with it, and the question names each
 /// of its files.
 [<AvaloniaFact>]

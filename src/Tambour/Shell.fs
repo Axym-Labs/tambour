@@ -215,6 +215,8 @@ type Tabs =
       AskName: string -> string -> Task<string option>
       /// Asks to go ahead with deleting the files named; Cancel is the default.
       ConfirmDelete: string list -> Task<bool>
+      /// Asks a question with two answers, the yes and the no named; true for yes.
+      Confirm: string -> string -> string -> Task<bool>
       /// A script moved: the tab showing it follows it.
       Renamed: string -> string -> unit
       /// Files deleted: a tab showing one of them closes, as there is nothing left to save.
@@ -350,6 +352,14 @@ type Msg =
     | ChooseImport
     | Import of string
     | RemoveTable of string
+    /// A table renamed: its new name asked for, then whether the script's uses follow, then done.
+    | RenameTable of string
+    | RenameTableTo of table: string * name: string
+    | RenameTableNow of table: string * name: string * uses: bool
+    | DuplicateTable of string
+    /// The shown table renamed or duplicated, from the Table menu.
+    | RenameShownTable
+    | DuplicateShownTable
     | TableSelected of table: string * columns: int list
     | PlotSelected
     | Pick of Rect
@@ -523,9 +533,25 @@ let private tablesOf (model: Model) =
 /// The model with the tables the history gives: a table keeps its file, a new one is kept as CSV
 /// until it is saved, and a removed one goes.
 let private withTables (model: Model) (tables: Map<string, Tambour.Data.Table>) =
+    let names = model.Tables |> List.map (fun s -> s.Table.Name) |> Set.ofList
+
+    // A table renamed is the same columns under a name that was not there: it keeps its place, and
+    // its file is named so on the next save.
+    let renamed (s: Tambour.Data.Prelude.Source) =
+        tables
+        |> Map.tryPick (fun name t ->
+            if not (names.Contains name) && obj.ReferenceEquals(t.Columns, s.Table.Columns) then
+                let slash = s.File.LastIndexOf '/'
+                Some { s with Table = t; File = s.File.Substring(0, slash + 1) + name + Path.GetExtension s.File }
+            else
+                None)
+
     let kept =
         model.Tables
-        |> List.choose (fun s -> tables.TryFind s.Table.Name |> Option.map (fun t -> { s with Table = t }))
+        |> List.choose (fun s ->
+            match tables.TryFind s.Table.Name with
+            | Some t -> Some { s with Table = t }
+            | None -> renamed s)
 
     let added =
         tables
@@ -629,6 +655,43 @@ let private saveTables (model: Model) =
             SavedTables = saved |> List.map (fun s -> s.Table.Name, s.Table) |> Map.ofList
             TableFiles = files }
 
+/// Makes changes to the project's scripts on disk, or with `back` takes them back, the last first: a
+/// move made the other way, a copy deleted while it is as it was made. Stops at the first that
+/// cannot be made, before making it. A moved script's settings and tab follow it.
+let private changeFiles (env: Env) (model: Model) (back: bool) (edits: History.FileEdit list) : Result<unit, string> =
+    let move (source: string) (target: string) =
+        if File.Exists target then failwith $"{Path.GetFileName target} is there already"
+        File.Move(source, target)
+
+        // The project's settings name the open script by its file.
+        let dir = Path.GetDirectoryName source
+
+        match Project.read dir with
+        | Some s when s.Script = Path.GetFileName source -> Project.write dir { s with Script = Path.GetFileName target }
+        | _ -> ()
+
+        env.Tabs.Renamed source target
+
+    try
+        for e in (if back then List.rev edits else edits) do
+            match e with
+            | History.Moved(source, target) -> if back then move target source else move source target
+            | History.Copied(_, target, bytes) when back ->
+                if model.OpenTabs.TryFind target = Some true then failwith $"{Path.GetFileName target} has unsaved changes"
+
+                if File.Exists target then
+                    if File.ReadAllBytes target <> bytes then failwith $"{Path.GetFileName target} has changed since it was made"
+                    File.Delete target
+
+                env.Tabs.Deleted [ target ]
+            | History.Copied(_, target, bytes) ->
+                if File.Exists target then failwith $"{Path.GetFileName target} is there already"
+                File.WriteAllBytes(target, bytes)
+
+        Ok()
+    with e ->
+        Error e.Message
+
 /// This app's version, as its package names it.
 let tambourVersion =
     let assembly = typeof<Env>.Assembly
@@ -670,14 +733,26 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | Undo ->
         match History.undo model.History with
         | Some(entry, history) ->
-            let state = History.Entry.undo { Script = model.Script; Tables = tablesOf model } entry
-            toState env { model with History = history; ActionNote = "undone" } state (History.Entry.changesSchema entry)
+            let files = History.Entry.files entry
+
+            match changeFiles env model true files with
+            | Error why -> { model with ActionNote = $"not undone: {why}" }, Cmd.none
+            | Ok() ->
+                let state = History.Entry.undo { Script = model.Script; Tables = tablesOf model } entry
+                let next, cmd = toState env { model with History = history; ActionNote = "undone" } state (History.Entry.changesSchema entry)
+                next, (if files.IsEmpty then cmd else Cmd.batch [ cmd; Cmd.ofMsg FilesChanged ])
         | None -> model, Cmd.none
     | Redo ->
         match History.redo model.History with
         | Some(entry, history) ->
-            let state = History.Entry.redo { Script = model.Script; Tables = tablesOf model } entry
-            toState env { model with History = history; ActionNote = "redone" } state (History.Entry.changesSchema entry)
+            let files = History.Entry.files entry
+
+            match changeFiles env model false files with
+            | Error why -> { model with ActionNote = $"not redone: {why}" }, Cmd.none
+            | Ok() ->
+                let state = History.Entry.redo { Script = model.Script; Tables = tablesOf model } entry
+                let next, cmd = toState env { model with History = history; ActionNote = "redone" } state (History.Entry.changesSchema entry)
+                next, (if files.IsEmpty then cmd else Cmd.batch [ cmd; Cmd.ofMsg FilesChanged ])
         | None -> model, Cmd.none
     | Run ->
         { model with Running = true; Status = "running…"; Playing = Set.empty },
@@ -1043,6 +1118,60 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         match model.Tables |> List.tryFind (fun s -> s.Table.Name = name) with
         | Some s -> { model with Tab = 0 }, Cmd.ofMsg (TableEdited [ Tambour.Data.RemoveTable s.Table ])
         | None -> model, Cmd.none
+    | RenameTable name ->
+        model,
+        Cmd.OfTask.either
+            (fun () -> env.Tabs.AskName "Rename the table" name)
+            ()
+            (function
+            | Some next -> RenameTableTo(name, next)
+            | None -> Dismissed)
+            Failed
+    | RenameTableTo(name, next) ->
+        let next = next.Trim()
+
+        if next = name then
+            model, Cmd.none
+        elif next = "" || next.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 then
+            { model with ActionNote = $"not renamed: \"{next}\" is not a table's name" }, Cmd.none
+        elif model.Tables |> List.exists (fun s -> s.Table.Name = next) then
+            { model with ActionNote = $"not renamed: there is a table {next} already" }, Cmd.none
+        else
+            match Tables.renameUses model.Script name next with
+            | _, 0 -> model, Cmd.ofMsg (RenameTableNow(name, next, false))
+            | _, uses ->
+                let question = $"The script uses {name} in {uses} place(s). Rename them to {next} as well?"
+                model, Cmd.OfTask.either (fun () -> env.Tabs.Confirm question "Rename them" "Leave them") () (fun yes -> RenameTableNow(name, next, yes)) Failed
+    | RenameTableNow(name, next, uses) when model.Tables |> List.exists (fun s -> s.Table.Name = name) ->
+        // The table and the script's uses of it, as one entry, so one undo takes back both.
+        let edit = Tambour.Data.RenameTable(name, next)
+        let script = if uses then fst (Tables.renameUses model.Script name next) else model.Script
+
+        let entry =
+            if script = model.Script then History.Tables [ edit ]
+            else History.Group [ History.Tables [ edit ]; History.Script [ History.TextEdit.between model.Script script ] ]
+
+        toState
+            env
+            { model with
+                History = History.recordEntry entry model.History
+                ActionNote = $"renamed {name} to {next}"
+                Header = None
+                TableSelection = None
+                Marked = None }
+            { Script = script; Tables = Tambour.Data.TableEdit.apply (tablesOf model) edit }
+            true
+    | RenameTableNow _ -> model, Cmd.none
+    | DuplicateTable name ->
+        match model.Tables |> List.tryFind (fun s -> s.Table.Name = name) with
+        | Some s ->
+            let copy = { s.Table with Name = freshName model (name + "_copy") }
+            { model with Tab = model.Tables.Length + 1 }, Cmd.ofMsg (TableEdited [ Tambour.Data.AddTable copy ])
+        | None -> model, Cmd.none
+    | RenameShownTable ->
+        model, (match List.tryItem (model.Tab - 1) model.Tables with Some s -> Cmd.ofMsg (RenameTable s.Table.Name) | None -> Cmd.none)
+    | DuplicateShownTable ->
+        model, (match List.tryItem (model.Tab - 1) model.Tables with Some s -> Cmd.ofMsg (DuplicateTable s.Table.Name) | None -> Cmd.none)
     | TableSelected(table, columns) -> { model with TableSelection = Some(table, columns) }, Cmd.none
     | PlotSelected ->
         match model.TableSelection |> Option.bind (fun (name, columns) -> model.Tables |> List.tryFind (fun s -> s.Table.Name = name) |> Option.map (fun s -> s.Table, columns)) with
@@ -1143,20 +1272,15 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         elif File.Exists target then
             { model with Status = $"not renamed: {Path.GetFileName target} is there already" }, Cmd.none
         else
-            try
-                File.Move(path, target)
+            let edit = History.Moved(path, target)
 
-                // The project's settings name the open script by its file.
-                let dir = Path.GetDirectoryName path
-
-                match Project.read dir with
-                | Some s when s.Script = Path.GetFileName path -> Project.write dir { s with Script = Path.GetFileName target }
-                | _ -> ()
-
-                env.Tabs.Renamed path target
-                { model with Status = $"renamed {Path.GetFileName path} to {Path.GetFileName target}" }, Cmd.ofMsg FilesChanged
-            with e ->
-                { model with Status = $"not renamed: {e.Message}" }, Cmd.none
+            match changeFiles env model false [ edit ] with
+            | Ok() ->
+                { model with
+                    Status = $"renamed {Path.GetFileName path} to {Path.GetFileName target}"
+                    History = History.recordEntry (History.Files [ edit ]) model.History },
+                Cmd.ofMsg FilesChanged
+            | Error why -> { model with Status = $"not renamed: {why}" }, Cmd.none
     | Renamed target ->
         let settings = model.Settings |> Option.map (fun s -> { s with Script = Path.GetFileName target })
         { model with Path = Some target; Settings = settings }, Cmd.ofMsg FilesChanged
@@ -1168,11 +1292,15 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             Seq.initInfinite (fun i -> Path.Combine(dir, (if i = 0 then $"{stem} copy.fsx" else $"{stem} copy {i + 1}.fsx")))
             |> Seq.find (File.Exists >> not)
 
-        try
-            File.Copy(path, target)
-            { model with Status = $"duplicated as {Path.GetFileName target}" }, Cmd.ofMsg FilesChanged
-        with e ->
-            { model with Status = $"not duplicated: {e.Message}" }, Cmd.none
+        let edit = try Ok(History.Copied(path, target, File.ReadAllBytes path)) with e -> Error e.Message
+
+        match edit |> Result.bind (fun e -> changeFiles env model false [ e ] |> Result.map (fun () -> e)) with
+        | Ok e ->
+            { model with
+                Status = $"duplicated as {Path.GetFileName target}"
+                History = History.recordEntry (History.Files [ e ]) model.History },
+            Cmd.ofMsg FilesChanged
+        | Error why -> { model with Status = $"not duplicated: {why}" }, Cmd.none
     | DeleteFile path ->
         // A workspace's only script takes its workspace with it: tables, settings and prelude.
         let dir = Path.GetDirectoryName path
@@ -1509,6 +1637,8 @@ and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Ta
                         Button.content "Add 10 rows"
                         Button.onClick ((fun _ -> dispatch (TableEdited [ Tambour.Data.TableEdit.addRows t t.Rows 10 ])), SubPatchOptions.Always)
                     ]
+                    Button.create [ Button.content "Rename…"; Button.onClick ((fun _ -> dispatch (RenameTable t.Name)), SubPatchOptions.Always) ]
+                    Button.create [ Button.content "Duplicate"; Button.onClick ((fun _ -> dispatch (DuplicateTable t.Name)), SubPatchOptions.Always) ]
                     Button.create [ Button.content "Remove table"; Button.onClick ((fun _ -> dispatch (RemoveTable t.Name)), SubPatchOptions.Always) ]
                     Button.create [ Button.content "Plot selected columns"; Button.onClick (fun _ -> dispatch PlotSelected) ]
                     label $"{t.Rows} rows. Right-click, or the Table menu, for what can be done to cells, rows and columns; Ctrl+click or Alt+drag in a figure picks rows."
@@ -1580,6 +1710,8 @@ let commands: Command list =
       c "_Run" "_Cancel" "Escape" [] Cancel (fun m -> m.Running)
       c "_Table" "_New table" "Ctrl+T" [] NewTable always
       c "_Table" "_Import table…" "Ctrl+Shift+I" [] ChooseImport always
+      c "_Table" "_Rename table…" "" [] RenameShownTable (fun m -> m.Tab > 0)
+      c "_Table" "D_uplicate table" "" [] DuplicateShownTable (fun m -> m.Tab > 0)
       c "_Table" "_Plot selected columns" "Ctrl+Shift+P" [] PlotSelected (fun m -> m.TableSelection.IsSome)
       for kind, header, keys in GridCommand.all do
           { c "_Table" header keys [] (Grid kind) (fun m -> m.Tab > 0) with InGrid = true }
@@ -1949,6 +2081,37 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
             )
         ]
 
+    // A table of the shown script's workspace: a double-click shows it, and its menu renames,
+    // duplicates or removes it.
+    let tableItem (tab: int) (name: string) : IView =
+        let item (header: string) (msg: Msg) =
+            MenuItem.create [ MenuItem.header header; MenuItem.onClick ((fun _ -> dispatch msg), SubPatchOptions.Always) ] :> IView
+
+        Button.create [
+            Button.background Brushes.Transparent
+            Button.horizontalAlignment HorizontalAlignment.Stretch
+            Button.horizontalContentAlignment HorizontalAlignment.Left
+            Button.padding (Thickness(gap * 3.0, 1.0, gap, 1.0))
+            Button.onDoubleTapped ((fun _ -> dispatch (SelectTab tab)), SubPatchOptions.Always)
+            Button.contextMenu (
+                ContextMenu.create [
+                    ContextMenu.viewItems [
+                        item "_Show" (SelectTab tab)
+                        item "_Rename…" (RenameTable name)
+                        item "_Duplicate" (DuplicateTable name)
+                        item "Re_move" (RemoveTable name)
+                    ]
+                ]
+            )
+            Button.content (
+                TextBlock.create [
+                    TextBlock.text $"▦ {name}"
+                    TextBlock.foreground (brush look.Dim)
+                    TextBlock.textTrimming TextTrimming.CharacterEllipsis
+                ]
+            )
+        ]
+
     let filesPanel (dir: string) : IView =
         Border.create [
             DockPanel.dock Dock.Left
@@ -1974,12 +2137,8 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                     fileItem f
 
                                     if model.Path = Some f then
-                                        for t in model.Tables do
-                                            TextBlock.create [
-                                                TextBlock.text $"▦ {t.Table.Name}"
-                                                TextBlock.margin (Thickness(gap * 3.0, 1.0, gap, 1.0))
-                                                TextBlock.foreground (brush look.Dim)
-                                            ]
+                                        for i, t in List.indexed model.Tables do
+                                            tableItem (i + 1) t.Table.Name
                             ]
                         ]
                     )
@@ -2322,6 +2481,31 @@ let confirmDeleting (owner: Window) (look: Palette.Look) (files: string list) : 
     window.ShowDialog owner |> ignore
     answer.Task
 
+/// Asks a question with two answers: the yes, the default, or the no, as is closing it.
+let askToConfirm (owner: Window) (look: Palette.Look) (question: string) (yes: string) (no: string) : Task<bool> =
+    let answer = TaskCompletionSource<bool>()
+    let text = TextBlock(Text = question, TextWrapping = TextWrapping.Wrap, Foreground = SolidColorBrush look.Text)
+    let yesButton = Button(Content = yes, IsDefault = true)
+    let noButton = Button(Content = no, IsCancel = true)
+    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = 8.0, HorizontalAlignment = HorizontalAlignment.Right)
+    buttons.Children.Add noButton
+    buttons.Children.Add yesButton
+    let panel = StackPanel(Spacing = 12.0, Margin = Thickness 18.0)
+    panel.Children.Add text
+    panel.Children.Add buttons
+
+    let window =
+        Window(Title = "Tambour", Width = 440.0, SizeToContent = SizeToContent.Height, CanResize = false, Content = panel, WindowStartupLocation = WindowStartupLocation.CenterOwner)
+
+    yesButton.Click.Add(fun _ ->
+        answer.TrySetResult true |> ignore
+        window.Close())
+
+    noButton.Click.Add(fun _ -> window.Close())
+    window.Closed.Add(fun _ -> answer.TrySetResult false |> ignore)
+    window.ShowDialog owner |> ignore
+    answer.Task
+
 /// A workspace: everything a window held before there were tabs. Its script or project, figure,
 /// tables, history and layout, run by its own program on its own workers, which end when it is
 /// disposed. The language service is the window's, shared by its workspaces. It opens `path` once
@@ -2487,6 +2671,7 @@ type MainWindow(script: string, path: string option) as this =
     let mutable ask: string list -> Task<Unsaved> = fun _ -> Task.FromResult Keep
     let mutable askName: string -> string -> Task<string option> = fun _ _ -> Task.FromResult None
     let mutable confirmDelete: string list -> Task<bool> = fun _ -> Task.FromResult false
+    let mutable confirm: string -> string -> string -> Task<bool> = fun _ _ _ -> Task.FromResult false
     /// The open scripts as last told to the tabs.
     let mutable told: Map<string, bool> = Map.empty
 
@@ -2557,6 +2742,7 @@ type MainWindow(script: string, path: string option) as this =
               CloseProject = fun dir -> closeProject dir |> ignore
               AskName = fun title current -> askName title current
               ConfirmDelete = fun files -> confirmDelete files
+              Confirm = fun question yes no -> confirm question yes no
               Renamed =
                 fun before after ->
                     for w in workspaces do
@@ -2668,6 +2854,10 @@ type MainWindow(script: string, path: string option) as this =
                 if App.AnswerUnsaved.IsSome then Task.FromResult None else askForName this title current
 
         confirmDelete <- fun files -> if App.AnswerUnsaved.IsSome then Task.FromResult false else confirmDeleting this (look ()) files
+
+        confirm <-
+            fun question yes no ->
+                if App.AnswerUnsaved.IsSome then Task.FromResult false else askToConfirm this (look ()) question yes no
         let tabsRow = ScrollViewer(Content = strip, HorizontalScrollBarVisibility = Primitives.ScrollBarVisibility.Auto, VerticalScrollBarVisibility = Primitives.ScrollBarVisibility.Disabled)
         let layout = DockPanel()
         DockPanel.SetDock(tabsRow, Dock.Top)
@@ -2732,6 +2922,11 @@ type MainWindow(script: string, path: string option) as this =
     member _.ConfirmDelete
         with get () = confirmDelete
         and set (value: string list -> Task<bool>) = confirmDelete <- value
+
+    /// What is asked where a question has two answers, as whether a renamed table's uses follow.
+    member _.Confirm
+        with get () = confirm
+        and set (value: string -> string -> string -> Task<bool>) = confirm <- value
 
     /// What is asked before unsaved work is dropped; a test answers it itself.
     member _.Ask

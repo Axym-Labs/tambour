@@ -15,6 +15,8 @@ type TableEdit =
     | RemoveRows of table: string * row: int * values: Values list
     | AddTable of Table
     | RemoveTable of Table
+    /// A table given another name, its columns as they were.
+    | RenameTable of before: string * after: string
 
 /// Runs of values: cut out, put in, and replaced, whatever their type.
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
@@ -98,6 +100,7 @@ module TableEdit =
         | RemoveRows(t, r, v) -> AddRows(t, r, v)
         | AddTable t -> RemoveTable t
         | RemoveTable t -> AddTable t
+        | RenameTable(before, after) -> RenameTable(after, before)
 
     /// Whether the edit changes a table's columns, and so the prelude: a cell's value or a row does
     /// not.
@@ -139,6 +142,9 @@ module TableEdit =
             tables.Add(name, withColumns t (List.map2 (fun col (v: Values) -> { col with Values = Values.remove r v.Length col.Values }) t.Columns values))
         | AddTable t -> tables.Add(t.Name, t)
         | RemoveTable t -> tables.Remove t.Name
+        | RenameTable(before, after) ->
+            let t = table tables before
+            tables.Remove(before).Add(after, { t with Name = after })
 
     // ---- The edits a user makes, each holding what it replaces ---------------------------------
 
