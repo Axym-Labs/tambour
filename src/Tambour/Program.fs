@@ -15,7 +15,7 @@ let private window (path: string option) =
     let settings = Paths.configDirectory ()
     App.SettingsDirectory <- settings
     App.Theme <- (Preferences.read settings).Theme
-    App.MainWindow <- fun () -> new Shell.MainWindow(Shell.example, path) :> Window
+    App.MainWindow <- fun () -> Shell.MainWindow.Start path :> Window
     App.builder().StartWithClassicDesktopLifetime [||]
 
 [<MethodImpl(MethodImplOptions.NoInlining)>]

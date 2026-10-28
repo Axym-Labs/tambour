@@ -30,10 +30,14 @@ let private themeOf =
 type Preferences =
     { Theme: Theme
       /// The scripts and projects opened, most recent first.
-      Recent: string list }
+      Recent: string list
+      /// The scripts open in the window's tabs when it was last changed, in their order, and the
+      /// one shown, opened again at the next start.
+      Tabs: string list
+      Shown: int }
 
 /// A new user's: the theme follows the system's, and nothing opened yet.
-let defaults = { Theme = FollowSystem; Recent = [] }
+let defaults = { Theme = FollowSystem; Recent = []; Tabs = []; Shown = 0 }
 
 /// How many opened files the recent list keeps.
 [<Literal>]
@@ -55,18 +59,31 @@ let read (directory: string) : Preferences =
             | true, theme when theme.ValueKind = JsonValueKind.String -> themeOf (theme.GetString())
             | _ -> FollowSystem
 
-        let recent =
-            match root.TryGetProperty "recent" with
+        let paths (name: string) =
+            match root.TryGetProperty name with
             | true, list when list.ValueKind = JsonValueKind.Array ->
                 [ for p in list.EnumerateArray() do
                       if p.ValueKind = JsonValueKind.String then p.GetString() ]
             | _ -> []
 
-        { Theme = theme; Recent = recent }
+        let shown =
+            match root.TryGetProperty "shown" with
+            | true, n when n.ValueKind = JsonValueKind.Number -> n.GetInt32()
+            | _ -> 0
+
+        { Theme = theme
+          Recent = paths "recent"
+          Tabs = paths "tabs"
+          Shown = shown }
     with _ ->
         defaults
 
 let write (directory: string) (preferences: Preferences) =
     Directory.CreateDirectory directory |> ignore
-    let stored = dict [ "theme", box (themeName preferences.Theme); "recent", box (Array.ofList preferences.Recent) ]
+    let stored =
+        dict
+            [ "theme", box (themeName preferences.Theme)
+              "recent", box (Array.ofList preferences.Recent)
+              "tabs", box (Array.ofList preferences.Tabs)
+              "shown", box preferences.Shown ]
     File.WriteAllText(Path.Combine(directory, FileName), JsonSerializer.Serialize(stored, JsonSerializerOptions(WriteIndented = true)))

@@ -220,7 +220,9 @@ type Tabs =
       /// A script moved: the tab showing it follows it.
       Renamed: string -> string -> unit
       /// Files deleted: a tab showing one of them closes, as there is nothing left to save.
-      Deleted: string list -> unit }
+      Deleted: string list -> unit
+      /// Moves the workspace's tab into a window of its own.
+      Detach: unit -> unit }
 
 /// What a workspace runs with: its workers, started when first asked, the language service it
 /// shares with the other workspaces, the control it is drawn in, and the window's tabs.
@@ -403,6 +405,9 @@ type Msg =
     | Renamed of string
     | CloseTab
     | CycleTab of int
+    | DetachTab
+    /// Something to tell, shown where a GUI action's outcome is.
+    | Note of string
     | Failed of exn
 
 /// The bottom panel's height where a project has none.
@@ -1350,6 +1355,10 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | CycleTab step ->
         env.Tabs.Cycle step
         model, Cmd.none
+    | DetachTab ->
+        env.Tabs.Detach()
+        model, Cmd.none
+    | Note text -> { model with ActionNote = text }, Cmd.none
     | Failed e -> { model with Status = e.Message }, Cmd.none
 
 /// The one spacing unit; every margin and gap is a multiple of it.
@@ -1722,6 +1731,7 @@ let commands: Command list =
       c "_View" "_Files" "Ctrl+Shift+E" [] ToggleFiles (fun m -> m.Project.IsSome)
       c "_View" "_Next tab" "Ctrl+Tab" [] (CycleTab 1) always
       c "_View" "Pre_vious tab" "Ctrl+Shift+Tab" [] (CycleTab -1) always
+      c "_View" "Move tab to a _new window" "" [] DetachTab always
       c "_Help" "_About Tambour" "" [] About always ]
 
 /// The command a key and its modifiers take, if one does.
@@ -2513,6 +2523,25 @@ let askToConfirm (owner: Window) (look: Palette.Look) (question: string) (yes: s
 type Workspace(script: string, path: string option, language: LanguageService, tabs: Tabs) as this =
     inherit HostControl()
 
+    // The window holding it, which changes when its tab is moved to another.
+    let mutable owner = tabs
+
+    let forwarded =
+        { New = fun () -> owner.New()
+          Open = fun p -> owner.Open p
+          Close = fun () -> owner.Close()
+          Cycle = fun step -> owner.Cycle step
+          Opened = fun p -> owner.Opened p
+          ForgetRecent = fun missingOnly -> owner.ForgetRecent missingOnly
+          SaveAll = fun () -> owner.SaveAll()
+          CloseProject = fun dir -> owner.CloseProject dir
+          AskName = fun title current -> owner.AskName title current
+          ConfirmDelete = fun files -> owner.ConfirmDelete files
+          Confirm = fun question yes no -> owner.Confirm question yes no
+          Renamed = fun before after -> owner.Renamed before after
+          Deleted = fun files -> owner.Deleted files
+          Detach = fun () -> owner.Detach() }
+
     let mutable dispatch: Msg -> unit = ignore
     let mutable title = "Tambour"
     let titleChanged = Event<string>()
@@ -2531,7 +2560,7 @@ type Workspace(script: string, path: string option, language: LanguageService, t
         { Workers = workers
           Language = language
           Host = this
-          Tabs = tabs }
+          Tabs = forwarded }
 
     // A tab in the background, its workers idle past the limit, gives them up and keeps its figure.
     // Looked at from a timer of the thread pool, on the UI thread, where the workspace's state is.
@@ -2572,6 +2601,10 @@ type Workspace(script: string, path: string option, language: LanguageService, t
 
     /// Sends the workspace's loop a message, as its own controls do.
     member _.Post(msg: Msg) = dispatch msg
+
+    /// The window's tabs it asks of, set when it moves to another window.
+    member _.Owner
+        with set (value: Tabs) = owner <- value
 
     /// How long a tab in the background keeps idle workers, and how often that is looked at.
     static member val IdleLimit = TimeSpan.FromMinutes 10.0 with get, set
@@ -2634,16 +2667,40 @@ type Workspace(script: string, path: string option, language: LanguageService, t
             idle.Dispose()
             (workers :> IDisposable).Dispose()
 
+/// The windows a tab has been moved between, from one first window: the language service they
+/// share, ended once the last of them closes, and the tabs they keep for the next start.
+type WindowGroup() =
+    let language = new LanguageService(Command.ofThisApp (), { References = [||]; Prelude = prelude })
+
+    member _.Language = language
+    member val Windows = ResizeArray<Window>()
+
+    /// The tabs' scripts and the one shown, as last kept in the user's settings.
+    member val Kept: string list * int = ([], 0) with get, set
+
+    member this.Leave(window: Window) =
+        this.Windows.Remove window |> ignore
+        if this.Windows.Count = 0 then (language :> IDisposable).Dispose()
+
 /// The main window: a tab per workspace, and the language service they share, which end when it
-/// closes. Closing a tab or the window asks first about what is unsaved.
-type MainWindow(script: string, path: string option) as this =
+/// closes. Closing a tab or the window asks first about what is unsaved. It opens a tab for each
+/// script or path given, and shows the start view while it has none. A tab dragged out of it, or
+/// moved from its menu, goes to a window of its own in the same group, or into another of the
+/// group's windows; a window made so closes with its last tab.
+type MainWindow private (opening: (string * string option) list, group: WindowGroup, moved: bool) as this =
     inherit Window()
 
-    let language = new LanguageService(Command.ofThisApp (), { References = [||]; Prelude = prelude })
+    let language = group.Language
     let workspaces = ResizeArray<Workspace>()
     let mutable active = -1
     let strip = StackPanel(Orientation = Orientation.Horizontal)
     let deck = Avalonia.Controls.Grid()
+    /// The start view, in the deck while no tab is open, and what it has to tell.
+    let start = Border(IsVisible = false)
+    let mutable startNote = ""
+    let startView: (unit -> Control) ref = ref (fun () -> null)
+    /// Each tab's subscriptions to its workspace, ended when the tab moves to another window.
+    let links = Collections.Generic.Dictionary<Workspace, IDisposable list>()
     let mutable labels: string list = []
     /// Set once the window's unsaved work has been asked about, so that closing goes ahead.
     let mutable closing = false
@@ -2668,6 +2725,9 @@ type MainWindow(script: string, path: string option) as this =
 
         for w in workspaces do
             w.Post(RecentChanged next)
+
+        if start.IsVisible then start.Child <- startView.Value ()
+
     let mutable ask: string list -> Task<Unsaved> = fun _ -> Task.FromResult Keep
     let mutable askName: string -> string -> Task<string option> = fun _ _ -> Task.FromResult None
     let mutable confirmDelete: string list -> Task<bool> = fun _ -> Task.FromResult false
@@ -2681,6 +2741,26 @@ type MainWindow(script: string, path: string option) as this =
 
     let rec refresh (force: bool) =
         let now = [ for w in workspaces -> labelOf w ] @ [ string active ]
+
+        // The tabs kept for the next start: those with a file in each of the group's windows, and
+        // the one shown here.
+        let tabs = [ for win in group.Windows do yield! (win :?> MainWindow).Paths ]
+
+        let shown =
+            match (if active >= 0 then workspaces.[active].Path else None) with
+            | Some p -> List.findIndex ((=) p) tabs
+            | None -> 0
+
+        if (tabs, shown) <> group.Kept then
+            group.Kept <- (tabs, shown)
+
+            match App.SettingsDirectory with
+            | null -> ()
+            | dir ->
+                try
+                    Preferences.write dir { Preferences.read dir with Tabs = tabs; Shown = shown }
+                with _ ->
+                    ()
 
         let opened = Map.ofList [ for w in workspaces do match w.Path with Some p -> p, not w.Unsaved.IsEmpty | None -> () ]
 
@@ -2717,51 +2797,189 @@ type MainWindow(script: string, path: string option) as this =
 
                 ToolTip.SetTip(tab, (match w.Path with Some p -> p | None -> "not saved yet"))
                 tab.Click.Add(fun _ -> show i)
+
+                // Dragged and let go outside the window: into the group's window there, or a new one.
+                let pressed = ref false
+
+                tab.AddHandler(
+                    InputElement.PointerPressedEvent,
+                    EventHandler<PointerPressedEventArgs>(fun _ e -> pressed.Value <- e.GetCurrentPoint(tab).Properties.IsLeftButtonPressed),
+                    RoutingStrategies.Tunnel,
+                    true
+                )
+                |> ignore
+
+                tab.AddHandler(
+                    InputElement.PointerReleasedEvent,
+                    EventHandler<PointerReleasedEventArgs>(fun _ e ->
+                        if pressed.Value then
+                            pressed.Value <- false
+                            let at = e.GetPosition this
+
+                            if not (Rect(this.ClientSize).Contains at) then
+                                dropped w (this.PointToScreen at)),
+                    RoutingStrategies.Tunnel,
+                    true
+                )
+                |> ignore
+
+                let menu = ContextMenu()
+
+                tab.ContextRequested.Add(fun _ ->
+                    let item (header: string) (enabled: bool) (act: unit -> unit) =
+                        let m = MenuItem(Header = header, IsEnabled = enabled)
+                        m.Click.Add(fun _ -> act ())
+                        m
+
+                    menu.Items.Clear()
+                    menu.Items.Add(item "Move to a _new window" (workspaces.Count > 1) (fun () -> detach w None |> ignore)) |> ignore
+
+                    for other in group.Windows do
+                        if not (obj.ReferenceEquals(other, this)) then
+                            menu.Items.Add(item $"Move to the window of {other.Title}" true (fun () -> give w (other :?> MainWindow))) |> ignore
+
+                    menu.Items.Add(Separator()) |> ignore
+                    menu.Items.Add(item "_Close tab" true (fun () -> closeTab w |> ignore)) |> ignore)
+
+                tab.ContextMenu <- menu
                 strip.Children.Add tab)
 
     and show (i: int) =
         if i >= 0 && i < workspaces.Count then
+            start.IsVisible <- false
             active <- i
             workspaces |> Seq.iteri (fun j w -> w.IsVisible <- (j = i))
             this.Title <- workspaces.[i].Title
             refresh false
 
-    and add (script: string) (path: string option) =
-        let mutable self: Workspace = Unchecked.defaultof<_>
+    /// The start view, in place of a tab while there is none.
+    and showStart () =
+        active <- -1
+        this.Title <- "Tambour"
+        start.Child <- startView.Value ()
+        start.IsVisible <- true
+        refresh true
 
-        let tabs =
-            { New = fun () -> add "" None
-              Open = openPath
-              Close = fun () -> closeTab self |> ignore
-              Cycle = fun step -> if workspaces.Count > 0 then show ((active + step + workspaces.Count) % workspaces.Count)
-              Opened = fun path -> setRecent (Preferences.opened path recent)
-              ForgetRecent =
-                fun missingOnly ->
-                    setRecent (if missingOnly then recent |> List.filter (fun p -> File.Exists p || Directory.Exists p) else [])
-              SaveAll = fun () -> saveAll () |> ignore
-              CloseProject = fun dir -> closeProject dir |> ignore
-              AskName = fun title current -> askName title current
-              ConfirmDelete = fun files -> confirmDelete files
-              Confirm = fun question yes no -> confirm question yes no
-              Renamed =
-                fun before after ->
-                    for w in workspaces do
+    /// Asks for a script or a folder, and opens it in a tab.
+    and chooseOpen (folder: bool) =
+        task {
+            match! pickOpen this folder with
+            | Some p -> openPath p
+            | None -> ()
+        }
+        |> ignore
+
+    /// The tabs a workspace in this window asks of: this window's.
+    and tabsFor (self: unit -> Workspace) : Tabs =
+        { New = fun () -> add "" None
+          Open = openPath
+          Close = fun () -> closeTab (self ()) |> ignore
+          Cycle = fun step -> if workspaces.Count > 0 then show ((active + step + workspaces.Count) % workspaces.Count)
+          Opened = fun path -> setRecent (Preferences.opened path recent)
+          ForgetRecent =
+            fun missingOnly ->
+                setRecent (if missingOnly then recent |> List.filter (fun p -> File.Exists p || Directory.Exists p) else [])
+          SaveAll = fun () -> saveAll () |> ignore
+          CloseProject = fun dir -> closeProject dir |> ignore
+          AskName = fun title current -> askName title current
+          ConfirmDelete = fun files -> confirmDelete files
+          Confirm = fun question yes no -> confirm question yes no
+          // A script moved or deleted is followed in every window of the group.
+          Renamed =
+            fun before after ->
+                for win in group.Windows do
+                    for (w: Workspace) in (win :?> MainWindow).Workspaces do
                         if w.Path = Some before then w.Post(Renamed after)
-              Deleted =
-                fun files ->
-                    for w in List.ofSeq workspaces do
+          Deleted =
+            fun files ->
+                for win in List.ofSeq group.Windows do
+                    for (w: Workspace) in (win :?> MainWindow).Workspaces do
                         match w.Path with
-                        | Some p when List.contains p files -> forget w
-                        | _ -> () }
+                        | Some p when List.contains p files -> (win :?> MainWindow).Forget w
+                        | _ -> ()
+          Detach = fun () -> if workspaces.Count > 1 then detach (self ()) None |> ignore }
 
-        let w = new Workspace(script, path, language, tabs)
-        self <- w
-        w.TitleChanged.Add(fun t -> if workspaces.IndexOf w = active then this.Title <- t)
-        w.Updated.Add(fun _ -> refresh false)
+    and add (script: string) (path: string option) =
+        let self = ref Unchecked.defaultof<Workspace>
+        let w = new Workspace(script, path, language, tabsFor (fun () -> self.Value))
+        self.Value <- w
+        take w
+
+    /// A workspace into a tab of this window, shown.
+    and take (w: Workspace) =
+        w.Owner <- tabsFor (fun () -> w)
+
+        links.[w] <-
+            [ w.TitleChanged.Subscribe(fun t -> if workspaces.IndexOf w = active then this.Title <- t)
+              w.Updated.Subscribe(fun _ -> refresh false) ]
+
         workspaces.Add w
         deck.Children.Add w
         w.Post(RecentChanged recent)
         show (workspaces.Count - 1)
+
+    /// A workspace's tab out of this window, the workspace kept: for another window to take, or
+    /// ended by whoever took it out.
+    and release (w: Workspace) =
+        if workspaces.Contains w then
+            // Unlinked first: taken out of the tree, its look changes, and its update would reach
+            // this window mid-way.
+            for link in links.[w] do
+                link.Dispose()
+
+            links.Remove w |> ignore
+            let i = workspaces.IndexOf w
+            workspaces.RemoveAt i
+            deck.Children.Remove w |> ignore
+
+            if workspaces.Count = 0 then emptied ()
+            else show (min i (workspaces.Count - 1))
+
+            refresh true
+
+    /// No tab left: the start view, or for a window a tab was moved into, closing.
+    and emptied () =
+        if moved then
+            active <- -1
+            Dispatcher.UIThread.Post(fun () -> this.Close())
+        else
+            showStart ()
+
+    /// A tab moved into another of the group's windows.
+    and give (w: Workspace) (target: MainWindow) =
+        if workspaces.Contains w && not (obj.ReferenceEquals(target, this)) then
+            release w
+            // This window's layout done first, which still has the tab's controls queued and
+            // refuses them once they are in another window's tree.
+            this.UpdateLayout()
+            target.Take w
+            target.Activate()
+
+    /// A tab moved into a new window of the group, placed where it was let go if that is known.
+    and detach (w: Workspace) (at: PixelPoint option) : MainWindow =
+        let window = new MainWindow([], group, true)
+        window.Width <- this.Width
+        window.Height <- this.Height
+
+        match at with
+        | Some p -> window.Position <- PixelPoint(p.X - 60, p.Y - 15)
+        | None -> window.Position <- PixelPoint(this.Position.X + 40, this.Position.Y + 40)
+
+        window.Show()
+        give w window
+        window
+
+    /// A tab let go at a place on the screen: into the group's window there, or a new one.
+    and dropped (w: Workspace) (screen: PixelPoint) =
+        let over =
+            group.Windows
+            |> Seq.cast<MainWindow>
+            |> Seq.tryFind (fun o -> not (obj.ReferenceEquals(o, this)) && o.Covers screen)
+
+        match over with
+        | Some target -> give w target
+        | None when workspaces.Count > 1 -> detach w (Some screen) |> ignore
+        | None -> ()
 
     and openPath (path: string) =
         let full = Path.GetFullPath path
@@ -2809,30 +3027,16 @@ type MainWindow(script: string, path: string option) as this =
     /// Closes a tab without asking: what it showed is gone.
     and forget (w: Workspace) =
         if workspaces.Contains w then
-            let i = workspaces.IndexOf w
-            workspaces.RemoveAt i
-            deck.Children.Remove w |> ignore
+            release w
             (w :> IDisposable).Dispose()
-
-            if workspaces.Count = 0 then add "" None
-            else show (min i (workspaces.Count - 1))
-
-            refresh true
 
     and closeTab (w: Workspace) : Task =
         task {
             let! settled = settle w
 
             if settled && workspaces.Contains w then
-                let i = workspaces.IndexOf w
-                workspaces.RemoveAt i
-                deck.Children.Remove w |> ignore
+                release w
                 (w :> IDisposable).Dispose()
-
-                if workspaces.Count = 0 then add "" None
-                else show (min i (workspaces.Count - 1))
-
-                refresh true
         }
 
     do
@@ -2863,9 +3067,67 @@ type MainWindow(script: string, path: string option) as this =
         DockPanel.SetDock(tabsRow, Dock.Top)
         layout.Children.Add tabsRow
         layout.Children.Add deck
+        deck.Children.Add start
         this.Content <- layout
-        add script path
-        this.ActualThemeVariantChanged.Add(fun _ -> refresh true)
+        group.Windows.Add this
+
+        // New script, Open, Open folder, the example, and the recent list, what is gone dimmed.
+        startView.Value <-
+            fun () ->
+                let look = look ()
+                let panel = StackPanel(Spacing = 8.0, Margin = Thickness(48.0, 40.0), Width = 520.0, HorizontalAlignment = HorizontalAlignment.Left)
+                let heading (text: string) (size: float) = TextBlock(Text = text, FontSize = size, FontWeight = FontWeight.SemiBold, Foreground = SolidColorBrush look.Text, Margin = Thickness(0.0, 12.0, 0.0, 4.0))
+
+                let entry (text: string) (keys: string) (enabled: bool) (act: unit -> unit) =
+                    let row = DockPanel()
+                    let shortcut = TextBlock(Text = keys, Foreground = SolidColorBrush look.Dim, Margin = Thickness(24.0, 0.0, 0.0, 0.0), TextTrimming = TextTrimming.CharacterEllipsis)
+                    DockPanel.SetDock(shortcut, Dock.Right)
+                    row.Children.Add shortcut
+                    row.Children.Add(TextBlock(Text = text, Foreground = SolidColorBrush(if enabled then look.Accent else look.Dim), TextTrimming = TextTrimming.CharacterEllipsis))
+                    let b = Button(Content = row, Background = Brushes.Transparent, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, IsEnabled = enabled, Padding = Thickness(4.0, 2.0))
+                    b.Click.Add(fun _ -> act ())
+                    b
+
+                panel.Children.Add(heading "Tambour" 22.0)
+
+                if startNote <> "" then
+                    panel.Children.Add(TextBlock(Text = startNote, Foreground = SolidColorBrush look.Warning, TextWrapping = TextWrapping.Wrap))
+
+                panel.Children.Add(heading "Start" 15.0)
+                panel.Children.Add(entry "New script" "Ctrl+N" true (fun () -> add "" None))
+                panel.Children.Add(entry "Open…" "Ctrl+O" true (fun () -> chooseOpen false))
+                panel.Children.Add(entry "Open folder…" "Ctrl+Shift+O" true (fun () -> chooseOpen true))
+                panel.Children.Add(entry "The example figure" "" true (fun () -> add example None))
+
+                if not recent.IsEmpty then
+                    panel.Children.Add(heading "Recent" 15.0)
+
+                    for p in recent do
+                        let there = File.Exists p || Directory.Exists p
+                        let e = entry (Path.GetFileName p) (Path.GetDirectoryName p) there (fun () -> openPath p)
+                        ToolTip.SetTip(e, (if there then p else $"{p}: no longer there"))
+                        panel.Children.Add e
+
+                ScrollViewer(Content = panel) :> Control
+
+        // While no tab is open, the start view's keys.
+        this.KeyDown.Add(fun e ->
+            if workspaces.Count = 0 then
+                match e.Key, e.KeyModifiers with
+                | Key.N, KeyModifiers.Control -> add "" None; e.Handled <- true
+                | Key.O, KeyModifiers.Control -> chooseOpen false; e.Handled <- true
+                | Key.O, m when m = (KeyModifiers.Control ||| KeyModifiers.Shift) -> chooseOpen true; e.Handled <- true
+                | Key.Q, KeyModifiers.Control -> this.Close(); e.Handled <- true
+                | _ -> ())
+
+        if opening.IsEmpty then showStart ()
+        else
+            for script, path in opening do
+                add script path
+
+        this.ActualThemeVariantChanged.Add(fun _ ->
+            refresh true
+            if start.IsVisible then start.Child <- startView.Value ())
 
         // Closing asks about every workspace's unsaved work first, one at a time; Cancel on any
         // keeps the window open.
@@ -2893,13 +3155,84 @@ type MainWindow(script: string, path: string option) as this =
             for w in workspaces do
                 (w :> IDisposable).Dispose()
 
-            (language :> IDisposable).Dispose())
+            group.Leave this
 
+            // The group's other windows keep their tabs for the next start.
+            match Seq.tryHead group.Windows with
+            | Some other -> (other :?> MainWindow).Keep()
+            | None -> ())
+
+    new(opening: (string * string option) list) = new MainWindow(opening, new WindowGroup(), false)
+    new(script: string, path: string option) = new MainWindow([ script, path ])
     new() = new MainWindow(example, None)
     new(script: string) = new MainWindow(script, None)
 
+    /// The window the app starts with: the tabs open when it last closed, those whose files are
+    /// gone dropped with a note, and `path` if one is given; the start view where that is nothing.
+    static member Start(path: string option) =
+        let saved =
+            match App.SettingsDirectory with
+            | null -> Preferences.defaults
+            | dir -> Preferences.read dir
+
+        let there, gone = saved.Tabs |> List.partition File.Exists
+        let window = new MainWindow([ for p in there -> "", Some p ])
+
+        match List.tryItem saved.Shown saved.Tabs |> Option.bind (fun p -> List.tryFindIndex ((=) p) there) with
+        | Some i -> window.ShowTab i
+        | None -> ()
+
+        match path with
+        | Some p -> window.Open p
+        | None -> ()
+
+        if not gone.IsEmpty then
+            let names = String.Join(", ", gone |> List.map Path.GetFileName)
+            window.Tell $"Not opened again, as it is no longer there: {names}"
+
+        window
+
+    /// Shows a tab.
+    member _.ShowTab(i: int) = show i
+
+    /// Opens a script or a project directory in a tab: the one showing it, or a new one.
+    member _.Open(path: string) = openPath path
+
+    /// Tells something: in the tab shown, or on the start view.
+    member _.Tell(text: string) =
+        if active >= 0 then
+            workspaces.[active].Post(Note text)
+        else
+            startNote <- text
+            start.Child <- startView.Value ()
+
+    /// Whether the start view is shown, there being no tab.
+    member _.Starting = workspaces.Count = 0
+
+    /// The scripts of its tabs that have one, in their order.
+    member _.Paths = [ for w in workspaces do match w.Path with Some p -> p | None -> () ]
+
+    /// Whether a place on the screen is inside it.
+    member this.Covers(screen: PixelPoint) =
+        this.IsVisible && Rect(this.ClientSize).Contains(this.PointToClient screen)
+
+    /// Takes a workspace's tab from another window of its group, and shows it.
+    member _.Take(w: Workspace) = take w
+
+    /// Moves a tab into a new window of the group, which it returns.
+    member _.MoveToNewWindow(w: Workspace) = detach w None
+
+    /// Moves a tab into another window of the group.
+    member _.MoveTo(w: Workspace, target: MainWindow) = give w target
+
+    /// Writes the tabs kept for the next start again, as they are now.
+    member _.Keep() = refresh true
+
+    /// Closes a tab without asking, what it showed being gone.
+    member _.Forget(w: Workspace) = forget w
+
     /// The workspaces, in their tabs' order, and the one shown.
-    member _.Workspaces = List.ofSeq workspaces
+    member _.Workspaces: Workspace list = List.ofSeq workspaces
     member _.Active = workspaces.[active]
 
     /// Sends the shown workspace's loop a message.

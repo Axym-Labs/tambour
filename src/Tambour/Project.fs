@@ -101,8 +101,12 @@ type Opened =
       Project: string option
       Settings: Settings option }
 
+/// Whether a directory is a project's or a workspace's: it has their settings or tables there.
+let isProject (directory: string) =
+    isWorkspace directory || File.Exists(Path.Combine(directory, FileName))
+
 /// Opens a script, or a directory as a project: the script it last had open, or its first, or a
-/// new `figure.fsx`.
+/// new `figure.fsx`. A script in a project's directory opens in its project, with its tables.
 let resolve (path: string) : Opened =
     let path = Path.GetFullPath path
 
@@ -120,6 +124,13 @@ let resolve (path: string) : Opened =
           Project = Some path
           Settings = settings }
     else
-        { Script = path
-          Project = None
-          Settings = None }
+        let directory = Path.GetDirectoryName path
+
+        if isProject directory then
+            { Script = path
+              Project = Some directory
+              Settings = read directory }
+        else
+            { Script = path
+              Project = None
+              Settings = None }

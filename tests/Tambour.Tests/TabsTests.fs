@@ -138,17 +138,17 @@ let ``closing a tab asks first, and Cancel keeps everything`` () =
     // Save: the file is written, then the tab goes.
     let asked = answering window SaveIt
     press window Key.W RawInputModifiers.Control
-    pumpUntil 5.0 "the saved tab closed" (fun () -> window.Workspaces.Single().Path.IsNone)
+    pumpUntil 5.0 "the saved tab closed, the start view in its place" (fun () -> window.Starting)
     Assert.Equal(1, asked.Value)
     Assert.Equal(text, File.ReadAllText file)
 
     // Don't save: the tab goes, and the file keeps what was saved.
-    window.Post(Shell.OpenTab file)
+    window.Open file
     pumpUntil 10.0 "the script again" (fun () -> (editorOf window).Text = text)
     typeInto window "// dropped\n"
     let asked = answering window Discard
     press window Key.W RawInputModifiers.Control
-    pumpUntil 5.0 "the tab dropped" (fun () -> window.Workspaces.Single().Path.IsNone)
+    pumpUntil 5.0 "the tab dropped" (fun () -> window.Starting)
     Assert.Equal(1, asked.Value)
     Assert.Equal(text, File.ReadAllText file)
     closeAll window
@@ -390,6 +390,124 @@ let ``the recent list is kept across starts and drops only what is gone`` () =
     finally
         App.SettingsDirectory <- before
 
+/// Gate 15 (d): the open tabs come back at the next start, in their order with the one shown; a
+/// script gone since is dropped with a note; with no tab open the start view is shown, and its
+/// New script opens one.
+[<AvaloniaFact>]
+let ``the open tabs come back at the next start, and with none the start view`` () =
+    let settings = (Directory.CreateTempSubdirectory "tambour-settings").FullName
+    let before = App.SettingsDirectory
+    App.SettingsDirectory <- settings
+
+    try
+        let a = Path.Combine((Directory.CreateTempSubdirectory "tambour-a").FullName, "a.fsx")
+        let b = Path.Combine((Directory.CreateTempSubdirectory "tambour-b").FullName, "b.fsx")
+        File.WriteAllText(a, "let a = 1\n")
+        File.WriteAllText(b, "let b = 2\n")
+        let window = new Shell.MainWindow("", Some a)
+        window.Show()
+        window.Open b
+        pumpUntil 10.0 "both opened" (fun () -> window.Workspaces |> List.map (fun w -> w.Path) = [ Some a; Some b ])
+        window.ShowTab 0
+        Dispatcher.UIThread.RunJobs()
+        closeAll window
+
+        let again = Shell.MainWindow.Start None
+        again.Show()
+        pumpUntil 10.0 "the tabs again" (fun () -> again.Workspaces |> List.map (fun w -> w.Path) = [ Some a; Some b ])
+        Assert.Equal(Some a, again.Active.Path)
+        pumpUntil 10.0 "a's script" (fun () -> (editorOf again).Text = "let a = 1\n")
+        closeAll again
+
+        // b gone: a alone, and a note naming b.
+        File.Delete b
+        let third = Shell.MainWindow.Start None
+        third.Show()
+        pumpUntil 10.0 "a again" (fun () -> third.Workspaces |> List.map (fun w -> w.Path) = [ Some a ])
+        let texts () = third.Active.GetVisualDescendants().OfType<TextBlock>() |> Seq.map (fun t -> t.Text) |> Seq.filter (fun t -> not (isNull t)) |> List.ofSeq
+        pumpUntil 5.0 "the note" (fun () -> texts () |> List.exists (fun t -> t.Contains "no longer there: b.fsx"))
+
+        // The last tab closed: the start view, kept so for the next start.
+        press third Key.W RawInputModifiers.Control
+        pumpUntil 5.0 "the start view" (fun () -> third.Starting)
+        Assert.Empty((Preferences.read settings).Tabs)
+        let shown () = third.GetVisualDescendants().OfType<TextBlock>() |> Seq.filter (fun t -> t.IsEffectivelyVisible) |> Seq.map (fun t -> t.Text) |> List.ofSeq
+        pumpUntil 5.0 "its entries" (fun () -> [ "New script"; "Open…"; "Open folder…"; "a.fsx" ] |> List.forall (fun e -> List.contains e (shown ())))
+
+        match Environment.GetEnvironmentVariable "TAMBOUR_CHECK_OUT" with
+        | null
+        | "" -> ()
+        | out ->
+            use frame = third.CaptureRenderedFrame()
+            frame.Save(Path.Combine(out, "start.png"), Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default)
+
+        press third Key.N RawInputModifiers.Control
+        pumpUntil 5.0 "a new tab" (fun () -> third.Workspaces.Length = 1 && not third.Starting)
+        closeAll third
+
+        let fourth = Shell.MainWindow.Start None
+        Assert.True(fourth.Starting)
+        fourth.Close()
+    finally
+        App.SettingsDirectory <- before
+
+/// A tab moved to a window of its own keeps its script, its history and its run; moved back, the
+/// window it went to closes with its last tab; and the language service they share outlives the
+/// window the tab came from.
+[<AvaloniaFact>]
+let ``a tab moved to a window of its own keeps its work, and comes back`` () =
+    let window = new Shell.MainWindow("let a = 1\n")
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    typeInto window "// typed\n"
+    let moved = window.Active
+    let text = (editorOf window).Text
+    press window Key.N RawInputModifiers.Control
+    pumpUntil 5.0 "a second tab" (fun () -> window.Workspaces.Length = 2)
+    window.ShowTab 0
+
+    let other = window.MoveToNewWindow moved
+    pumpUntil 5.0 "the move" (fun () -> other.Workspaces = [ moved ] && window.Workspaces.Length = 1)
+    Assert.Equal(text, (editorOf other).Text)
+    other.Post Shell.Undo
+    pumpUntil 5.0 "its history, there" (fun () -> (editorOf other).Text = "let a = 1\n")
+    other.Post Shell.Redo
+    pumpUntil 5.0 "and again" (fun () -> (editorOf other).Text = text)
+    let ran (w: Shell.MainWindow) () = w.Active.GetVisualDescendants().OfType<TextBlock>() |> Seq.exists (fun b -> not (isNull b.Text) && b.Text.StartsWith "ran in")
+    other.Post Shell.Run
+    pumpUntil 30.0 "a run in its new window" (ran other)
+
+    // Back: the window it went to closes, as it has no tab left.
+    let closed = ref false
+    other.Closed.Add(fun _ -> closed.Value <- true)
+    other.MoveTo(moved, window)
+    pumpUntil 5.0 "the way back" (fun () -> closed.Value && window.Workspaces.Length = 2 && obj.ReferenceEquals(window.Active, moved))
+
+    // Out again, and the first window closed: the language service still checks the moved script.
+    let third = window.MoveToNewWindow moved
+    pumpUntil 5.0 "the second move" (fun () -> third.Workspaces = [ moved ])
+    closeAll window
+    typeInto third "let wrong: int = \"text\"\n"
+    let problems () = third.Active.GetVisualDescendants().OfType<TextBlock>() |> Seq.exists (fun b -> not (isNull b.Text) && b.Text.StartsWith "1 error")
+    pumpUntil 30.0 "the error, found after the first window closed" problems
+    closeAll third
+
+/// A script in a project's directory, opened on its own, opens in its project, with its tables.
+[<AvaloniaFact>]
+let ``a script opened on its own in a workspace has its tables`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-inside").FullName
+    Project.makeWorkspace dir
+    Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", "runs.csv")) (trial "runs" "auc")
+    let script = Path.Combine(dir, "second.fsx")
+    File.WriteAllText(script, Shell.newScriptWithTables + "let n = runs.Length\n")
+    let window = new Shell.MainWindow("", Some script)
+    window.Show()
+    pumpUntil 10.0 "the script" (fun () -> (editorOf window).Text.Contains "runs.Length")
+    Assert.Equal(Some dir, window.Active.Project)
+    let ran () = window.Active.GetVisualDescendants().OfType<TextBlock>() |> Seq.exists (fun b -> not (isNull b.Text) && b.Text.StartsWith "ran in")
+    pumpUntil 60.0 "a clean run against its tables" ran
+    closeAll window
+
 /// Save all saves every tab with unsaved work; Close project closes the tabs of that project and
 /// leaves the others.
 [<AvaloniaFact>]
@@ -486,7 +604,7 @@ let ``the file list duplicates, renames and deletes a project's scripts`` () =
     // Delete: exactly the file named goes, and its tab with it.
     window.ConfirmDelete <- fun _ -> Task.FromResult true
     window.Post(Shell.DeleteFile first)
-    pumpUntil 5.0 "the tab closed" (fun () -> window.Active.Path.IsNone)
+    pumpUntil 5.0 "the tab closed" (fun () -> window.Starting)
     Assert.False(File.Exists first)
     Assert.Equal<string list>([ "two copy.fsx"; "two.fsx"; Project.FileName ], Directory.GetFiles dir |> Array.map Path.GetFileName |> Array.sort |> List.ofArray |> List.sortBy (fun f -> f.EndsWith ".json", f))
     closeAll window
