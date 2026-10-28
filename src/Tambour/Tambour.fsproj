@@ -8,6 +8,9 @@
 
   <ItemGroup>
     <Compile Include="Paths.fs" />
+    <Compile Include="Preferences.fs" />
+    <Compile Include="Palette.fs" />
+    <Compile Include="Markdown.fs" />
     <Compile Include="Evaluation.fs" />
     <Compile Include="Worker.fs" />
     <Compile Include="Analysis.fs" />
@@ -16,7 +19,6 @@
     <Compile Include="TableGrid.fs" />
     <Compile Include="History.fs" />
     <Compile Include="Typing.fs" />
-    <Compile Include="Palette.fs" />
     <Compile Include="ScriptEditor.fs" />
     <Compile Include="App.fs" />
     <Compile Include="Project.fs" />
@@ -28,6 +30,12 @@
     <Compile Include="PaneCheck.fs" />
     <Compile Include="PackageCheck.fs" />
     <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Themes/light.json" LogicalName="Tambour.Themes.light.json" />
+    <EmbeddedResource Include="Themes/dark.json" LogicalName="Tambour.Themes.dark.json" />
+    <AvaloniaResource Include="Fonts/*.ttf" />
   </ItemGroup>
 
   <ItemGroup>
@@ -45,6 +53,7 @@
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Skia" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="Avalonia.Fonts.Inter" />
     <PackageReference Include="Avalonia.FuncUI" />
     <PackageReference Include="Avalonia.AvaloniaEdit" />
     <PackageReference Include="AvaloniaEdit.TextMate" />

@@ -9,11 +9,14 @@ given.
 | .NET runtime | 10.0 | MIT | https://github.com/dotnet/runtime |
 | FSharp.Core, FSharp.Compiler.Service | 10.1.202, 43.12.202 | MIT | https://github.com/dotnet/fsharp |
 | Marey | 1.0 (pre-release) | MIT | https://github.com/Axym-Labs/marey |
-| Avalonia (Avalonia, .Desktop, .Skia, .Themes.Fluent, .X11, .Win32, .Native, .FreeDesktop, .HarfBuzz) | 12.1.4 | MIT | https://github.com/AvaloniaUI/Avalonia |
+| Avalonia (Avalonia, .Desktop, .Skia, .Themes.Fluent, .Fonts.Inter, .X11, .Win32, .Native, .FreeDesktop, .HarfBuzz) | 12.1.4 | MIT | https://github.com/AvaloniaUI/Avalonia |
+| The Inter font, in Avalonia.Fonts.Inter | — | OFL-1.1 | https://github.com/rsms/inter |
+| JetBrains Mono, the editor's font (Regular and Bold; the licence is `OFL-JetBrainsMono.txt` beside this file) | 2.305 | OFL-1.1 | https://github.com/JetBrains/JetBrainsMono |
 | ANGLE for Windows (Avalonia.Angle.Windows.Natives) | 2.1.27548 | BSD-3-Clause | https://github.com/google/angle |
 | AvaloniaEdit, AvaloniaEdit.TextMate | 12.0.0 | MIT | https://github.com/AvaloniaUI/AvaloniaEdit |
 | TextMateSharp, TextMateSharp.Grammars | 2.0.4 | MIT | https://github.com/danipen/TextMateSharp |
 | The F# grammar in TextMateSharp.Grammars, from Ionide | — | MIT | https://github.com/ionide/ionide-fsgrammar |
+| The editor's two grammar themes (`src/Tambour/Themes`), from Visual Studio Code's Light+ and Dark+, a few colours changed | — | MIT | https://github.com/microsoft/vscode |
 | Onigwrap, and the Oniguruma it wraps | 1.0.11 | MIT, BSD-2-Clause | https://github.com/aikawayataro/Onigwrap |
 | Avalonia.FuncUI, Avalonia.FuncUI.Elmish | 2.0.0 | MIT | https://github.com/fsprojects/Avalonia.FuncUI |
 | Elmish | 5.0.2 | Apache-2.0 | https://github.com/elmish/elmish |

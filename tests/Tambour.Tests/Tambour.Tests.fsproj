@@ -15,12 +15,15 @@
     <Compile Include="EditorTests.fs" />
     <Compile Include="TypingTests.fs" />
     <Compile Include="HighlightTests.fs" />
+    <Compile Include="ThemeTests.fs" />
+    <Compile Include="MarkdownTests.fs" />
     <Compile Include="EditsTests.fs" />
     <Compile Include="HistoryTests.fs" />
     <Compile Include="FilesTests.fs" />
     <Compile Include="TableTests.fs" />
     <Compile Include="TableScriptTests.fs" />
     <Compile Include="GridTests.fs" />
+    <Compile Include="GridCommandTests.fs" />
     <Compile Include="PreludeAgainTests.fs" />
     <Compile Include="PickTests.fs" />
   </ItemGroup>

@@ -67,12 +67,16 @@ module CellText =
             | _ -> Error $"{t} is not a date and time"
 
     /// A block of cells as a spreadsheet copies it: rows on lines, cells split by tabs, a cell
-    /// holding a tab, a line break or a quote quoted.
+    /// holding a tab, a line break or a quote quoted. A row of one empty cell is written `""`, so a
+    /// last such row is not taken for the text's end.
     let toTsv (rows: string[][]) =
         let cell (c: string) =
             if c.IndexOfAny [| '\t'; '\n'; '\r'; '"' |] >= 0 then "\"" + c.Replace("\"", "\"\"") + "\"" else c
 
-        String.Join("\n", rows |> Array.map (fun r -> String.Join("\t", r |> Array.map cell)))
+        let row (r: string[]) =
+            if r.Length = 1 && r.[0] = "" then "\"\"" else String.Join("\t", r |> Array.map cell)
+
+        String.Join("\n", rows |> Array.map row)
 
     /// A block of cells from a spreadsheet's copy.
     let ofTsv (text: string) : string[][] =
@@ -80,10 +84,14 @@ module CellText =
         let row = ResizeArray<string>()
         let cell = StringBuilder()
         let mutable quoted = false
+        // Whether the text's last line holds anything, if only a quoted empty cell.
+        let mutable begun = false
         let mutable i = 0
 
         while i < text.Length do
             let c = text.[i]
+
+            begun <- c <> '\n' && c <> '\r'
 
             if quoted then
                 if c = '"' && i + 1 < text.Length && text.[i + 1] = '"' then
@@ -109,15 +117,160 @@ module CellText =
 
             i <- i + 1
 
-        if cell.Length > 0 || row.Count > 0 then
+        if cell.Length > 0 || row.Count > 0 || begun then
             row.Add(cell.ToString())
             rows.Add(row.ToArray())
 
         rows.ToArray()
 
+/// The grid's commands on a selection, as table edits that hold what they replace, each one entry
+/// on the history. The grid's context menu, the Table menu and the grid's keys all take them.
+module GridCommand =
+
+    /// Columns `C0`..`C1` and rows `R0`..`R1`, both inclusive.
+    type Selection = { C0: int; C1: int; R0: int; R1: int }
+
+    type Kind =
+        | Copy
+        | Cut
+        | Paste
+        | CopyRows
+        | PasteRows
+        | DuplicateRows
+        | InsertRowAbove
+        | InsertRowBelow
+        | DeleteRows
+        | FillDown
+        | InsertColumn
+        | RenameColumn
+        | DeleteColumns
+
+    /// Each command's name in the menus and its key while the grid has the focus, in the menus'
+    /// order: the cells, the rows, the columns.
+    let all: (Kind * string * string) list =
+        [ Copy, "_Copy", "Ctrl+C"
+          Cut, "Cu_t", "Ctrl+X"
+          Paste, "_Paste", "Ctrl+V"
+          FillDown, "_Fill down", "Ctrl+D"
+          CopyRows, "Copy _rows", "Ctrl+Shift+C"
+          PasteRows, "Paste ro_ws", "Ctrl+Shift+V"
+          DuplicateRows, "_Duplicate rows", "Ctrl+Shift+D"
+          InsertRowAbove, "Insert row _above", "Ctrl+OemPlus"
+          InsertRowBelow, "Insert row _below", "Ctrl+Shift+OemPlus"
+          DeleteRows, "D_elete rows", "Ctrl+OemMinus"
+          InsertColumn, "_Insert column", ""
+          RenameColumn, "Re_name column", ""
+          DeleteColumns, "Delete co_lumns", "" ]
+
+    /// Where the menus draw a line: before the rows' commands and before the columns'.
+    let startsGroup (kind: Kind) = kind = CopyRows || kind = InsertColumn
+
+    let private count (s: Selection) = s.R1 - s.R0 + 1
+
+    /// Values one after another, as one run.
+    let private join (kind: string) (runs: Values seq) =
+        runs |> Seq.fold (fun (acc: Values) v -> Values.insert acc.Length v acc) (Values.blank kind 0)
+
+    /// The selected cells as a block of exact text.
+    let copyCells (t: Table) (s: Selection) =
+        CellText.toTsv [| for r in s.R0 .. s.R1 -> [| for c in s.C0 .. s.C1 -> CellText.exact t.Columns.[c].Values r |] |]
+
+    /// The selected rows, every column of them, as a block of exact text.
+    let copyRows (t: Table) (s: Selection) =
+        CellText.toTsv [| for r in s.R0 .. s.R1 -> [| for c in t.Columns -> CellText.exact c.Values r |] |]
+
+    /// The selected cells emptied: a float's missing, a text's empty, an int's 0.
+    let clear (t: Table) (s: Selection) =
+        [ for c in s.C0 .. s.C1 -> TableEdit.setCells t c s.R0 (Values.blank t.Columns.[c].Values.Kind (count s)) ]
+
+    /// A column's run read from its cells' texts (a cell there is none of, blank), or why one is
+    /// not of its type.
+    let private read (column: Column) (cells: string option[]) : Result<Values, string> =
+        let kind = column.Values.Kind
+        let parsed = cells |> Array.map (function Some text -> CellText.parse kind text | None -> Ok(Values.blank kind 1))
+
+        match parsed |> Array.tryPick (function Error e -> Some e | Ok _ -> None) with
+        | Some why -> Error $"{column.Name}: {why}"
+        | None -> Ok(parsed |> Array.choose (function Ok v -> Some v | Error _ -> None) |> join kind)
+
+    /// A block pasted at the selection's corner: rows added where it runs past the end, each
+    /// column's cells read as its type, and refused whole if one is not.
+    let paste (t: Table) (s: Selection) (block: string[][]) : Result<TableEdit list, string> =
+        if block.Length = 0 || t.Columns.IsEmpty then
+            Ok []
+        else
+            let width = min (block |> Array.map Array.length |> Array.max) (t.Columns.Length - s.C0)
+            let added = max 0 (s.R0 + block.Length - t.Rows)
+            let grow = if added > 0 then [ TableEdit.addRows t t.Rows added ] else []
+            let t' = (grow |> List.fold TableEdit.apply (Map.ofList [ t.Name, t ])).[t.Name]
+
+            let cells =
+                [ for j in 0 .. width - 1 ->
+                      read t'.Columns.[s.C0 + j] (block |> Array.map (fun r -> Some(if j < r.Length then r.[j] else "")))
+                      |> Result.map (TableEdit.setCells t' (s.C0 + j) s.R0) ]
+
+            match cells |> List.tryPick (function Error e -> Some e | Ok _ -> None) with
+            | Some why -> Error why
+            | None -> Ok(grow @ (cells |> List.choose (function Ok e -> Some e | Error _ -> None)))
+
+    /// Whole rows pasted, inserted before the selection's first row: each line of the block a row,
+    /// its cells in the columns' order.
+    let pasteRows (t: Table) (s: Selection) (block: string[][]) : Result<TableEdit list, string> =
+        if block.Length = 0 || t.Columns.IsEmpty then
+            Ok []
+        else
+            let runs = t.Columns |> List.mapi (fun j c -> read c (block |> Array.map (fun r -> if j < r.Length then Some r.[j] else None)))
+
+            match runs |> List.tryPick (function Error e -> Some e | Ok _ -> None) with
+            | Some why -> Error why
+            | None -> Ok [ AddRows(t.Name, min s.R0 t.Rows, runs |> List.choose (function Ok v -> Some v | Error _ -> None)) ]
+
+    /// The selected rows again, below them.
+    let duplicateRows (t: Table) (s: Selection) =
+        [ AddRows(t.Name, s.R1 + 1, t.Columns |> List.map (fun c -> Values.slice s.R0 (count s) c.Values)) ]
+
+    let insertRowAbove (t: Table) (s: Selection) = [ TableEdit.addRows t (min s.R0 t.Rows) 1 ]
+    let insertRowBelow (t: Table) (s: Selection) = [ TableEdit.addRows t (min (s.R1 + 1) t.Rows) 1 ]
+    let deleteRows (t: Table) (s: Selection) = [ TableEdit.removeRows t s.R0 (count s) ]
+
+    /// Each selected column's first selected cell copied into the cells below it.
+    let fillDown (t: Table) (s: Selection) =
+        [ if s.R1 > s.R0 then
+              for c in s.C0 .. s.C1 ->
+                  let values = t.Columns.[c].Values
+                  TableEdit.setCells t c (s.R0 + 1) (Seq.replicate (s.R1 - s.R0) (Values.slice s.R0 1 values) |> join values.Kind) ]
+
+    /// The selected columns removed, right to left so each index holds; none where that would
+    /// leave the table no column.
+    let deleteColumns (t: Table) (s: Selection) =
+        if s.C1 - s.C0 + 1 >= t.Columns.Length then [] else [ for c in s.C1 .. -1 .. s.C0 -> TableEdit.removeColumn t c ]
+
+    /// The edits a command makes, for those that need no clipboard and no form.
+    let edits (kind: Kind) (t: Table) (s: Selection) : TableEdit list =
+        match kind with
+        | Cut -> clear t s
+        | DuplicateRows -> duplicateRows t s
+        | InsertRowAbove -> insertRowAbove t s
+        | InsertRowBelow -> insertRowBelow t s
+        | DeleteRows -> deleteRows t s
+        | FillDown -> fillDown t s
+        | DeleteColumns -> deleteColumns t s
+        | Copy
+        | Paste
+        | CopyRows
+        | PasteRows
+        | InsertColumn
+        | RenameColumn -> []
+
 /// A cell of the grid, by column and row.
 [<Struct>]
 type CellRef = { Column: int; Row: int }
+
+/// What a point of the grid is over.
+type private Hit =
+    | OnCell of CellRef
+    | OnColumnHeader of int
+    | OnRowHeader of int
 
 /// The table grid: a table drawn from its column arrays, only the cells in view, so a million rows
 /// scroll as ten do. Cells are selected with the pointer and the keys, edited in place (typed into,
@@ -137,6 +290,7 @@ type TableGrid() as this =
     let mutable marked: Set<int> = Set.empty
     let refused = Event<string>()
     let header = Event<int>()
+    let insertColumn = Event<int>()
 
     let mutable table: Table option = None
     let mutable top = 0
@@ -149,8 +303,10 @@ type TableGrid() as this =
     let horizontal = ScrollBar(Orientation = Orientation.Horizontal, Minimum = 0.0, SmallChange = 1.0, LargeChange = 1.0)
     let editor = TextBox(IsVisible = false, BorderThickness = Thickness 1.0, Padding = Thickness(3.0, 1.0), MinHeight = 0.0)
 
-    let typeface = Typeface FontFamily.Default
-    let bold = Typeface(FontFamily.Default, FontStyle.Normal, FontWeight.SemiBold)
+    // The UI's font, Inter, where the app carries it.
+    let font = FontFamily "fonts:Inter#Inter, $Default"
+    let typeface = Typeface font
+    let bold = Typeface(font, FontStyle.Normal, FontWeight.SemiBold)
 
     let text (s: string) (face: Typeface) (size: float) (brush: IBrush) =
         FormattedText(s, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, face, size, brush)
@@ -275,15 +431,17 @@ type TableGrid() as this =
         let c0, c1 = min anchor.Column focus.Column, max anchor.Column focus.Column
         selectionChanged.Trigger [ c0..c1 ]
 
-    /// The cell under a point, or the column whose header it is over.
+    /// The cell under a point, or the column or row whose header it is over.
     let hit (p: Point) =
         let column = left + int (floor ((p.X - numberWidth ()) / columnWidth))
+        let row = top + int (floor ((p.Y - headerHeight) / rowHeight))
 
-        if p.X < numberWidth () || column >= columns () then None
-        elif p.Y < headerHeight then Some(Choice2Of2 column)
-        else
-            let row = top + int (floor ((p.Y - headerHeight) / rowHeight))
-            if row < rows () then Some(Choice1Of2 { Column = column; Row = row }) else None
+        if p.X < numberWidth () then
+            if p.Y >= headerHeight && row < rows () then Some(OnRowHeader row) else None
+        elif column >= columns () then None
+        elif p.Y < headerHeight then Some(OnColumnHeader column)
+        elif row < rows () then Some(OnCell { Column = column; Row = row })
+        else None
 
     let endEdit (commit: bool) =
         match editing, table with
@@ -299,7 +457,7 @@ type TableGrid() as this =
                 this.Focus() |> ignore
                 moveTo { c with Row = c.Row + 1 } false
             | Error why ->
-                editor.BorderBrush <- Brushes.Red
+                editor.BorderBrush <- SolidColorBrush (Palette.forVariant this.ActualThemeVariant).Error
                 ToolTip.SetTip(editor, why)
                 refused.Trigger why
         | _ ->
@@ -316,7 +474,7 @@ type TableGrid() as this =
             bringIntoView focus
             editing <- Some focus
             editor.Text <- (match initial with Some s -> s | None -> CellText.exact t.Columns.[focus.Column].Values focus.Row)
-            editor.BorderBrush <- Brushes.SteelBlue
+            editor.BorderBrush <- SolidColorBrush (Palette.forVariant this.ActualThemeVariant).Accent
             ToolTip.SetTip(editor, null)
             editor.IsVisible <- true
             this.InvalidateArrange()
@@ -324,53 +482,78 @@ type TableGrid() as this =
             editor.CaretIndex <- editor.Text.Length
         | _ -> ()
 
+    let selection () : GridCommand.Selection =
+        let c0, c1, r0, r1 = selectionBounds ()
+        { C0 = c0; C1 = c1; R0 = r0; R1 = r1 }
+
     /// The selection's cells as a block of exact text.
     let copied () =
         match table with
-        | Some t when columns () > 0 && rows () > 0 ->
-            let c0, c1, r0, r1 = selectionBounds ()
-            CellText.toTsv [| for r in r0..r1 -> [| for c in c0..c1 -> CellText.exact t.Columns.[c].Values r |] |]
+        | Some t when columns () > 0 && rows () > 0 -> GridCommand.copyCells t (selection ())
         | _ -> ""
 
-    /// A block pasted at the selection's corner: rows added where it runs past the end, each column's
-    /// cells read as its type, and refused whole if one is not.
+    let report (result: Result<TableEdit list, string>) =
+        match result with
+        | Ok [] -> ()
+        | Ok edits -> edited.Trigger edits
+        | Error why -> refused.Trigger why
+
+    /// A block pasted at the selection's corner.
     let paste (block: string[][]) =
         match table with
-        | Some t when columns () > 0 && block.Length > 0 ->
-            let c0, _, r0, _ = selectionBounds ()
-            let width = min (block |> Array.map Array.length |> Array.max) (columns () - c0)
-            let added = max 0 (r0 + block.Length - t.Rows)
-            let grow = if added > 0 then [ TableEdit.addRows t t.Rows added ] else []
-            let grown = grow |> List.fold (fun (m: Map<string, Table>) e -> TableEdit.apply m e) (Map.ofList [ t.Name, t ])
-            let t' = grown.[t.Name]
-
-            let cells =
-                [ for j in 0 .. width - 1 ->
-                      let column = t'.Columns.[c0 + j]
-                      let parsed = block |> Array.map (fun r -> CellText.parse column.Values.Kind (if j < r.Length then r.[j] else ""))
-
-                      match parsed |> Array.tryPick (function Error e -> Some e | Ok _ -> None) with
-                      | Some why -> Error $"{column.Name}: {why}"
-                      | None ->
-                          let run = parsed |> Array.map (function Ok v -> v | Error _ -> failwith "unreachable")
-                          let joined = run |> Array.fold (fun (acc: Values) v -> Values.insert acc.Length v acc) (Values.blank column.Values.Kind 0)
-                          Ok(TableEdit.setCells t' (c0 + j) r0 joined) ]
-
-            match cells |> List.tryPick (function Error e -> Some e | Ok _ -> None) with
-            | Some why -> refused.Trigger why
-            | None -> edited.Trigger(grow @ (cells |> List.map (function Ok e -> e | Error _ -> failwith "unreachable")))
+        | Some t when columns () > 0 -> report (GridCommand.paste t (selection ()) block)
         | _ -> ()
 
     let clear () =
         match table with
-        | Some t when columns () > 0 && rows () > 0 ->
-            let c0, c1, r0, r1 = selectionBounds ()
-            edited.Trigger [ for c in c0..c1 -> TableEdit.setCells t c r0 (Values.blank t.Columns.[c].Values.Kind (r1 - r0 + 1)) ]
+        | Some t when columns () > 0 && rows () > 0 -> report (Ok(GridCommand.clear t (selection ())))
         | _ -> ()
+
+    let clipboard () = TopLevel.GetTopLevel(this) |> Option.ofObj |> Option.map (fun top -> top.Clipboard)
+
+    /// The clipboard's text, read and handed on on the UI thread.
+    let withPasted (f: string[][] -> unit) =
+        match clipboard () with
+        | Some board ->
+            board.TryGetTextAsync().ContinueWith(fun (t: Threading.Tasks.Task<string>) ->
+                if t.IsCompletedSuccessfully && not (isNull t.Result) then
+                    Threading.Dispatcher.UIThread.Post(fun () -> f (CellText.ofTsv t.Result)))
+            |> ignore
+        | None -> ()
+
+    /// Takes a command on the selection.
+    let run (kind: GridCommand.Kind) =
+        match table with
+        | Some t when columns () > 0 ->
+            let s = selection ()
+            let any = rows () > 0
+
+            match kind with
+            | GridCommand.Copy when any -> clipboard () |> Option.iter (fun b -> b.SetTextAsync(copied ()) |> ignore)
+            | GridCommand.Cut when any ->
+                clipboard () |> Option.iter (fun b -> b.SetTextAsync(copied ()) |> ignore)
+                clear ()
+            | GridCommand.CopyRows when any -> clipboard () |> Option.iter (fun b -> b.SetTextAsync(GridCommand.copyRows t s) |> ignore)
+            | GridCommand.Paste -> withPasted paste
+            | GridCommand.PasteRows -> withPasted (fun block -> report (GridCommand.pasteRows t (selection ()) block))
+            | GridCommand.InsertColumn -> insertColumn.Trigger s.C0
+            | GridCommand.RenameColumn -> header.Trigger s.C0
+            | GridCommand.InsertRowAbove
+            | GridCommand.InsertRowBelow -> report (Ok(GridCommand.edits kind t s))
+            | _ when any -> report (Ok(GridCommand.edits kind t s))
+            | _ -> ()
+        | _ -> ()
+
 
     do
         this.Focusable <- true
         this.ClipToBounds <- true
+
+        // The shaped texts carry their colour.
+        this.ActualThemeVariantChanged.Add(fun _ ->
+            shaped.Clear()
+            this.InvalidateVisual())
+
         for child in [ vertical :> Control; horizontal; editor ] do
             this.VisualChildren.Add child
             this.LogicalChildren.Add child
@@ -396,6 +579,17 @@ type TableGrid() as this =
             | _ -> ())
 
         editor.LostFocus.Add(fun _ -> if editing.IsSome then endEdit true)
+
+        // The commands on cells, rows and columns, as the Table menu has them.
+        let items =
+            [ for kind, name, keys in GridCommand.all do
+                  if GridCommand.startsGroup kind then Separator() :> Control
+                  let item = MenuItem(Header = name)
+                  if keys <> "" then item.InputGesture <- KeyGesture.Parse keys
+                  item.Click.Add(fun _ -> run kind)
+                  item ]
+
+        this.ContextMenu <- ContextMenu(ItemsSource = items)
 
     /// Changes the grid makes to its table, as edits that hold what they replace.
     [<CLIEvent>]
@@ -423,9 +617,16 @@ type TableGrid() as this =
 
                 this.InvalidateVisual()
 
-    /// A column's header double-clicked, to edit the column.
+    /// A column's header double-clicked, or Rename column taken, to edit the column.
     [<CLIEvent>]
     member _.HeaderActivated = header.Publish
+
+    /// Insert column taken: where the new column goes.
+    [<CLIEvent>]
+    member _.InsertColumnAt = insertColumn.Publish
+
+    /// Takes a command on the selection, as its menu entry or its key does.
+    member _.Run(kind: GridCommand.Kind) = run kind
 
     /// The table shown.
     member _.Table
@@ -489,13 +690,16 @@ type TableGrid() as this =
     override _.Render(dc: DrawingContext) =
         let clock = Diagnostics.Stopwatch.StartNew()
         let bounds = Rect(this.Bounds.Size)
-        dc.FillRectangle(Brushes.White, bounds)
+        let look = Palette.forVariant this.ActualThemeVariant
+        let ink = SolidColorBrush look.Foreground
+        let dim = SolidColorBrush look.Dim
+        dc.FillRectangle(SolidColorBrush look.Background, bounds)
 
         match table with
         | None -> ()
         | Some t ->
-            let line = Pen(SolidColorBrush(Color.FromRgb(225uy, 228uy, 232uy)), 1.0)
-            let headerBrush = SolidColorBrush(Color.FromRgb(244uy, 245uy, 247uy))
+            let line = Pen(SolidColorBrush look.Line, 1.0)
+            let headerBrush = SolidColorBrush look.Raised
             let numbers = numberWidth ()
             let shownRows = min (visibleRows () + 1) (t.Rows - top)
             let shownColumns = min (visibleColumns () + 1) (t.Columns.Length - left)
@@ -506,22 +710,22 @@ type TableGrid() as this =
             // Marked rows, then the selection, under the text.
             for i in 0 .. shownRows - 1 do
                 if marked.Contains(top + i) then
-                    dc.FillRectangle(SolidColorBrush(Color.FromArgb(70uy, 250uy, 200uy, 40uy)), Rect(0.0, headerHeight + float i * rowHeight, bounds.Width, rowHeight))
+                    dc.FillRectangle(SolidColorBrush look.Marked, Rect(0.0, headerHeight + float i * rowHeight, bounds.Width, rowHeight))
 
             let c0, c1, r0, r1 = selectionBounds ()
             let a = cellRect { Column = max c0 left; Row = max r0 top }
             let b = cellRect { Column = c1; Row = r1 }
 
             if c1 >= left && r1 >= top then
-                dc.FillRectangle(SolidColorBrush(Color.FromArgb(50uy, 30uy, 110uy, 220uy)), Rect(a.TopLeft, b.BottomRight))
-                dc.DrawRectangle(Pen(SolidColorBrush(Color.FromRgb(30uy, 110uy, 220uy)), 1.5), cellRect focus)
+                dc.FillRectangle(SolidColorBrush look.Selected, Rect(a.TopLeft, b.BottomRight))
+                dc.DrawRectangle(Pen(SolidColorBrush look.Accent, 1.5), cellRect focus)
 
             for j in 0 .. shownColumns - 1 do
                 let column = t.Columns.[left + j]
                 let x = numbers + float j * columnWidth
-                dc.DrawText(text column.Name bold 12.5 Brushes.Black, Point(x + 6.0, 4.0))
+                dc.DrawText(text column.Name bold 12.5 (SolidColorBrush look.Text), Point(x + 6.0, 4.0))
 
-                dc.DrawText(text (kindOf column) typeface 11.0 Brushes.DimGray, Point(x + 6.0, 21.0))
+                dc.DrawText(text (kindOf column) typeface 11.0 dim, Point(x + 6.0, 21.0))
 
                 // The column's cells in view, clipped to it.
                 use _ = dc.PushClip(Rect(x + 2.0, headerHeight, columnWidth - 4.0, bounds.Height - headerHeight))
@@ -536,7 +740,7 @@ type TableGrid() as this =
                     let shown = (CellText.shown column.Values (top + i)).Replace('\n', '⏎').Replace('\r', '⏎')
 
                     if shown <> "" then
-                        let width, draw = cellText shown 12.5 cellNumerals Brushes.Black
+                        let width, draw = cellText shown 12.5 cellNumerals ink
                         let y = headerHeight + float i * rowHeight + 3.0
                         draw dc (Point((if numeric then x + columnWidth - 5.0 - width else x + 5.0), y))
 
@@ -544,7 +748,7 @@ type TableGrid() as this =
 
             for i in 0 .. shownRows - 1 do
                 let y = headerHeight + float i * rowHeight
-                let width, draw = cellText (string (top + i + 1)) 11.0 rowNumerals Brushes.DimGray
+                let width, draw = cellText (string (top + i + 1)) 11.0 rowNumerals dim
                 draw dc (Point(numbers - 6.0 - width, y + 4.0))
                 dc.DrawLine(line, Point(0.0, y + rowHeight), Point(bounds.Width, y + rowHeight))
 
@@ -556,17 +760,36 @@ type TableGrid() as this =
     override _.OnPointerPressed(e: PointerPressedEventArgs) =
         base.OnPointerPressed e
         this.Focus() |> ignore
+        let extend = e.KeyModifiers.HasFlag KeyModifiers.Shift || e.KeyModifiers.HasFlag KeyModifiers.Control
+        let c0, c1, r0, r1 = selectionBounds ()
 
-        match hit (e.GetPosition this) with
-        | Some(Choice1Of2 c) ->
-            if editing.IsSome then endEdit true
-            moveTo c (e.KeyModifiers.HasFlag KeyModifiers.Shift)
-            if e.ClickCount = 2 then beginEdit None
-        | Some(Choice2Of2 column) when e.ClickCount = 2 -> header.Trigger column
-        | Some(Choice2Of2 column) ->
-            anchor <- { Column = column; Row = 0 }
-            moveTo { Column = column; Row = rows () - 1 } true
-        | None -> ()
+        // A right click on what is selected keeps the selection for the menu it opens; elsewhere it
+        // selects what it is on first.
+        let keep =
+            e.GetCurrentPoint(this).Properties.IsRightButtonPressed
+            && (match hit (e.GetPosition this) with
+                | Some(OnCell c) -> c.Column >= c0 && c.Column <= c1 && c.Row >= r0 && c.Row <= r1
+                | Some(OnRowHeader r) -> r >= r0 && r <= r1 && c0 = 0 && c1 = columns () - 1
+                | Some(OnColumnHeader c) -> c >= c0 && c <= c1 && r0 = 0 && r1 = rows () - 1
+                | None -> true)
+
+        if not keep then
+            match hit (e.GetPosition this) with
+            | Some(OnCell c) ->
+                if editing.IsSome then endEdit true
+                moveTo c (e.KeyModifiers.HasFlag KeyModifiers.Shift)
+                if e.ClickCount = 2 then beginEdit None
+            | Some(OnColumnHeader column) when e.ClickCount = 2 -> header.Trigger column
+            | Some(OnColumnHeader column) ->
+                if not extend then anchor <- { Column = column; Row = 0 }
+                anchor <- { anchor with Row = 0 }
+                moveTo { Column = column; Row = rows () - 1 } true
+            | Some(OnRowHeader row) ->
+                // A whole row; Shift or Ctrl extends the rows from the one the selection began at.
+                if not extend then anchor <- { Column = 0; Row = row }
+                anchor <- { anchor with Column = 0 }
+                moveTo { Column = columns () - 1; Row = row } true
+            | None -> ()
 
     override _.OnPointerWheelChanged(e: PointerWheelEventArgs) =
         base.OnPointerWheelChanged e
@@ -595,32 +818,12 @@ type TableGrid() as this =
             | Key.Enter
             | Key.F2 -> beginEdit None; e.Handled <- true
             | Key.Delete -> clear (); e.Handled <- true
-            | Key.OemPlus when control ->
-                match table with
-                | Some t -> edited.Trigger [ TableEdit.addRows t (if t.Rows = 0 then 0 else focus.Row) 1 ]
+            | _ when control ->
+                match GridCommand.all |> List.tryFind (fun (_, _, keys) -> keys <> "" && (let g = KeyGesture.Parse keys in g.Key = e.Key && g.KeyModifiers = e.KeyModifiers)) with
+                | Some(kind, _, _) ->
+                    run kind
+                    e.Handled <- true
                 | None -> ()
-                e.Handled <- true
-            | Key.OemMinus when control ->
-                match table with
-                | Some t when t.Rows > 0 ->
-                    let _, _, r0, r1 = selectionBounds ()
-                    edited.Trigger [ TableEdit.removeRows t r0 (r1 - r0 + 1) ]
-                | _ -> ()
-                e.Handled <- true
-            | Key.C when control ->
-                match TopLevel.GetTopLevel(this) with
-                | null -> ()
-                | top -> top.Clipboard.SetTextAsync(copied ()) |> ignore
-                e.Handled <- true
-            | Key.V when control ->
-                match TopLevel.GetTopLevel(this) with
-                | null -> ()
-                | top ->
-                    top.Clipboard.TryGetTextAsync().ContinueWith(fun (t: Threading.Tasks.Task<string>) ->
-                        if t.IsCompletedSuccessfully && not (isNull t.Result) then
-                            Threading.Dispatcher.UIThread.Post(fun () -> paste (CellText.ofTsv t.Result)))
-                    |> ignore
-                e.Handled <- true
             | _ -> ()
 
     override _.OnTextInput(e: TextInputEventArgs) =

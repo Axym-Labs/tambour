@@ -127,17 +127,18 @@ let tokensOf (offset: int) (items: SemanticClassificationItem[]) : Token[] =
 
     tokens.ToArray()
 
-/// Documentation as a reader reads it: the summary's text, a code element or a reference by its
-/// name, paragraphs apart.
+/// Documentation as a reader reads it, as Markdown: the summary's lines as they were written, less
+/// their common indent; a code element as code, a reference by its name, paragraphs apart. Inside
+/// a fenced block every space is kept; outside, a run of them is one.
 let readable (xml: string) =
     try
-        let root = Xml.Linq.XElement.Parse("<doc>" + xml + "</doc>", Xml.Linq.LoadOptions.None)
+        let root = Xml.Linq.XElement.Parse("<doc>" + xml + "</doc>", Xml.Linq.LoadOptions.PreserveWhitespace)
         let summary = root.Element(Xml.Linq.XName.Get "summary") |> Option.ofObj |> Option.defaultValue root
         let out = Text.StringBuilder()
 
         let rec walk (node: Xml.Linq.XNode) =
             match node with
-            | :? Xml.Linq.XText as t -> out.Append(Text.RegularExpressions.Regex.Replace(t.Value, @"\s+", " ")) |> ignore
+            | :? Xml.Linq.XText as t -> out.Append(t.Value.Replace("\r", "")) |> ignore
             | :? Xml.Linq.XElement as e ->
                 match e.Name.LocalName with
                 | "see"
@@ -153,6 +154,8 @@ let readable (xml: string) =
                     // `T:Marey.Plot.Geom` reads as `Geom`.
                     let name = if name.Length > 2 && name.[1] = ':' then name.Substring 2 else name
                     out.Append(name.Split('.') |> Array.last) |> ignore
+                | "c" -> out.Append('`').Append(e.Value).Append('`') |> ignore
+                | "code" -> out.Append("\n```\n").Append(e.Value.Trim('\n', '\r')).Append("\n```\n") |> ignore
                 | "para" ->
                     out.Append "\n\n" |> ignore
 
@@ -168,7 +171,28 @@ let readable (xml: string) =
         for n in summary.Nodes() do
             walk n
 
-        Text.RegularExpressions.Regex.Replace(out.ToString(), @" *\n\s*\n\s*", "\n\n").Trim()
+        let lines = out.ToString().Split('\n')
+        let indent (l: string) = l.Length - l.TrimStart(' ').Length
+
+        let common =
+            lines |> Array.filter (fun l -> l.Trim() <> "") |> Array.map indent |> Array.fold min Int32.MaxValue
+
+        let mutable fenced = false
+
+        let kept =
+            [ for l in lines ->
+                  let l = if l.Trim() = "" then "" else l.Substring(min common (indent l)).TrimEnd()
+
+                  if l.TrimStart().StartsWith "```" then
+                      fenced <- not fenced
+                      l.Trim()
+                  elif fenced then
+                      l
+                  else
+                      let lead = indent l
+                      l.Substring(0, lead) + Text.RegularExpressions.Regex.Replace(l.Substring lead, @"\s+", " ") ]
+
+        Text.RegularExpressions.Regex.Replace(String.Join("\n", kept), @"\n{3,}", "\n\n").Trim('\n', ' ')
     with _ ->
         ""
 
@@ -267,6 +291,38 @@ let private outcomeOf (kind: string) (outcome: Tambour.Edits.Edits.Outcome) : Ac
     | Tambour.Edits.Edits.Fallback note -> { Kind = kind; Outcome = "fallback"; Note = note }
     | Tambour.Edits.Edits.Refused note -> { Kind = kind; Outcome = "refused"; Note = note }
 
+/// A tooltip's text: each overload's signature, and the first one's documentation; the others are
+/// listed by their signatures alone.
+let private tipOf (id: int) (elements: ToolTipElement list) : Hovered =
+    let shown =
+        elements
+        |> List.collect (function
+            | ToolTipElement.Group items -> items |> List.map (fun i -> text i.MainDescription)
+            | ToolTipElement.CompositionError e -> [ e ]
+            | ToolTipElement.None -> [])
+        |> String.concat "\n"
+
+    let doc =
+        elements
+        |> List.tryPick (function
+            | ToolTipElement.Group(i :: _) -> Some(docOf i.XmlDoc)
+            | _ -> None)
+        |> Option.defaultValue ""
+
+    { Id = id; Text = shorten shown; Doc = doc }
+
+/// Whether a script opens with a top-level `module Name`: its first line that is not blank or a
+/// line comment.
+let ownsModule (script: string) =
+    let first =
+        (if isNull script then "" else script).Split('\n')
+        |> Array.map (fun l -> l.Trim())
+        |> Array.tryFind (fun l -> l <> "" && not (l.StartsWith "//"))
+
+    match first with
+    | Some l -> Text.RegularExpressions.Regex.IsMatch(l, @"^module\s+(rec\s+)?[A-Za-z_][\w.`]*$")
+    | None -> false
+
 /// The language service for one prelude.
 type Service(init: AnalysisInit) =
     let checker = FSharpChecker.Create()
@@ -308,9 +364,14 @@ type Service(init: AnalysisInit) =
 
     let pathOf (path: string) = if String.IsNullOrEmpty path then Path.Combine(Environment.CurrentDirectory, "script.fsx") else path
 
+    /// What goes before a script: the prelude, or as many blank lines where the script opens with a
+    /// module of its own (the project's prelude.fsx), which must come first and is compiled, under
+    /// `#load`, without the prelude's opens.
+    let before (script: string) = if ownsModule script then String.replicate offset "\n" else prelude
+
     let check (path: string) (script: string) =
         let path = pathOf path
-        let full = prelude + script
+        let full = before script + script
         let parse, answer =
             checker.ParseAndCheckFileInProject(path, full.GetHashCode(), SourceText.ofString full, optionsFor path full)
             |> Async.RunSynchronously
@@ -384,25 +445,22 @@ type Service(init: AnalysisInit) =
                 let (ToolTipText elements) = results.GetToolTip(line, columnEnd, lineText, names, FSharpTokenTag.Identifier)
                 elements
 
-        let shown =
-            elements
-            |> List.collect (function
-                | ToolTipElement.Group items -> items |> List.map (fun i -> text i.MainDescription)
-                | ToolTipElement.CompositionError e -> [ e ]
-                | ToolTipElement.None -> [])
-            |> String.concat "\n"
+        tipOf at.Id elements
 
-        // The first overload's documentation; the others are listed by their signatures alone.
-        let doc =
-            elements
-            |> List.tryPick (function
-                | ToolTipElement.Group(i :: _) -> Some(docOf i.XmlDoc)
-                | _ -> None)
-            |> Option.defaultValue ""
+    /// A completion list's entry as its tooltip shows it: the entry of that name in the list at the
+    /// place, nothing where there is none.
+    member _.Describe(entry: Entry) : Hovered =
+        let _, full, parse, results = check entry.Path entry.Text
+        let line = entry.Line + offset
+        let lineText = lineOf full line
+        let partial = QuickParse.GetPartialLongNameEx(lineText, entry.Column - 1)
+        let decls = results.GetDeclarationListInfo(Some parse, line, lineText, partial)
 
-        { Id = at.Id
-          Text = shorten shown
-          Doc = doc }
+        match decls.Items |> Array.tryFind (fun i -> i.NameInList = entry.Name) with
+        | Some item ->
+            let (ToolTipText elements) = item.Description
+            tipOf entry.Id elements
+        | None -> { Id = entry.Id; Text = ""; Doc = "" }
 
     member _.Signature(at: At) : Signatures =
         let _, full, _, results = check at.Path at.Text
@@ -548,6 +606,7 @@ let run (socketPath: string) (app: int) : int =
         | AnalysisRequest.Actions f -> f.Id
         | AnalysisRequest.Act a -> a.Id
         | AnalysisRequest.Plotted f -> f.Id
+        | AnalysisRequest.Describe e -> e.Id
 
     let handle (request: AnalysisRequest) =
         match request, service with
@@ -561,6 +620,7 @@ let run (socketPath: string) (app: int) : int =
         | AnalysisRequest.Check s, Some service -> send (AnalysisReply.Checked(service.Check s))
         | AnalysisRequest.Complete a, Some service -> send (AnalysisReply.Completions(service.Complete a))
         | AnalysisRequest.Hover a, Some service -> send (AnalysisReply.Hovered(service.Hover a))
+        | AnalysisRequest.Describe e, Some service -> send (AnalysisReply.Hovered(service.Describe e))
         | AnalysisRequest.Signature a, Some service -> send (AnalysisReply.Signatures(service.Signature a))
         | AnalysisRequest.Uses a, Some service -> send (AnalysisReply.Used(service.Uses a))
         | AnalysisRequest.Actions f, Some service -> send (AnalysisReply.Actions(service.Actions f))

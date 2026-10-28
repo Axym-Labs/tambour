@@ -93,6 +93,10 @@ let ``a project opens, saves, takes a change from disk back, and exports what re
     Assert.Equal(0, worst)
     window.Close()
 
+/// The tabs on the right: the figure's, then one per table.
+let private sheets (window: #Window) =
+    window.GetVisualDescendants().OfType<TabControl>().Single(fun t -> t.Name = "sheets")
+
 [<AvaloniaFact>]
 let ``a table's edits run the figure again, rename a column in the prelude, undo, and save`` () =
     let dir = (Directory.CreateTempSubdirectory "tambour-tables").FullName
@@ -195,11 +199,11 @@ let ``a table's edits run the figure again, rename a column in the prelude, undo
     let outside = Path.Combine(Path.GetTempPath(), $"readings-{Guid.NewGuid():N}.csv")
     File.WriteAllText(outside, "a,b\n1,2\n3,4\n")
     window.Post(Shell.Import outside)
-    pumpUntil 10.0 "the imported table's tab" (fun () -> window.GetVisualDescendants().OfType<TabItem>().Count() = 3)
-    let name = window.GetVisualDescendants().OfType<TabItem>().Last().Header :?> string
+    pumpUntil 10.0 "the imported table's tab" (fun () -> (sheets window).Items.OfType<TabItem>().Count() = 3)
+    let name = (sheets window).Items.OfType<TabItem>().Last().Header :?> string
     Assert.StartsWith("readings", name)
     window.Post(Shell.RemoveTable name)
-    pumpUntil 10.0 "the table removed" (fun () -> window.GetVisualDescendants().OfType<TabItem>().Count() = 2)
+    pumpUntil 10.0 "the table removed" (fun () -> (sheets window).Items.OfType<TabItem>().Count() = 2)
     File.Delete outside
     window.Close()
 
@@ -250,3 +254,16 @@ let ``two columns selected are plotted, and a row picked in the figure is marked
     pumpUntil 10.0 "the grid shown again" (fun () -> window.GetVisualDescendants().OfType<TableGrid>().Any())
     Assert.Equal<Set<int>>(set [ 7 ], window.GetVisualDescendants().OfType<TableGrid>().Single().Marked)
     window.Close()
+
+/// A project with tables but no script yet opens a new script, not the prelude Tambour wrote for
+/// the tables; a project's own script is opened before it, whatever their names.
+[<Fact>]
+let ``a project opens its own script or a new one, never the prelude`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-noscript").FullName
+    File.WriteAllText(Path.Combine(dir, "prelude.fsx"), "module Prelude\n")
+    Assert.Equal(Path.Combine(dir, "figure.fsx"), (Project.resolve dir).Script)
+    Assert.Empty(Project.scripts dir)
+
+    File.WriteAllText(Path.Combine(dir, "zeta.fsx"), "let x = 1\n")
+    Assert.Equal(Path.Combine(dir, "zeta.fsx"), (Project.resolve dir).Script)
+    Assert.Equal<string[]>([| "zeta.fsx" |], Project.scripts dir)

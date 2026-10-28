@@ -11,6 +11,7 @@ open Avalonia.Controls
 open Avalonia.Headless
 open Avalonia.Headless.XUnit
 open Avalonia.Input
+open Avalonia.Input.Platform
 open Avalonia.Threading
 open Avalonia.VisualTree
 open Tambour
@@ -70,6 +71,34 @@ let ``the window runs its script on F5 and shows the figure with its control`` (
     Assert.Contains(editor.Problems, fun d -> d.Code = "FS0001" && d.Message.Contains "float<m>")
     window.CaptureRenderedFrame().Dispose()
     save window "shell-problem.png"
+
+    // A problem is copied with Ctrl+C on it, and every problem from its menu.
+    let row =
+        window.GetVisualDescendants().OfType<Button>()
+        |> Seq.find (fun b -> b.GetVisualDescendants().OfType<TextBlock>().Any(fun t -> not (isNull t.Text) && t.Text.Contains "FS0001"))
+
+    let clipboard () =
+        let text = window.Clipboard.TryGetTextAsync()
+        pumpUntil 5.0 "the clipboard" (fun () -> text.IsCompleted)
+        text.Result
+
+    row.Focus() |> ignore
+    window.KeyPress(Key.C, RawInputModifiers.Control, PhysicalKey.C, "c")
+    Dispatcher.UIThread.RunJobs()
+    let copied = clipboard ()
+    Assert.StartsWith($"{editor.Problems.[0].StartLine}:", copied)
+    Assert.Contains("FS0001", copied)
+
+    row.ContextMenu.Open row
+    Dispatcher.UIThread.RunJobs()
+    let all = row.ContextMenu.Items.OfType<MenuItem>() |> Seq.find (fun i -> string i.Header = "Copy all problems")
+    all.RaiseEvent(Avalonia.Interactivity.RoutedEventArgs MenuItem.ClickEvent)
+    Dispatcher.UIThread.RunJobs()
+    let everything = clipboard ()
+
+    for d in editor.Problems do
+        Assert.Contains($"{d.StartLine}:{d.StartColumn + 1} {d.Severity} {d.Code}: ", everything)
+    row.ContextMenu.Close()
     window.Close()
 
 [<AvaloniaFact>]
@@ -125,4 +154,48 @@ let ``an action writes the script, and the figure is run again`` () =
     pumpUntil 30.0 "the figure run again" (fun () -> not (obj.ReferenceEquals(pane.Picture, shown)))
     window.KeyPress(Key.Y, RawInputModifiers.Control, PhysicalKey.Y, null)
     pumpUntil 10.0 "the action done again" (fun () -> editor.Text = titled)
+    window.Close()
+
+/// Every leaf of a menu, and its parents' leaves.
+let rec private leaves (items: Collections.IEnumerable) : MenuItem list =
+    [ for item in items do
+          match item with
+          | :? MenuItem as m when m.ItemCount > 0 -> yield! leaves m.Items
+          | :? MenuItem as m -> m
+          | _ -> () ]
+
+/// Gate 14 (b): every command is in its menu with its shortcut, and every key of it takes that
+/// command, and no other: the menus and the keys are made from one table, which this walks from
+/// the menus' side. A key and its menu entry then do the same, shown for the bottom panel.
+[<AvaloniaFact>]
+let ``every command is in a menu with its shortcut, and its keys do what the entry does`` () =
+    let window = new Shell.MainWindow("let x = 1\n")
+    window.Show()
+    Dispatcher.UIThread.RunJobs()
+    let menu = window.GetVisualDescendants().OfType<Menu>().Single()
+    let shown = leaves menu.Items
+
+    for c in Shell.commands do
+        match shown |> List.tryFind (fun m -> string m.Header = c.Header) with
+        | None -> failwith $"{c.Header} is in no menu"
+        | Some item ->
+            Assert.Equal(Option.toObj c.Gesture, item.InputGesture)
+
+            for g in Option.toList c.Gesture @ c.Also do
+                Assert.Equal(Some c.Header, Shell.commandFor g.Key g.KeyModifiers |> Option.map (fun c -> c.Header))
+
+    let keys = Shell.commands |> List.collect (fun c -> Option.toList c.Gesture @ c.Also) |> List.map string
+    Assert.Equal<string list>(List.distinct keys, keys)
+
+    let bottom () =
+        window.GetVisualDescendants().OfType<TabControl>().Single(fun t -> t.Items.OfType<TabItem>().Any(fun i -> string i.Header = "Output"))
+
+    Assert.True((bottom ()).IsVisible)
+    window.KeyPress(Key.J, RawInputModifiers.Control, PhysicalKey.J, "j")
+    Dispatcher.UIThread.RunJobs()
+    Assert.False((bottom ()).IsVisible, "Ctrl+J left the bottom panel open")
+    let entry = shown |> List.find (fun m -> string m.Header = "_Bottom panel")
+    entry.RaiseEvent(Avalonia.Interactivity.RoutedEventArgs MenuItem.ClickEvent)
+    Dispatcher.UIThread.RunJobs()
+    Assert.True((bottom ()).IsVisible, "its menu entry left the bottom panel closed")
     window.Close()

@@ -12,6 +12,9 @@ let private usage = "usage: tambour [<script or folder> | --self-check | --check
 
 [<MethodImpl(MethodImplOptions.NoInlining)>]
 let private window (path: string option) =
+    let settings = Paths.configDirectory ()
+    App.SettingsDirectory <- settings
+    App.Theme <- (Preferences.read settings).Theme
     App.MainWindow <- fun () -> new Shell.MainWindow(Shell.example, path) :> Window
     App.builder().StartWithClassicDesktopLifetime [||]
 

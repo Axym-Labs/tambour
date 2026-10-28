@@ -78,9 +78,12 @@ let ``a pasted block runs past the end by adding rows, and Delete blanks the sel
     Assert.Equal(3, cleared.Length)
     Assert.Contains(Cells("trials", 2, 0, Texts [| "a"; "b" |], Texts [| ""; "" |]), cleared)
 
-/// Gate: a frame of the grid over a million rows, wherever it is scrolled, inside 16 ms.
+/// Gate: the grid's drawing of a frame over a million rows, wherever it is scrolled, inside 16 ms.
+/// Its own Render is what is timed (the author's ruling): the whole frame, the headless raster and
+/// the window's copy into a bitmap of its own, is logged beside it, and those copies set off full
+/// collections whose length is the suite's heap, not the grid.
 [<AvaloniaFact>]
-let ``a frame over a million rows is drawn within 16 ms wherever it is scrolled`` () =
+let ``the grid draws a frame over a million rows within 16 ms wherever it is scrolled`` () =
     let rows = 1_000_000
     let column i unit = { Name = $"c{i}"; Unit = unit; Values = Floats(Array.init rows (fun r -> float r * float (i + 1) / 7.0)) }
     let table = { Name = "big"; Columns = [ column 0 "s"; column 1 "m"; column 2 "V/m"; column 3 "ppm"; column 4 null ] }
@@ -88,10 +91,24 @@ let ``a frame over a million rows is drawn within 16 ms wherever it is scrolled`
     let window = Window(Width = 1280.0, Height = 800.0, Content = grid)
     window.Show()
 
-    for _ in 1..3 do
-        window.CaptureRenderedFrame().Dispose()
-
+    // A warm-up where the timed frames will be, so none of them is the first to run its code.
     let random = Random 7
+    let warm n =
+        for _ in 1..n do
+            grid.Top <- random.Next rows
+            window.CaptureRenderedFrame().Dispose()
+
+    warm 5
+
+    // What the earlier tests leave on the heap (2.7 GB in the full suite) is collected first, and two
+    // more frames bring back the caches the collection swept.
+    GC.Collect()
+    GC.WaitForPendingFinalizers()
+    GC.Collect()
+    warm 2
+
+    let collections () = [ for g in 0..2 -> GC.CollectionCount g ]
+    let before = collections ()
     let times = ResizeArray()
     let recorded = ResizeArray()
 
@@ -101,6 +118,8 @@ let ``a frame over a million rows is drawn within 16 ms wherever it is scrolled`
         use frame = window.CaptureRenderedFrame()
         times.Add clock.Elapsed.TotalMilliseconds
         recorded.Add grid.LastRender
+
+    let collected = List.map2 (-) (collections ()) before
 
     // What a frame of this window costs with no table in it: the headless raster and its copy.
     grid.Table <- None
@@ -116,6 +135,7 @@ let ``a frame over a million rows is drawn within 16 ms wherever it is scrolled`
     log $"""the same window empty: median {(Seq.sort empty |> Array.ofSeq).[10]:F1} ms"""
     let sorted = times |> Seq.sort |> Array.ofSeq
     log $"""a frame over 10^6 rows, 20 scroll positions: median {sorted.[10]:F1} ms, max {sorted.[19]:F1} ms; the grid's Render alone: median {(Seq.sort recorded |> Array.ofSeq).[10]:F2} ms, max {Seq.max recorded:F2} ms"""
+    log $"collections during them, gen 0/1/2: {collected.[0]}/{collected.[1]}/{collected.[2]}"
 
     match Environment.GetEnvironmentVariable "TAMBOUR_CHECK_OUT" with
     | null | "" -> ()
@@ -124,4 +144,31 @@ let ``a frame over a million rows is drawn within 16 ms wherever it is scrolled`
         use frame = window.CaptureRenderedFrame()
         frame.Save(Path.Combine(dir, "grid.png"), Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default)
 
-    Assert.True(sorted.[19] < limit 16.0, $"the slowest frame took {sorted.[19]:F1} ms")
+    let slowest = Seq.max recorded
+    Assert.True(slowest < limit 16.0, $"the grid's slowest Render took {slowest:F2} ms")
+
+/// A row's header selects the row, Shift or Ctrl extends it; the context menu offers every grid
+/// command, as the Table menu does; a command taken there is one change, as its edits.
+[<AvaloniaFact>]
+let ``a row header selects its row, and the grid's commands are on its context menu`` () =
+    let grid, window, edits, _ = shown trials
+    // Row 1's header: left of the cells, below the column headers (40 px) and row 0 (22 px).
+    let header row = Avalonia.Point(6.0, 40.0 + 22.0 * float row + 11.0)
+    window.MouseDown(header 1, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    window.MouseUp(header 1, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    Assert.Equal(({ Column = 0; Row = 1 }, { Column = 2; Row = 1 }), grid.Selection)
+    window.MouseDown(header 2, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.Shift)
+    window.MouseUp(header 2, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.Shift)
+    Assert.Equal(({ Column = 0; Row = 1 }, { Column = 2; Row = 2 }), grid.Selection)
+
+    let names =
+        grid.ContextMenu.Items
+        |> Seq.choose (function :? MenuItem as m -> Some(string m.Header) | _ -> None)
+        |> List.ofSeq
+
+    Assert.Equal<string list>(GridCommand.all |> List.map (fun (_, name, _) -> name), names)
+
+    grid.Run GridCommand.DuplicateRows
+    let expected = AddRows("trials", 3, trials.Columns |> List.map (fun c -> Values.slice 1 2 c.Values))
+    Assert.Equal<TableEdit list>([ expected ], Seq.exactlyOne edits)
+    window.Close()

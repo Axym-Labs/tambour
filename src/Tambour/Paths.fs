@@ -40,3 +40,13 @@ let socketPath (name: string) : string =
         path
     else
         Path.Combine(Path.GetTempPath(), name + ".sock")
+
+/// The directory for this user's settings: `$XDG_CONFIG_HOME/tambour` (`~/.config/tambour` where
+/// that is unset), `%APPDATA%\Tambour` on Windows. Made when a setting is first written.
+let configDirectory () : string =
+    if OperatingSystem.IsWindows() then
+        Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.ApplicationData, "Tambour")
+    else
+        match Environment.GetEnvironmentVariable "XDG_CONFIG_HOME" with
+        | dir when not (String.IsNullOrEmpty dir) -> Path.Combine(dir, "tambour")
+        | _ -> Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".config", "tambour")

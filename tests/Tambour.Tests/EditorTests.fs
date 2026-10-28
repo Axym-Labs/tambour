@@ -61,3 +61,93 @@ let ``a typed dot completes a row's columns, and a binding is renamed wherever i
     pumpUntil 30.0 "the refusal" (fun () -> refused.IsCompleted)
     Assert.False refused.Result
     window.Close()
+
+/// A name typed letter by letter opens the completion, the chosen entry's documentation beside it
+/// once the choice rests; Enter and Tab take the choice.
+[<AvaloniaFact>]
+let ``completion comes as a name is typed, with the chosen entry's documentation`` () =
+    use language = new LanguageService(command, { References = [||]; Prelude = Shell.prelude })
+    let editor = ScriptEditor(Language = language)
+    let window = Window(Width = 800.0, Height = 500.0, Content = editor)
+    window.Show()
+    let script = "/// Four times the number given.\nlet quadrupled (x: float) = 4.0 * x\nlet a = "
+    editor.Text <- script
+    editor.Editor.CaretOffset <- script.Length
+    editor.Editor.TextArea.Focus() |> ignore
+
+    let typeName () =
+        for letter in [ "q"; "u"; "a" ] do
+            window.KeyTextInput letter
+            Dispatcher.UIThread.RunJobs()
+
+        pumpUntil 30.0 "the completion list" (fun () -> editor.Completions.Length > 0)
+        Assert.Contains("quadrupled", editor.Completions)
+
+    let press (key: Avalonia.Input.Key) =
+        window.KeyPress(key, Avalonia.Input.RawInputModifiers.None, Avalonia.Input.PhysicalKey.None, null)
+        window.KeyRelease(key, Avalonia.Input.RawInputModifiers.None, Avalonia.Input.PhysicalKey.None, null)
+        Dispatcher.UIThread.RunJobs()
+
+    typeName ()
+    pumpUntil 30.0 "the entry's documentation" (fun () -> editor.CompletionDocs <> "")
+    Assert.Contains("quadrupled", editor.CompletionDocs)
+    Assert.Contains("Four times the number given.", editor.CompletionDocs)
+    window.CaptureRenderedFrame().Dispose()
+
+    match Environment.GetEnvironmentVariable "TAMBOUR_CHECK_OUT" with
+    | null
+    | "" -> ()
+    | dir ->
+        use frame = window.CaptureRenderedFrame()
+        frame.Save(Path.Combine(dir, "completion-docs.png"), Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default)
+
+    press Avalonia.Input.Key.Enter
+    Assert.EndsWith("let a = quadrupled", editor.Text)
+    Assert.Empty editor.Completions
+    Assert.Equal("", editor.CompletionDocs)
+
+    window.KeyTextInput "\nlet b = "
+    Dispatcher.UIThread.RunJobs()
+    typeName ()
+    press Avalonia.Input.Key.Tab
+    Assert.EndsWith("let b = quadrupled", editor.Text.TrimEnd())
+    window.Close()
+
+/// A call's overloads, shown on its opening parenthesis, go once the caret leaves the call: the
+/// parenthesis taken back, or the caret on to another line.
+[<AvaloniaFact>]
+let ``a call's overloads go once the caret leaves the call`` () =
+    use language = new LanguageService(command, { References = [||]; Prelude = Shell.prelude })
+    let editor = ScriptEditor(Language = language)
+    let window = Window(Width = 800.0, Height = 500.0, Content = editor)
+    window.Show()
+    let script = "let xs = [| 3.0; 1.0 |]\n\nlet s = Array.sortBy"
+    editor.Text <- script
+    editor.Editor.CaretOffset <- script.Length
+    editor.Editor.TextArea.Focus() |> ignore
+
+    let press (key: Avalonia.Input.Key) =
+        window.KeyPress(key, Avalonia.Input.RawInputModifiers.None, Avalonia.Input.PhysicalKey.None, null)
+        window.KeyRelease(key, Avalonia.Input.RawInputModifiers.None, Avalonia.Input.PhysicalKey.None, null)
+        Dispatcher.UIThread.RunJobs()
+
+    let opened () =
+        window.KeyTextInput "("
+        Dispatcher.UIThread.RunJobs()
+        pumpUntil 30.0 "the overloads" (fun () -> editor.ShowsOverloads)
+
+    // Taken back: Backspace removes the parenthesis and the closer put in with it.
+    opened ()
+    press Avalonia.Input.Key.Back
+    Assert.Equal(script, editor.Text)
+    Assert.False editor.ShowsOverloads
+
+    // Typed on inside the call, they stay; on to another line, outside it, they go.
+    opened ()
+    window.KeyTextInput "fun x"
+    Dispatcher.UIThread.RunJobs()
+    Assert.True editor.ShowsOverloads
+    editor.Editor.CaretOffset <- script.IndexOf "\n\n" + 1
+    Dispatcher.UIThread.RunJobs()
+    Assert.False editor.ShowsOverloads
+    window.Close()

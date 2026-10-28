@@ -172,4 +172,63 @@ let ``hover on a library's name shows its documentation`` () =
 [<Fact>]
 let ``documentation reads as text`` () =
     let xml = """<summary>Draws <c>points</c>; see <see cref="T:Marey.Plot.Geom"/>.<para>Second   paragraph.</para></summary><param name="x">ignored</param>"""
-    Assert.Equal("Draws points; see Geom.\n\nSecond paragraph.", Analysis.readable xml)
+    Assert.Equal("Draws `points`; see Geom.\n\nSecond paragraph.", Analysis.readable xml)
+
+    // Markdown as Marey writes it: its lines, less their indent, a code block's spaces kept.
+    let markdown = "<summary>\n **Bold** words,\n two   lines.\n\n ```fsharp\n let x =\n     1\n ```\n</summary>"
+    Assert.Equal("**Bold** words,\ntwo lines.\n\n```fsharp\nlet x =\n    1\n```", Analysis.readable markdown)
+
+/// The prelude Tambour writes for a project's tables opens with `module Prelude`: checked as it
+/// is, nothing is in front of the module, and it has no problems.
+[<Fact>]
+let ``the project's prelude is checked as its own module, without problems`` () =
+    let table: Tambour.Data.Table =
+        { Name = "trial"
+          Columns =
+            [ { Name = "t"; Unit = "s"; Values = Tambour.Data.Floats [| 0.0; 1.0 |] }
+              { Name = "test_results.AUC"; Unit = null; Values = Tambour.Data.Floats [| 0.9; 0.95 |] } ] }
+
+    let prelude = Tambour.Data.Prelude.generate [ { Tambour.Data.Prelude.Table = table; Tambour.Data.Prelude.File = "trial.csv" } ]
+    Assert.True(Analysis.ownsModule prelude)
+    let checkedPrelude = service.Value.Check { Id = 1; Text = prelude; Path = null }
+    Assert.Empty(checkedPrelude.Diagnostics |> Array.filter (fun d -> d.Severity = "error"))
+
+    // An error in such a script is still on its own line.
+    let broken = "// a module of its own\nmodule Mine\n\nlet x: int = \"one\"\n"
+    let error = (service.Value.Check { Id = 2; Text = broken; Path = null }).Diagnostics |> Array.find (fun d -> d.Severity = "error")
+    Assert.Equal(4, error.StartLine)
+    Assert.False(Analysis.ownsModule "module Nested =\n    let x = 1\n")
+
+/// A script that loads the project's prelude completes its tables by name; one that does not
+/// cannot see them.
+[<Fact>]
+let ``a script that loads the prelude completes a table's name`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-complete").FullName
+
+    let table: Tambour.Data.Table =
+        { Name = "pretrained"
+          Columns = [ { Name = "soma_rmse_mv"; Unit = null; Values = Tambour.Data.Floats [| 3.2; 3.5 |] } ] }
+
+    File.WriteAllText(Path.Combine(dir, "prelude.fsx"), Tambour.Data.Prelude.generate [ { Tambour.Data.Prelude.Table = table; Tambour.Data.Prelude.File = "pretrained.csv" } ])
+    let path = Path.Combine(dir, "figure.fsx")
+
+    let namesAt (text: string) =
+        let lines = text.Split('\n')
+        (service.Value.Complete { Id = 1; Text = text; Path = path; Line = lines.Length; Column = lines.[lines.Length - 1].Length }).Items
+        |> Array.map (fun i -> i.Name)
+
+    Assert.Contains("pretrained", namesAt (Shell.newScriptWithTables + "let a = pre"))
+    Assert.DoesNotContain("pretrained", namesAt "let a = pre")
+
+/// A completion list's entry is described as its hover would be: its signature and its
+/// documentation; a name the list does not hold has nothing.
+[<Fact>]
+let ``a completion entry is described by its signature and documentation`` () =
+    let text = "/// Twice the number given.\nlet doubled (x: float) = 2.0 * x\nlet a = dou"
+    let entry name : Entry = { Id = 4; Text = text; Path = null; Line = 3; Column = "let a = dou".Length; Name = name }
+    let described = service.Value.Describe(entry "doubled")
+    Assert.Equal(4, described.Id)
+    Assert.Contains("doubled", described.Text)
+    Assert.Contains("float", described.Text)
+    Assert.Contains("Twice the number given.", described.Doc)
+    Assert.Equal("", (service.Value.Describe(entry "nothingLikeThis")).Text)

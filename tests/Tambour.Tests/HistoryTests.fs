@@ -217,6 +217,18 @@ type TableStep =
     | Rename of at: float * suffix: int
     | AddRows of at: float * count: int
     | RemoveRows of at: float * count: int
+    /// A grid command on a selection, by fractions of the table's width and length.
+    | GridCommand of kind: int * c0: float * c1: float * r0: float * r1: float
+
+/// The grid's commands that edit without a clipboard or a form.
+let private gridKinds =
+    [| Tambour.GridCommand.Cut
+       Tambour.GridCommand.DuplicateRows
+       Tambour.GridCommand.InsertRowAbove
+       Tambour.GridCommand.InsertRowBelow
+       Tambour.GridCommand.DeleteRows
+       Tambour.GridCommand.FillDown
+       Tambour.GridCommand.DeleteColumns |]
 
 let private tableSteps =
     let fraction = Gen.choose (0, 1000) |> Gen.map (fun n -> float n / 1000.0)
@@ -232,7 +244,9 @@ let private tableSteps =
           1, Gen.map RemoveColumn fraction
           1, Gen.map2 (fun at n -> Rename(at, n)) fraction (Gen.choose (0, 99))
           2, Gen.map2 (fun at n -> AddRows(at, n)) fraction (Gen.choose (1, 5))
-          2, Gen.map2 (fun at n -> RemoveRows(at, n)) fraction (Gen.choose (1, 5)) ]
+          2, Gen.map2 (fun at n -> RemoveRows(at, n)) fraction (Gen.choose (1, 5))
+          3,
+          Gen.map3 (fun k (a, b) (c, d) -> GridCommand(k, a, b, c, d)) (Gen.choose (0, gridKinds.Length - 1)) (Gen.zip fraction fraction) (Gen.zip fraction fraction) ]
     |> Gen.listOf
 
 let private trials =
@@ -300,6 +314,16 @@ let private replayTables (session: TableStep list) =
         | RemoveRows(at, n) when t.Rows > 0 ->
             let row = pick at t.Rows
             edit (Tambour.Data.TableEdit.removeRows t row (min n (t.Rows - row)))
+        | GridCommand(k, a, b, c, d) when width > 0 && t.Rows > 0 ->
+            let c0, c1, r0, r1 = pick a width, pick b width, pick c t.Rows, pick d t.Rows
+            let s: Tambour.GridCommand.Selection = { C0 = min c0 c1; C1 = max c0 c1; R0 = min r0 r1; R1 = max r0 r1 }
+
+            match Tambour.GridCommand.edits gridKinds.[k] t s with
+            | [] -> ()
+            | edits ->
+                // One entry for the command, however many edits it holds.
+                state <- { state with Tables = edits |> List.fold Tambour.Data.TableEdit.apply state.Tables }
+                note (recordTables edits history)
         | _ -> ()
 
     let final = state

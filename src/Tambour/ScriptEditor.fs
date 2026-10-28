@@ -34,10 +34,11 @@ type private Typed() =
 
     member _.Changed = changed.Publish
 
-module private Shown =
+/// How the editor shows things outside its text: a completion's name, a signature in a tooltip.
+module Shown =
 
     /// The editor's font, and the code in its tooltips.
-    let code = FontFamily "Cascadia Code,Consolas,DejaVu Sans Mono,monospace"
+    let code = Palette.code
 
     /// Which characters of a name the typed text matches, in order and ignoring case; none where it
     /// does not match them all.
@@ -68,6 +69,21 @@ module private Shown =
 
         block.Inlines <- inlines
 
+    /// What a keyword makes the name after it.
+    let private naming =
+        Map.ofList
+            [ "module", "namespace"
+              "namespace", "namespace"
+              "from", "namespace"
+              "type", "type"
+              "class", "type"
+              "struct", "struct"
+              "interface", "interface"
+              "union", "type"
+              "exception", "type"
+              "enum", "enum"
+              "delegate", "type" ]
+
     let private keywords =
         set [ "val"; "member"; "property"; "type"; "module"; "namespace"; "new"; "static"; "abstract"; "override"
               "union"; "case"; "active"; "pattern"; "field"; "event"; "mutable"; "inherit"; "interface"; "exception"
@@ -84,27 +100,47 @@ module private Shown =
         let mutable expectType = false
         let mutable depth = 0
         let mutable previous = ""
+        let mutable lineStart = true
+        // The kind the next name is, after `module`, `type` and the like.
+        let mutable nameKind = "function"
+        // The colour of the name before a dot, which the name after it continues.
+        let mutable last: IBrush = plain
+        let mutable dotted: IBrush option = None
 
         for m in pieces.Matches text do
             let p = m.Value
 
-            let colour: IBrush =
+            let coloured: IBrush =
                 if Char.IsWhiteSpace p.[0] then
                     if p.Contains '\n' then
                         named <- false
                         expectType <- false
                         depth <- 0
+                        lineStart <- true
+                        nameKind <- "function"
 
                     plain
                 elif Char.IsLetter p.[0] || p.[0] = '_' then
-                    if depth = 0 && not expectType && keywords.Contains p then brush "keyword"
-                    elif depth > 0 || expectType then brush "type"
+                    // `from Marey` under a module's or type's name: where it is from.
+                    let isFrom = p = "from" && lineStart
+                    lineStart <- false
+
+                    if depth = 0 && not expectType && (keywords.Contains p || isFrom) then
+                        match naming.TryFind p with
+                        | Some kind when not named -> nameKind <- kind
+                        | _ -> ()
+
+                        brush "keyword"
+                    elif depth > 0 || expectType then
+                        brush "type"
                     elif not named then
                         named <- true
-                        brush "function"
+                        brush nameKind
                     else
                         brush "parameter"
                 else
+                    lineStart <- false
+
                     match p with
                     | "<" -> depth <- depth + 1
                     | ">" when previous = "-" -> expectType <- true
@@ -119,6 +155,13 @@ module private Shown =
 
                     plain
 
+            let colour =
+                match dotted with
+                | Some qualified when Char.IsLetter p.[0] || p.[0] = '_' -> qualified
+                | _ -> coloured
+
+            dotted <- if p = "."&& (Char.IsLetter previous.[0] || previous.[0] = '_') then Some last else None
+            last <- colour
             previous <- p
             inlines.Add(Run(p, Foreground = colour))
 
@@ -364,7 +407,7 @@ type private Classes() =
 /// The script editor: AvaloniaEdit with F# highlighting, the grammar's and the compiler's, in the
 /// colours of the app's light or dark theme, and what the language service says about the script.
 /// Problems are underlined and their messages shown on hover, the symbol at the caret is marked
-/// where it is used and the bracket at it with its match, a dot or Ctrl+Space completes, a
+/// where it is used and the bracket at it with its match, a name typed, a dot or Ctrl+Space completes, a
 /// parenthesis or a comma shows the call's overloads, the pointer resting on a name shows its
 /// tooltip, and F2 renames a binding the script makes. Enter, Tab, Shift+Tab and Backspace indent
 /// as F# is indented, and brackets and quotes are closed as they are opened.
@@ -372,7 +415,7 @@ type ScriptEditor() as this =
     inherit UserControl()
 
     let editor =
-        TextEditor(ShowLineNumbers = true, FontFamily = Shown.code, FontSize = 13.0)
+        TextEditor(ShowLineNumbers = true, FontFamily = Shown.code, FontSize = 14.0)
 
     let registry = RegistryOptions ThemeName.LightPlus
     let textMate = TextMate.InstallTextMate(editor, registry, true, null)
@@ -386,6 +429,7 @@ type ScriptEditor() as this =
 
     let edited = Event<History.TextEdit * string>()
     let problemsChanged = Event<Diagnostic[]>()
+    let caretMoved = Event<int * int>()
 
     let mutable language: LanguageService = Unchecked.defaultof<_>
     let mutable path: string = null
@@ -394,7 +438,18 @@ type ScriptEditor() as this =
     let mutable settingText = false
     let mutable completion: CompletionWindow = null
     let mutable typed = Typed()
+    /// Whether the completion open came by itself, as a name was typed.
+    let mutable unasked = false
+    /// Where the name begins whose list, come by itself, was closed: it does not come again in it.
+    let mutable quietAt = -1
+    /// Counts the choices made in a completion list, so a description of an earlier one is set aside.
+    let mutable described = 0
+    /// The description shown beside the completion list, as text; empty where none is.
+    let mutable describedText = ""
     let mutable overloads: OverloadInsightWindow = null
+    /// The opening parenthesis of the call whose overloads are shown; they go once the caret is
+    /// in another call or none.
+    let mutable overloadsCall: int option = None
     let mutable look = Palette.light
     let mutable dark = false
 
@@ -482,24 +537,108 @@ type ScriptEditor() as this =
 
         s
 
-    let complete () =
+    /// A name's signature in its colours, and its documentation below it.
+    let describedView (h: Hovered) : Control =
+        let panel = StackPanel(Spacing = 6.0)
+
+        panel.Children.Add(
+            TextBlock(Inlines = Shown.signature look h.Text, FontFamily = Shown.code, TextWrapping = TextWrapping.Wrap)
+        )
+
+        if not (String.IsNullOrWhiteSpace h.Doc) then
+            panel.Children.Add(Markdown.view look h.Doc)
+
+        panel
+
+    /// Beside a completion list, the chosen entry's signature and documentation, once the choice
+    /// has rested on it: the list and this panel side by side in the list's popup.
+    let withDocs (window: CompletionWindow) =
+        let docs =
+            Border(
+                Background = SolidColorBrush look.Background,
+                BorderBrush = SolidColorBrush look.Line,
+                BorderThickness = Thickness(1.0),
+                Padding = Thickness(10.0, 8.0),
+                Width = 400.0,
+                MaxHeight = 320.0,
+                IsVisible = false
+            )
+
+        let list = window.CompletionList
+        // Wide enough for a long name, as AvaloniaEdit's own width cut them short, and the popup
+        // past its own cap of 550 to hold the panel too.
+        list.Width <- 280.0
+        window.MaxWidth <- list.Width + docs.Width
+        window.Child <- null
+        let side = DockPanel()
+        DockPanel.SetDock(docs, Dock.Right)
+        side.Children.Add docs
+        side.Children.Add list
+        window.Child <- side
+
+        list.SelectionChanged.Add(fun _ ->
+            described <- described + 1
+            let mine = described
+            let current () = mine = described && obj.ReferenceEquals(completion, window)
+
+            match list.SelectedItem with
+            | null ->
+                docs.IsVisible <- false
+                describedText <- ""
+            | item ->
+                after 350 current (fun () ->
+                    let line, column = caret ()
+                    let text = editor.Text
+
+                    ask (fun l -> l.DescribeAsync(text, path, line, column, item.Text)) (fun h ->
+                        if current () then
+                            if String.IsNullOrWhiteSpace h.Text then
+                                docs.IsVisible <- false
+                                describedText <- ""
+                            else
+                                docs.Child <- ScrollViewer(Content = describedView h)
+                                docs.IsVisible <- true
+                                describedText <- h.Text + (if String.IsNullOrWhiteSpace h.Doc then "" else "\n" + h.Doc))))
+
+    /// Whether a completion's name takes what was typed of it.
+    let takes (typedText: string) (name: string) = typedText = "" || Array.exists id (Shown.matched name typedText)
+
+    /// Opens the completion list at the caret: asked for (a dot, Ctrl+Space), or come by itself
+    /// as a name is typed, and then only where something completes what was typed.
+    let complete (byItself: bool) =
         let line, column = caret ()
         let text = editor.Text
 
         ask (fun l -> l.CompleteAsync(text, path, line, column)) (fun c ->
-            if c.Items.Length > 0 then
+            let start = wordStart ()
+            let sofar = editor.Document.GetText(start, editor.CaretOffset - start)
+
+            let wanted =
+                not byItself
+                || (isNull completion && start <> quietAt && Typing.completesAsTyped editor.Text editor.CaretOffset
+                    && c.Items |> Array.exists (fun i -> takes sofar i.Name))
+
+            if c.Items.Length > 0 && wanted then
                 if not (isNull completion) then completion.Close()
                 let window = CompletionWindow(editor.TextArea)
-                window.StartOffset <- wordStart ()
+                withDocs window
+                window.StartOffset <- start
                 typed <- Typed()
-                typed.Text <- editor.Document.GetText(window.StartOffset, editor.CaretOffset - window.StartOffset)
+                typed.Text <- sofar
 
                 for item in c.Items do
                     window.CompletionList.CompletionData.Add(CompletionItem(item, look, typed))
 
-                window.Closed.Add(fun _ -> completion <- null)
+                window.Closed.Add(fun _ ->
+                    if obj.ReferenceEquals(completion, window) then
+                        if unasked then quietAt <- window.StartOffset
+                        describedText <- ""
+                        completion <- null)
+
                 completion <- window
-                window.Show())
+                unasked <- byItself
+                window.Show()
+                if sofar <> "" then window.CompletionList.SelectItem sofar)
 
     let signature () =
         let line, column = caret ()
@@ -508,17 +647,32 @@ type ScriptEditor() as this =
         ask (fun l -> l.SignatureAsync(text, path, line, column)) (fun s ->
             if not (isNull overloads) then overloads.Close()
 
-            if s.Methods.Length > 0 then
+            let call = Typing.enclosingCall editor.Text editor.CaretOffset
+
+            if s.Methods.Length > 0 && call.IsSome then
                 let window = OverloadInsightWindow(editor.TextArea, Provider = Overloads(s.Methods, s.Active))
-                window.Closed.Add(fun _ -> overloads <- null)
+
+                window.Closed.Add(fun _ ->
+                    if obj.ReferenceEquals(overloads, window) then
+                        overloads <- null)
+
                 overloads <- window
+                overloadsCall <- call
                 window.Show())
 
     /// What typing a character sets off: completion after a dot, the overloads after an opening
     /// parenthesis or a comma.
     let reactTo (input: string) =
         match input with
-        | "." -> complete ()
+        | "." -> complete false
+        | letter when
+            letter.Length = 1
+            && isNull completion
+            && (Char.IsLetterOrDigit letter.[0] || letter.[0] = '_')
+            && wordStart () <> quietAt
+            && Typing.completesAsTyped editor.Text editor.CaretOffset
+            ->
+            complete true
         | "("
         | "," -> signature ()
         | ")" -> if not (isNull overloads) then overloads.Close()
@@ -617,6 +771,10 @@ type ScriptEditor() as this =
         let text () = editor.Text
 
         match e.Key, e.KeyModifiers with
+        | Key.Tab, KeyModifiers.None when not (isNull completion) ->
+            // Tab takes the list's choice, as Enter does; past the list it would move the focus.
+            e.Handled <- true
+            completion.CompletionList.RequestInsertion e
         | Key.Tab, KeyModifiers.None when isNull completion ->
             e.Handled <- true
             let s, t = selection ()
@@ -681,14 +839,8 @@ type ScriptEditor() as this =
         match hovered with
         | Some h when not (String.IsNullOrWhiteSpace h.Text) ->
             texts.Add h.Text
-
-            panel.Children.Add(
-                TextBlock(Inlines = Shown.signature look h.Text, FontFamily = Shown.code, TextWrapping = TextWrapping.Wrap)
-            )
-
-            if not (String.IsNullOrWhiteSpace h.Doc) then
-                texts.Add h.Doc
-                panel.Children.Add(TextBlock(Text = h.Doc, TextWrapping = TextWrapping.Wrap, Opacity = 0.85))
+            if not (String.IsNullOrWhiteSpace h.Doc) then texts.Add h.Doc
+            panel.Children.Add(describedView h)
         | _ -> ()
 
         tipText <- String.Join("\n", texts)
@@ -749,13 +901,17 @@ type ScriptEditor() as this =
     let applyLook () =
         dark <- this.ActualThemeVariant = ThemeVariant.Dark
         look <- Palette.forVariant this.ActualThemeVariant
-        textMate.SetTheme(registry.LoadTheme(if dark then ThemeName.DarkPlus else ThemeName.LightPlus))
+        textMate.SetTheme(Palette.grammarTheme look)
         editor.Background <- SolidColorBrush look.Background
         editor.Foreground <- SolidColorBrush look.Foreground
         editor.LineNumbersForeground <- SolidColorBrush look.LineNumbers
         editor.TextArea.SelectionBrush <- SolidColorBrush look.Selection
         editor.TextArea.TextView.CurrentLineBackground <- SolidColorBrush look.CurrentLine
         editor.TextArea.TextView.CurrentLineBorder <- Pen(Brushes.Transparent, 0.0)
+        // The tips on the editor's page, so code in them is drawn on what its colours are for.
+        this.Resources.["ToolTipBackground"] <- SolidColorBrush look.Background
+        this.Resources.["ToolTipForeground"] <- SolidColorBrush look.Foreground
+        this.Resources.["ToolTipBorderBrush"] <- SolidColorBrush look.Line
         classes.Look <- look
         marks.Look <- look
         editor.TextArea.TextView.Redraw()
@@ -794,6 +950,9 @@ type ScriptEditor() as this =
         // The app keeps the history, so AvaloniaEdit keeps none.
         editor.Document.UndoStack.SizeLimit <- 0
 
+        editor.TextArea.Caret.PositionChanged.Add(fun _ ->
+            caretMoved.Trigger(editor.TextArea.Caret.Line, editor.TextArea.Caret.Column))
+
         editor.TextChanged.Add(fun _ ->
             version <- version + 1
             marks.Uses <- [||]
@@ -817,10 +976,20 @@ type ScriptEditor() as this =
             let line = editor.TextArea.Caret.Line
             closers.RemoveAll(fun a -> a.IsDeleted || a.Line <> line) |> ignore
             marks.Brackets <- Typing.matching editor.Text editor.CaretOffset
+
+            // The overloads go once the caret has left their call: its parenthesis deleted, the
+            // caret past its closer or on to another line outside it.
+            if not (isNull overloads) && Typing.enclosingCall editor.Text editor.CaretOffset <> overloadsCall then
+                overloads.Close()
             redraw ()
 
             if not (isNull completion) && editor.CaretOffset >= completion.StartOffset then
                 typed.Text <- editor.Document.GetText(completion.StartOffset, editor.CaretOffset - completion.StartOffset)
+
+                // A list that came by itself goes once nothing in it takes what was typed.
+                if unasked
+                   && not (completion.CompletionList.CompletionData |> Seq.exists (fun d -> takes typed.Text (string d.Text))) then
+                    completion.Close()
 
             after 300 (fun () -> move = moves) markUses)
 
@@ -832,7 +1001,7 @@ type ScriptEditor() as this =
             match e.Key, e.KeyModifiers with
             | Key.Space, KeyModifiers.Control ->
                 e.Handled <- true
-                complete ()
+                complete false
             | Key.F2, _ ->
                 e.Handled <- true
                 rename ()
@@ -912,6 +1081,12 @@ type ScriptEditor() as this =
     member _.Editor = editor
 
     /// What the open completion list offers, or nothing when none is open.
+    /// The signature and documentation shown beside the completion list; empty where none is.
+    member _.CompletionDocs = describedText
+
+    /// Whether a call's overloads are shown.
+    member _.ShowsOverloads = not (isNull overloads)
+
     member _.Completions =
         if isNull completion then [||] else completion.CompletionList.CompletionData |> Seq.map (fun d -> d.Text) |> Array.ofSeq
 
@@ -940,3 +1115,7 @@ type ScriptEditor() as this =
     /// The language service's problems, after each check.
     [<CLIEvent>]
     member _.ProblemsChanged = problemsChanged.Publish
+
+    /// Where the caret is, as a line and a column from 1, each time it moves.
+    [<CLIEvent>]
+    member _.CaretMoved = caretMoved.Publish

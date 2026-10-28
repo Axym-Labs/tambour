@@ -1,13 +1,30 @@
-/// The editor's colours, light and dark: the page, the problems, and the kinds of thing a script
-/// names, which semantic highlighting and the completion list's glyphs share.
+/// Tambour's two themes, light and dark, one palette each for everything the window draws: the
+/// editor's page, the problems, the kinds of thing a script names (which semantic highlighting and
+/// the completion list's glyphs share), the grid, and Fluent's own controls.
 module Tambour.Palette
 
 open Avalonia.Media
 open Avalonia.Styling
 
 type Look =
-    { Background: Color
+    { /// The editor's page and the grid's cells.
+      Background: Color
       Foreground: Color
+      /// The window's own ground: the panels, and the surround of a figure.
+      Surface: Color
+      /// Headers and boxes raised on the surface or the page.
+      Raised: Color
+      /// The grid's rules and the panels' borders.
+      Line: Color
+      /// Text on the surface, raised or not.
+      Text: Color
+      /// Text that says less: a column's type, a row's number, a note.
+      Dim: Color
+      Accent: Color
+      /// The grid's selection, over its cells.
+      Selected: Color
+      /// Rows a pick marked.
+      Marked: Color
       LineNumbers: Color
       CurrentLine: Color
       Selection: Color
@@ -22,17 +39,29 @@ type Look =
 
 let private rgb (hex: string) = Color.Parse hex
 
-/// The colours of Visual Studio Code's Light+, which the editor's grammar theme is.
+/// The font code is shown in (the editor, the output, a signature): JetBrains Mono, carried in the
+/// app so the editor looks the same on every OS.
+let code = FontFamily "avares://tambour/Fonts#JetBrains Mono, Cascadia Code, Consolas, DejaVu Sans Mono, monospace"
+
+/// The editor's colours are Visual Studio Code's Light+, as its grammar theme is.
 let light =
     { Background = rgb "#FFFFFF"
       Foreground = rgb "#000000"
+      Surface = rgb "#F3F4F6"
+      Raised = rgb "#EAECEF"
+      Line = rgb "#D8DCE1"
+      Text = rgb "#1F2328"
+      Dim = rgb "#57606A"
+      Accent = rgb "#0969DA"
+      Selected = Color.Parse "#330969DA"
+      Marked = Color.Parse "#50F5C028"
       LineNumbers = rgb "#6E7681"
       CurrentLine = rgb "#F3F3F3"
       Selection = rgb "#ADD6FF"
       Uses = Color.Parse "#40A0C8FF"
       Bracket = Color.Parse "#4080A0C0"
       Error = rgb "#D11E1E"
-      Warning = rgb "#9A6700"
+      Warning = rgb "#8A5C00"
       Info = rgb "#1A6FB0"
       Kinds =
         Map.ofList
@@ -53,16 +82,25 @@ let light =
               "operator", rgb "#000000"
               "keyword", rgb "#0000FF" ] }
 
-/// The colours of Visual Studio Code's Dark+, which the editor's grammar theme is.
+/// A dark grey, not black. The editor's colours are Visual Studio Code's Dark+, as its grammar
+/// theme is.
 let dark =
     { Background = rgb "#1E1E1E"
       Foreground = rgb "#D4D4D4"
+      Surface = rgb "#252526"
+      Raised = rgb "#2D2D30"
+      Line = rgb "#3E3E42"
+      Text = rgb "#CCCCCC"
+      Dim = rgb "#A0A4AA"
+      Accent = rgb "#4DA3FF"
+      Selected = Color.Parse "#404DA3FF"
+      Marked = Color.Parse "#50C8A028"
       LineNumbers = rgb "#858585"
       CurrentLine = rgb "#2A2D2E"
       Selection = rgb "#264F78"
       Uses = Color.Parse "#40C8C8C8"
       Bracket = Color.Parse "#50A0A0A0"
-      Error = rgb "#F14C4C"
+      Error = rgb "#FF6464"
       Warning = rgb "#CCA700"
       Info = rgb "#3794FF"
       Kinds =
@@ -85,6 +123,52 @@ let dark =
               "keyword", rgb "#569CD6" ] }
 
 let forVariant (variant: ThemeVariant) = if variant = ThemeVariant.Dark then dark else light
+
+/// The editor's grammar theme for a look: Light+ or Dark+ as Tambour carries them, with the few
+/// colours under 4.5:1 on the page raised to it.
+let grammarTheme (look: Look) =
+    let name = if obj.ReferenceEquals(look, dark) then "dark" else "light"
+    let assembly = typeof<Look>.Assembly
+    use stream = assembly.GetManifestResourceStream $"Tambour.Themes.{name}.json"
+    use reader = new System.IO.StreamReader(stream)
+    TextMateSharp.Internal.Themes.Reader.ThemeReader.ReadThemeSync reader
+
+/// Fluent's resources for a look, so its controls are drawn in the same colours on every OS
+/// rather than in the system's accent and Fluent's own greys.
+let fluent (look: Look) =
+    let isDark = obj.ReferenceEquals(look, dark)
+
+    Avalonia.Themes.Fluent.ColorPaletteResources(
+        Accent = look.Accent,
+        RegionColor = look.Surface,
+        AltHigh = look.Background,
+        BaseHigh = look.Text,
+        ChromeMediumLow = look.Raised,
+        ChromeMedium = (if isDark then rgb "#333337" else rgb "#E2E5E9"),
+        ErrorText = look.Error
+    )
+
+/// Every text colour of a look with the background it is drawn on, by a name for each: the
+/// editor's page, the grid, the panels, the readout over a figure. The grammar theme's colours
+/// are drawn on the page too.
+let pairs (look: Look) : (string * Color * Color) list =
+    [ "text", look.Foreground, look.Background
+      "line numbers", look.LineNumbers, look.Background
+      "error", look.Error, look.Background
+      "warning", look.Warning, look.Background
+      "info", look.Info, look.Background
+      for KeyValue(kind, c) in look.Kinds do
+          $"kind {kind}", c, look.Background
+      "cell", look.Foreground, look.Background
+      "column header", look.Text, look.Raised
+      "column type", look.Dim, look.Raised
+      "row number", look.Dim, look.Raised
+      "panel text", look.Text, look.Surface
+      "panel note", look.Dim, look.Surface
+      "panel error", look.Error, look.Surface
+      "panel warning", look.Warning, look.Surface
+      "readout", look.Text, look.Raised
+      "a doc's code block", look.Foreground, look.Raised ]
 
 /// A completion's glyph, by the name of its `FSharpGlyph` case: the mark it shows, and the kind
 /// whose colour it takes (or `error`).

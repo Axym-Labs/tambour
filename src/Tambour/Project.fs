@@ -19,7 +19,9 @@ type Settings =
       Marey: string
       Skia: SkiaSettings
       /// Where the divider between the script and the figure is, as a fraction of the width.
-      Split: float }
+      Split: float
+      /// The height of the panel under the script, in px; 0 for the app's own.
+      Bottom: float }
 
 /// The Marey this app runs scripts on.
 let mareyVersion =
@@ -33,7 +35,8 @@ let defaults (script: string) =
     { Script = script
       Marey = mareyVersion
       Skia = { Dpi = float Marey.Space.screenDpi; FontFiles = [||] }
-      Split = 0.5 }
+      Split = 0.5
+      Bottom = 0.0 }
 
 let private json = JsonSerializerOptions(WriteIndented = true)
 
@@ -54,9 +57,13 @@ let read (directory: string) : Settings option =
 let write (directory: string) (settings: Settings) =
     File.WriteAllText(Path.Combine(directory, FileName), JsonSerializer.Serialize(settings, json))
 
-/// The project's scripts, by name.
+/// The project's scripts, by name: not the prelude Tambour writes for its tables, which a script
+/// loads but no one writes.
 let scripts (directory: string) : string[] =
-    Directory.GetFiles(directory, "*.fsx") |> Array.map Path.GetFileName |> Array.sort
+    Directory.GetFiles(directory, "*.fsx")
+    |> Array.map Path.GetFileName
+    |> Array.filter (fun name -> name <> Tambour.Data.Prelude.FileName)
+    |> Array.sort
 
 /// What opening a path comes to: the script to show, and the project it belongs to, if any.
 type Opened =

@@ -218,6 +218,15 @@ type At =
       Line: int
       Column: int }
 
+/// An entry of the completion list at a place, by the name the list shows.
+type Entry =
+    { Id: int
+      Text: string
+      Path: string
+      Line: int
+      Column: int
+      Name: string }
+
 /// A stretch of a script, counted as `At` is.
 type Span =
     { StartLine: int
@@ -264,6 +273,8 @@ type AnalysisRequest =
     | Check of Source
     | Complete of At
     | Hover of At
+    /// The signature and documentation of a completion list's entry, answered as a hover.
+    | Describe of Entry
     | Signature of At
     | Uses of At
     /// What each action would come to for this figure, and the columns its rows have.
