@@ -255,6 +255,46 @@ let ``two columns selected are plotted, and a row picked in the figure is marked
     Assert.Equal<Set<int>>(set [ 7 ], window.GetVisualDescendants().OfType<TableGrid>().Single().Marked)
     window.Close()
 
+/// Columns with no unit, as a CSV from elsewhere has them, plotted: the block written for a float
+/// and for an int column compiles and draws, as it does for columns with units.
+[<AvaloniaFact>]
+let ``columns without units are plotted, and the block compiles`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-unitless").FullName
+
+    let runs: Tambour.Data.Table =
+        { Name = "runs"
+          Columns =
+            [ { Name = "step"; Unit = null; Values = Tambour.Data.Ints(Array.init 20 id) }
+              { Name = "auc"; Unit = null; Values = Tambour.Data.Floats(Array.init 20 (fun i -> 0.5 + 0.02 * float i)) }
+              { Name = "loss"; Unit = null; Values = Tambour.Data.Floats(Array.init 20 (fun i -> 1.0 / float (i + 1))) } ] }
+
+    Tambour.Data.Csv.writeFile (Path.Combine(dir, "runs.csv")) runs
+    File.WriteAllText(Path.Combine(dir, "figure.fsx"), "// Figures of the runs.\n")
+    Project.write dir (Project.defaults "figure.fsx")
+    let window = new Shell.MainWindow("", Some dir)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    let editor () = window.GetVisualDescendants().OfType<ScriptEditor>().Single()
+    pumpUntil 30.0 "the project's script" (fun () -> (editor ()).Text.StartsWith "// Figures")
+    let status () = window.GetVisualDescendants().OfType<TextBlock>() |> Seq.map (fun b -> b.Text) |> Seq.filter (fun t -> not (isNull t) && (t.StartsWith "ran in" || t.Contains "compile")) |> String.concat " | "
+    let pane () = window.GetVisualDescendants().OfType<FigurePane>().Single()
+
+    for columns, figure in [ [ 1; 2 ], "fig"; [ 0; 1 ], "fig2" ] do
+        window.Post(Shell.SelectTab 1)
+        pumpUntil 10.0 "the table's tab" (fun () -> window.GetVisualDescendants().OfType<TableGrid>().Any())
+        let grid = window.GetVisualDescendants().OfType<TableGrid>().Single()
+        grid.Select({ Column = List.head columns; Row = 0 }, { Column = List.last columns; Row = 0 })
+        window.Post Shell.PlotSelected
+        pumpUntil 10.0 "the block written" (fun () -> (editor ()).Text.Contains $"let {figure} =")
+
+        (try
+            pumpUntil 30.0 "a clean run" (fun () -> status().StartsWith "ran in")
+         with e -> failwith $"{e.Message}: {status ()}; {(editor ()).Text}")
+
+        pumpUntil 30.0 "the figure" (fun () -> not (isNull (pane ()).Picture))
+
+    window.Close()
+
 /// A project with tables but no script yet opens a new script, not the prelude Tambour wrote for
 /// the tables; a project's own script is opened before it, whatever their names.
 [<Fact>]

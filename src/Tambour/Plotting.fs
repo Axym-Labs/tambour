@@ -7,7 +7,8 @@ open System.Text.RegularExpressions
 open Tambour.Data
 
 /// A column's accessor in a plot block's `x` or `y`: under its witness where the script sees it
-/// typed, as a plain float otherwise; a column that is not a number cannot be an axis.
+/// typed, and otherwise as a plain float under `U.one`, since under `Marey.UnitsOfMeasure` an axis
+/// always takes a witness; a column that is not a number cannot be an axis.
 let private axis (name: string) (c: Column) : Result<string, string> =
     let field = $"r.{Prelude.identifier c.Name}"
 
@@ -15,8 +16,8 @@ let private axis (name: string) (c: Column) : Result<string, string> =
     | Floats _ ->
         match Prelude.witness c.Unit with
         | Some w -> Ok $"{name} {w} (fun r -> {field})"
-        | None -> Ok $"{name} (fun r -> {field})"
-    | Ints _ -> Ok $"{name} (fun r -> float {field})"
+        | None -> Ok $"{name} U.one (fun r -> float {field})"
+    | Ints _ -> Ok $"{name} U.one (fun r -> float {field})"
     | v -> Error $"{c.Name} holds {v.Kind}s, and an axis holds numbers"
 
 /// A name for a new figure the script does not bind yet: `fig`, `fig2`, ….
