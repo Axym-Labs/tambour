@@ -26,7 +26,7 @@ let freshFigure (script: string) =
     Seq.initInfinite (fun i -> if i = 0 then "fig" else $"fig{i + 1}") |> Seq.find (taken.Contains >> not)
 
 /// The script with a figure of the table's selected columns added: the first is x, the second y,
-/// a third the colour. The prelude is loaded and opened at the top where the script does not yet.
+/// a third the colour. The table is in reach by name, its prelude given to every script beside it.
 let plotColumns (script: string) (table: Table) (columns: int list) : Result<string * string, string> =
     match columns |> List.map (fun i -> table.Columns.[i]) with
     | x :: y :: rest ->
@@ -39,13 +39,8 @@ let plotColumns (script: string) (table: Table) (columns: int list) : Result<str
             let ops = [ xOp; yOp ] @ colour @ [ "layer GeomPoint" ]
             let block = String.Join("\n", [ $"let {name} ="; $"    plot {Prelude.identifier table.Name} {{" ] @ (ops |> List.map (fun o -> "        " + o)) @ [ "    }" ])
 
-            let header =
-                [ if not (Regex.IsMatch(script, @"^[ \t]*#load[ \t]+""prelude\.fsx""", RegexOptions.Multiline)) then "#load \"prelude.fsx\""
-                  if not (Regex.IsMatch(script, @"^[ \t]*open[ \t]+Prelude\b", RegexOptions.Multiline)) then "open Prelude" ]
-
             let body = script.TrimEnd()
-            let top = if header.IsEmpty then "" else String.Join("\n", header) + "\n"
-            Ok(top + (if body = "" then "" else body + "\n\n") + block + "\n", name)
+            Ok((if body = "" then "" else body + "\n\n") + block + "\n", name)
     | _ -> Error "select two columns, the x first and then the y"
 
 /// A column's values as the axis has them: a typed float in its coherent SI unit.

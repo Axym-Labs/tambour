@@ -180,18 +180,21 @@ type Session(references: string seq) =
         let ds = diagnostics |> Array.map diagnostic |> Array.map (fun d -> { d with Message = $"{where}: {d.Message}" })
         ds, e |> Option.map (fun e -> $"{where}: {e.Message}")
 
-    /// Brings the project's prelude up to date for a script that loads it: evaluated when its text
-    /// changed, and otherwise each table binding that the app has sent new columns for read again.
-    /// The script's `#load` line is then blanked, its line kept, so it is not compiled again.
+    /// Brings the project's prelude up to date for a script beside it, which has its tables
+    /// whether or not it loads it itself: evaluated and opened when its text changed, and otherwise
+    /// each table binding that the app has sent new columns for read again. A script's own `#load`
+    /// line is then blanked, its line kept, so it is not compiled again.
     let withPrelude (text: string) (path: string) =
         let m = if isNull text then Match.Empty else preludeLoad.Match text
         let file = if String.IsNullOrEmpty path then null else Path.Combine(Path.GetDirectoryName(Path.GetFullPath path), "prelude.fsx")
 
-        if not m.Success || isNull file || not (File.Exists file) then
+        if isNull file || not (File.Exists file) || Path.GetFileName path = "prelude.fsx" then
             Ok(text, false)
         else
             // The line's text goes and its line stays, so the script's lines are where they were.
-            let blanked = text.Remove(m.Index, m.Length).Insert(m.Index, (if m.Value.EndsWith "\r" then "\r" else ""))
+            let blanked =
+                if m.Success then text.Remove(m.Index, m.Length).Insert(m.Index, (if m.Value.EndsWith "\r" then "\r" else ""))
+                else text
             let current = File.ReadAllText file
             let bindings = [ for b in preludeBinding.Matches current -> b.Groups.["binding"].Value, b.Groups.["type"].Value, b.Groups.["table"].Value ]
             let tableOf (literal: string) = Regex.Unescape(literal.Substring(1, literal.Length - 2))
@@ -200,6 +203,8 @@ type Session(references: string seq) =
             if current <> prelude then
                 match fsi.EvalScriptNonThrowing file with
                 | Choice1Of2 _, ds when ds |> Array.forall (fun d -> d.Severity <> FSharpDiagnosticSeverity.Error) ->
+                    // Opened for every script after it, this version over any before.
+                    fsi.EvalInteractionNonThrowing "open Prelude" |> ignore
                     prelude <- current
                     readVersions <- versions ()
                     Ok(blanked, true)

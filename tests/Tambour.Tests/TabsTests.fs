@@ -217,7 +217,7 @@ let ``a workspace keeps its tables in tables/ and its settings in workspace.json
     let dir = (Directory.CreateTempSubdirectory "tambour-workspace").FullName
     Project.makeWorkspace dir
     Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", "runs.csv")) (trial "runs" "auc")
-    File.WriteAllText(Path.Combine(dir, "figure.fsx"), Shell.newScriptWithTables + "let n = runs.Length\n")
+    File.WriteAllText(Path.Combine(dir, "figure.fsx"), "let n = runs.Length\n")
     let window = new Shell.MainWindow("", Some dir)
     window.Show()
     pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
@@ -264,7 +264,7 @@ let ``two tabs each compile against their own tables only`` () =
         Directory.CreateDirectory dir |> ignore
         Project.makeWorkspace dir
         Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", table.Name + ".csv")) table
-        File.WriteAllText(Path.Combine(dir, "figure.fsx"), Shell.newScriptWithTables + script)
+        File.WriteAllText(Path.Combine(dir, "figure.fsx"), script)
         dir
 
     let a = workspace "a" (trial "alpha" "x") "let n = alpha.Length\nlet m = beta.Length\n"
@@ -280,11 +280,11 @@ let ``two tabs each compile against their own tables only`` () =
         pumpUntil 60.0 "the check" (fun () -> editor.Problems.Length > 0)
         editor.Problems
 
-    // Each knows its own table (line 4, under the three lines of the prelude's load) and not the
-    // other's (line 5): b's tab is shown first, then a's.
+    // Each knows its own table (line 1), given it with no line of the script's, and not the
+    // other's (line 2): b's tab is shown first, then a's.
     for other in [ "alpha"; "beta" ] do
         let found = problems ()
-        Assert.All(found, fun p -> Assert.Equal(5, p.StartLine))
+        Assert.All(found, fun p -> Assert.Equal(2, p.StartLine))
         Assert.Contains(found, fun p -> p.Message.Contains other)
         press window Key.Tab RawInputModifiers.Control
 
@@ -323,8 +323,7 @@ let ``a tab in the background drops idle workers, and its next run has its table
         Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", "runs.csv")) (trial "runs" "auc")
 
         let script =
-            Shell.newScriptWithTables
-            + "let fig =\n    plot runs {\n        x U.one (fun r -> r.auc)\n        y U.one (fun r -> r.auc)\n        layer GeomPoint\n    }\n"
+            "let fig =\n    plot runs {\n        x U.one (fun r -> r.auc)\n        y U.one (fun r -> r.auc)\n        layer GeomPoint\n    }\n"
 
         File.WriteAllText(Path.Combine(dir, "figure.fsx"), script)
         let window = new Shell.MainWindow("", Some dir)
@@ -499,7 +498,7 @@ let ``a script opened on its own in a workspace has its tables`` () =
     Project.makeWorkspace dir
     Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", "runs.csv")) (trial "runs" "auc")
     let script = Path.Combine(dir, "second.fsx")
-    File.WriteAllText(script, Shell.newScriptWithTables + "let n = runs.Length\n")
+    File.WriteAllText(script, "let n = runs.Length\n")
     let window = new Shell.MainWindow("", Some script)
     window.Show()
     pumpUntil 10.0 "the script" (fun () -> (editorOf window).Text.Contains "runs.Length")
@@ -633,7 +632,7 @@ let ``a table's rename follows into the prelude and the script, and one undo tak
     let dir = (Directory.CreateTempSubdirectory "tambour-tablename").FullName
     Project.makeWorkspace dir
     Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", "runs.csv")) (trial "runs" "auc")
-    let script = Shell.newScriptWithTables + "let n = runs.Length\n// runs, in a comment\nlet s = \"runs\"\n"
+    let script = "let n = runs.Length\n// runs, in a comment\nlet s = \"runs\"\n"
     File.WriteAllText(Path.Combine(dir, "figure.fsx"), script)
     let window = new Shell.MainWindow("", Some dir)
     window.Show()

@@ -59,7 +59,7 @@ let ``the plot block for two columns compiles under their witnesses, and an unty
     match Plotting.plotColumns "let fig = 1\n" table [ 0; 1; 2 ] with
     | Ok(text, name) ->
         Assert.Equal("fig2", name)
-        Assert.StartsWith("#load \"prelude.fsx\"\nopen Prelude\nlet fig = 1\n\nlet fig2 =\n    plot trials {\n        x U.second (fun r -> r.Time)\n        y U.one (fun r -> float r.conc)\n        color (fun r -> r.Run)\n", text)
+        Assert.StartsWith("let fig = 1\n\nlet fig2 =\n    plot trials {\n        x U.second (fun r -> r.Time)\n        y U.one (fun r -> float r.conc)\n        color (fun r -> r.Run)\n", text)
     | Error e -> failwith e
 
     Assert.True(Plotting.plotColumns "" table [ 2; 0 ] |> Result.isError)

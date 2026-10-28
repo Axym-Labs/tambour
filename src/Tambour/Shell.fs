@@ -185,10 +185,6 @@ let fall =
     }
 """
 
-/// A new script in a project with tables: the prelude loaded and opened, so the tables are in
-/// reach by name, as they are when the script runs outside Tambour.
-let newScriptWithTables = "#load \"prelude.fsx\"\nopen Prelude\n\n"
-
 /// What every script may take for granted.
 let prelude =
     "open Marey\nopen Marey.UnitsOfMeasure\nopen Microsoft.FSharp.Data.UnitSystems.SI.UnitSymbols\n"
@@ -924,11 +920,8 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     tables, unread
                 | None -> [], []
 
-            // A new script in a project with tables begins with them in reach.
-            let text =
-                if File.Exists opened.Script then File.ReadAllText opened.Script
-                elif tables.IsEmpty then ""
-                else newScriptWithTables
+            // A new script begins empty: its project's tables are in reach without a line of it.
+            let text = if File.Exists opened.Script then File.ReadAllText opened.Script else ""
 
             let note =
                 match opened.Settings, unread with

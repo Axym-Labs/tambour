@@ -22,6 +22,12 @@ let private keywords =
           "constraint"; "continue"; "event"; "external"; "include"; "mixin"; "parallel"; "process"; "protected"
           "pure"; "sealed"; "tailcall"; "trait"; "virtual"; "params" ]
 
+/// Whether a script loads the prelude itself, with a `#load "prelude.fsx"` line of its own, as a
+/// script written before the prelude was loaded for it does.
+let loaded (script: string) =
+    not (isNull script)
+    && Regex.IsMatch(script, @"^[ \t]*#load[ \t]+""prelude\.fsx""", RegexOptions.Multiline)
+
 /// A name as an F# identifier: as it is where it is one, in double backticks where it is not.
 let identifier (name: string) =
     if Regex.IsMatch(name, @"^[A-Za-z_][A-Za-z0-9_']*$") && not (keywords.Contains name) then
@@ -156,7 +162,8 @@ let generate (sources: Source list) : string =
     let arrow = sources |> List.exists (fun s -> s.File.EndsWith ".arrow")
 
     line "// Written by Tambour from the project's tables whenever their columns change; an edit here is"
-    line "// lost. A script uses it with #load \"prelude.fsx\" and open Prelude."
+    line "// lost. Tambour loads and opens it for every script beside it; a script run elsewhere says"
+    line "// #load \"prelude.fsx\" and open Prelude."
 
     if arrow then
         line "#if !TAMBOUR"
