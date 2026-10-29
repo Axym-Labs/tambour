@@ -165,6 +165,10 @@ module Sheet =
             ValueNone
         )
 
+    let layout (l: GridLayout) : IAttr<TableGrid> =
+        AttrBuilder<TableGrid>.CreateProperty<GridLayout>("Layout", l, ValueSome(fun (v: TableGrid) -> v.Layout), ValueSome(fun (v: TableGrid, l) -> v.Layout <- l), ValueNone)
+
+    let onLayoutChanged f = subscription "LayoutChanged" (fun g -> g.LayoutChanged) f
     let onEdited f = subscription "Edited" (fun g -> g.Edited) f
     let onSelectionChanged f = subscription "SelectionChanged" (fun g -> g.SelectionChanged) f
     let onRefused f = subscription "Refused" (fun g -> g.Refused) f
@@ -305,6 +309,10 @@ type Model =
       Bottom: float
       /// Whether the figure's actions are shown.
       ActionsOpen: bool
+      /// How each table's columns are shown in its grid, by table name.
+      Layouts: Map<string, GridLayout>
+      /// Whether the right side takes the whole window.
+      FullView: bool
       /// The scripts and projects opened, most recent first, as the window keeps them.
       Recent: string list
       /// The project's scripts on disk, as the file list shows them, and whether it is shown.
@@ -368,6 +376,9 @@ type Msg =
     | ToggleBottom
     | ShowBottom of tab: int
     | ToggleActions
+    | ToggleFullView
+    /// A table's grid laid its columns out anew.
+    | LaidOut of table: string * GridLayout
     /// A divider dragged: where the script's side ends, as a fraction, and the bottom panel's height.
     | Resized of split: float * bottom: float
     /// A grid command from the Table menu or its key, for the table shown.
@@ -451,6 +462,8 @@ let init (script: string) () : Model * Cmd<Msg> =
       BottomTab = 0
       Bottom = defaultBottom
       ActionsOpen = true
+      Layouts = Map.empty
+      FullView = false
       Recent = []
       Files = []
       FilesOpen = true
@@ -524,7 +537,13 @@ let private writeProject (model: Model) =
                 Script = Path.GetFileName path
                 Marey = Project.mareyVersion
                 Split = model.Split
-                Bottom = model.Bottom }
+                Bottom = model.Bottom
+                Columns =
+                    [| for KeyValue(name, l) in model.Layouts ->
+                           { Table = name
+                             Widths = [| for KeyValue(c, w) in l.Widths -> { Column = c; Width = w } |]
+                             Hidden = Array.ofSeq l.Hidden
+                             Collapsed = Array.ofSeq l.Collapsed } : Project.TableColumns |] }
     | _ -> ()
 
 /// The tables by name, as the history holds them.
@@ -760,6 +779,8 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         send env (Request.Evaluate { Text = model.Script; Path = Option.toObj model.Path })
     | Cancel when model.Running ->
         { model with Running = false; Status = "cancelled" }, Cmd.OfTask.attempt env.Workers.CancelAsync () Failed
+    // With nothing running, Escape leaves the full view.
+    | Cancel when model.FullView -> { model with FullView = false }, Cmd.none
     | Cancel -> model, Cmd.none
     | Replied reply ->
         match reply with
@@ -938,6 +959,17 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 Files = (match opened.Project with Some dir -> Project.scripts dir |> Array.map (fun n -> Path.Combine(dir, n)) |> List.ofArray | None -> [])
                 Split = (match opened.Settings with Some s when s.Split > 0.05 && s.Split < 0.95 -> s.Split | _ -> model.Split)
                 Bottom = (match opened.Settings with Some s when s.Bottom > 0.0 -> s.Bottom | _ -> model.Bottom)
+                Layouts =
+                    match opened.Settings with
+                    | Some s ->
+                        let orEmpty (a: 'a[]) = if isNull a then [||] else a
+                        Map.ofList
+                            [ for c in s.Columns do
+                                  c.Table,
+                                  { Widths = Map.ofList [ for w in orEmpty c.Widths -> w.Column, w.Width ]
+                                    Hidden = Set.ofArray (orEmpty c.Hidden)
+                                    Collapsed = Set.ofArray (orEmpty c.Collapsed) } ]
+                    | None -> Map.empty
                 History = History.empty
                 Figures = [||]
                 Selected = -1
@@ -1206,6 +1238,11 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | ToggleBottom -> { model with BottomOpen = not model.BottomOpen }, Cmd.none
     | ShowBottom tab -> { model with BottomOpen = true; BottomTab = tab }, Cmd.none
     | ToggleActions -> { model with ActionsOpen = not model.ActionsOpen }, Cmd.none
+    | ToggleFullView -> { model with FullView = not model.FullView }, Cmd.none
+    | LaidOut(table, layout) ->
+        let next = { model with Layouts = model.Layouts.Add(table, layout) }
+        writeProject next
+        next, Cmd.none
     | Grid kind ->
         // The grid of the table shown, the only one in the window's tree.
         env.Host.GetVisualDescendants() |> Seq.tryPick (function :? TableGrid as g -> Some g | _ -> None) |> Option.iter (fun g -> g.Run kind)
@@ -1778,6 +1815,103 @@ and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Ta
             " · " + String.Join(", ", names) + " selected"
         | _ -> ""
 
+    let layout = model.Layouts.TryFind t.Name |> Option.defaultValue GridLayout.Empty
+    let shownCount = t.Columns |> List.filter (fun c -> not (layout.Hidden.Contains c.Name)) |> List.length
+    let filter = model.Inputs.TryFind "column filter" |> Option.defaultValue ""
+
+    let laidOut (next: GridLayout) = dispatch (LaidOut(t.Name, next))
+
+    // Every column with a check to show or hide it, filtered by name, and collapsed ones marked.
+    let chooser : IView =
+        Button.create [
+            Button.dock Dock.Right
+            Button.height Tokens.Height.control
+            Button.margin (Thickness(0.0, 0.0, Tokens.Space.s1, 0.0))
+            Button.padding (Thickness(Tokens.Space.s2, 0.0, Tokens.Space.s1, 0.0))
+            Button.verticalContentAlignment VerticalAlignment.Center
+            Button.tip "Choose the columns shown"
+            Button.flyout (
+                Flyout.create [
+                    Flyout.content (
+                        StackPanel.create [
+                            StackPanel.width 280.0
+                            StackPanel.spacing Tokens.Space.s2
+                            StackPanel.children [
+                                TextBox.create [
+                                    TextBox.placeHolderText "Filter columns"
+                                    TextBox.text filter
+                                    TextBox.onTextChanged ((fun f -> if f <> filter then dispatch (Typed("column filter", f))), SubPatchOptions.Always)
+                                ]
+                                ScrollViewer.create [
+                                    ScrollViewer.maxHeight (12.0 * Tokens.Height.row)
+                                    ScrollViewer.content (
+                                        StackPanel.create [
+                                            StackPanel.children [
+                                                for c in t.Columns do
+                                                    if filter = "" || c.Name.Contains(filter, StringComparison.OrdinalIgnoreCase) then
+                                                        let shown = not (layout.Hidden.Contains c.Name)
+
+                                                        CheckBox.create [
+                                                            CheckBox.isChecked shown
+                                                            CheckBox.isEnabled (not shown || shownCount > 1)
+                                                            CheckBox.onClick (
+                                                                (fun _ ->
+                                                                    laidOut { layout with Hidden = (if shown then layout.Hidden.Add c.Name else layout.Hidden.Remove c.Name) }),
+                                                                SubPatchOptions.Always
+                                                            )
+                                                            CheckBox.content (
+                                                                StackPanel.create [
+                                                                    StackPanel.orientation Orientation.Horizontal
+                                                                    StackPanel.spacing Tokens.Space.s2
+                                                                    StackPanel.children [
+                                                                        TextBlock.create [ TextBlock.text c.Name ]
+                                                                        if not (String.IsNullOrEmpty c.Unit) then
+                                                                            TextBlock.create [ TextBlock.text c.Unit; TextBlock.fontSize Tokens.Type.small; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.foreground (SolidColorBrush look.Dim) ]
+                                                                        if layout.Collapsed.Contains c.Name then
+                                                                            TextBlock.create [ TextBlock.text "collapsed"; TextBlock.fontSize Tokens.Type.small; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.foreground (SolidColorBrush look.Dim) ]
+                                                                    ]
+                                                                ]
+                                                            )
+                                                        ]
+                                            ]
+                                        ]
+                                    )
+                                ]
+                                DockPanel.create [
+                                    DockPanel.children [
+                                        Button.create [
+                                            Button.dock Dock.Right
+                                            Button.content "Show all"
+                                            Button.background Brushes.Transparent
+                                            Button.onClick ((fun _ -> laidOut { layout with Hidden = Set.empty; Collapsed = Set.empty }), SubPatchOptions.Always)
+                                        ]
+                                        TextBlock.create [
+                                            TextBlock.text $"{shownCount} of {t.Columns.Length} shown"
+                                            TextBlock.verticalAlignment VerticalAlignment.Center
+                                            TextBlock.fontSize Tokens.Type.small
+                                            TextBlock.foreground (SolidColorBrush look.Dim)
+                                        ]
+                                    ]
+                                ]
+                            ]
+                        ]
+                    )
+                ]
+            )
+            Button.content (
+                StackPanel.create [
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.spacing Tokens.Space.s1
+                    StackPanel.children [
+                        glyph "M2.5,3 H13.5 V13 H2.5 Z M6.17,3 V13 M9.83,3 V13" look.Text
+                        TextBlock.create [ TextBlock.text "Columns"; TextBlock.verticalAlignment VerticalAlignment.Center ]
+                        TextBlock.create [ TextBlock.text $"{shownCount} of {t.Columns.Length}"; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.foreground (SolidColorBrush look.Dim) ]
+                        glyph chevron look.Dim
+                    ]
+                ]
+            )
+        ]
+
     DockPanel.create [
         DockPanel.children [
             Border.create [
@@ -1822,6 +1956,7 @@ and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Ta
                                     ]
                                 )
                             ]
+                            chooser
                             StackPanel.create [
                                 StackPanel.dock Dock.Left
                                 StackPanel.orientation Orientation.Horizontal
@@ -1841,7 +1976,10 @@ and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Ta
                                         Border.verticalAlignment VerticalAlignment.Center
                                         Border.background (SolidColorBrush look.Line)
                                     ]
-                                    barButton (Some "M2.5,2.5 V13.5 H13.5 M5,10 L8,6.5 L10,8.5 L13.5,4.5") "Plot selected columns" true [] (Some PlotSelected)
+                                    Border.create [
+                                        Border.tip "Plot selected columns (Ctrl+Shift+P)"
+                                        Border.child (barButton (Some "M2.5,2.5 V13.5 H13.5 M5,10 L8,6.5 L10,8.5 L13.5,4.5") "Plot" true [] (Some PlotSelected))
+                                    ]
                                 ]
                             ]
                             // What the table holds and what is selected, in the room left, cut short there.
@@ -1870,6 +2008,8 @@ and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Ta
                 Sheet.onRefused (fun why -> dispatch (Failed(FormatException why)))
                 Sheet.onHeaderActivated (fun column -> dispatch (EditHeader(t.Name, column)))
                 Sheet.onInsertColumnAt (fun at -> dispatch (EditHeader(t.Name, -1 - at)))
+                Sheet.layout (model.Layouts.TryFind t.Name |> Option.defaultValue GridLayout.Empty)
+                Sheet.onLayoutChanged (fun l -> dispatch (LaidOut(t.Name, l)))
             ]
         ]
     ]
@@ -1920,7 +2060,7 @@ let commands: Command list =
       c "_Edit" "_Undo" "Ctrl+Z" [] Undo (fun m -> not m.History.Done.IsEmpty)
       c "_Edit" "_Redo" "Ctrl+Y" [ "Ctrl+Shift+Z" ] Redo (fun m -> not m.History.Undone.IsEmpty)
       c "_Run" "_Run" "F5" [ "Ctrl+Enter" ] Run always
-      c "_Run" "_Cancel" "Escape" [] Cancel (fun m -> m.Running)
+      c "_Run" "_Cancel" "Escape" [] Cancel (fun m -> m.Running || m.FullView)
       c "_Table" "_New table" "Ctrl+T" [] NewTable always
       c "_Table" "_Import table…" "Ctrl+Shift+I" [] ChooseImport always
       c "_Table" "_Rename table…" "" [] RenameShownTable (fun m -> m.Tab > 0)
@@ -1933,6 +2073,7 @@ let commands: Command list =
       c "_View" "_Bottom panel" "Ctrl+J" [] ToggleBottom always
       c "_View" "_Actions" "Ctrl+Shift+A" [] ToggleActions always
       c "_View" "_Files" "Ctrl+Shift+E" [] ToggleFiles (fun m -> m.Project.IsSome)
+      c "_View" "F_ull view" "Ctrl+Shift+F" [] ToggleFullView always
       c "_View" "_Next tab" "Ctrl+Tab" [] (CycleTab 1) always
       c "_View" "Pre_vious tab" "Ctrl+Shift+Tab" [] (CycleTab -1) always
       c "_View" "Move tab to a _new window" "" [] DetachTab always
@@ -2582,18 +2723,25 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
             [ addTable ]
             [ if model.Tab = 0 then
                   paneAction "M2,4.5 H14 M2,11.5 H14 M5.5,2.75 V6.25 M10.5,9.75 V13.25" "Show or hide the figure's actions (Ctrl+Shift+A)" model.ActionsOpen (fun () -> dispatch ToggleActions)
-                  paneAction "M8,1.75 A6.25,6.25 0 1 1 7.99,1.75 Z M8,7.25 V11.25 M8,4.8 V4.81" "Drag to zoom · Shift+drag pans · double-click resets" false ignore ]
+                  paneAction "M8,1.75 A6.25,6.25 0 1 1 7.99,1.75 Z M8,7.25 V11.25 M8,4.8 V4.81" "Drag to zoom · Shift+drag pans · double-click resets" false ignore
+              if model.FullView then
+                  paneAction "M6,2.5 V6 H2.5 M10,2.5 V6 H13.5 M13.5,10 H10 V13.5 M2.5,10 H6 V13.5" "Leave the full view (Escape, Ctrl+Shift+F)" true (fun () -> dispatch ToggleFullView)
+              else
+                  paneAction "M2.5,6 V2.5 H6 M10,2.5 H13.5 V6 M13.5,10 V13.5 H10 M6,13.5 H2.5 V10" "Full view (Ctrl+Shift+F)" false (fun () -> dispatch ToggleFullView) ]
 
     DockPanel.create [
         DockPanel.background (brush look.Surface)
         DockPanel.children [
             toolbar
             statusBar
+            // Always in its place, hidden rather than left out: a child left out moves the ones
+            // after it, and the editor would be made anew.
             match model.Project with
-            | Some dir when model.FilesOpen -> filesPanel dir
-            | _ -> ()
+            | Some dir -> Border.create [ DockPanel.dock Dock.Left; Border.isVisible (model.FilesOpen && not model.FullView); Border.child (filesPanel dir) ]
+            | None -> Border.create [ DockPanel.dock Dock.Left; Border.isVisible false ]
             Grid.create [
-                Grid.columnDefinitions $"{inv split}*,4,{inv (1.0 - split)}*"
+                // The full view gives the right side the whole width.
+                Grid.columnDefinitions (if model.FullView then "0,0,*" else $"{inv split}*,4,{inv (1.0 - split)}*")
                 Grid.children [
                     Grid.create [
                         Grid.column 0

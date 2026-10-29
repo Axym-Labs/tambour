@@ -756,3 +756,44 @@ let ``deleting a workspace's only script names its tables, settings and prelude`
 
     Assert.True(File.Exists(Path.Combine(dir, "tables", "runs.csv")))
     closeAll window
+
+/// Gate 16 (b), kept: a table's column layout is written to its workspace and back at the next
+/// start; and the full view gives the right side the whole window until Escape.
+[<AvaloniaFact>]
+let ``a table's columns as laid out come back at the next start, and the full view leaves on Escape`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-layout").FullName
+    Project.makeWorkspace dir
+    Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", "runs.csv")) (trial "runs" "auc")
+    File.WriteAllText(Path.Combine(dir, "figure.fsx"), "let n = runs.Length\n")
+    let laid: GridLayout = { Widths = Map.ofList [ "auc", 150.0 ]; Hidden = Set.empty; Collapsed = set [ "auc" ] }
+
+    let window = new Shell.MainWindow("", Some dir)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    pumpUntil 10.0 "the script" (fun () -> (editorOf window).Text.Contains "runs.Length")
+    window.Post(Shell.SelectTab 1)
+    window.Post(Shell.LaidOut("runs", laid))
+    pumpUntil 5.0 "the layout written" (fun () -> File.ReadAllText(Path.Combine(dir, Project.WorkspaceFile)).Contains "Collapsed")
+
+    // The full view: the editor gets no width, and Escape gives it back.
+    let editor = editorOf window
+    window.Post Shell.ToggleFullView
+    pumpUntil 5.0 "the full view" (fun () -> window.CaptureRenderedFrame().Dispose(); editor.Bounds.Width = 0.0)
+    // The editor itself stays: hidden, not made anew.
+    Assert.Same(editor, editorOf window)
+    // Escape from the table's grid, where the focus is in the full view.
+    (window.Active.GetVisualDescendants().OfType<TableGrid>() |> Seq.head).Focus() |> ignore
+    // Escape cancels a run first; with none running it leaves the full view.
+    pumpUntil 30.0 "the first run's end" (fun () ->
+        window.Active.GetVisualDescendants().OfType<TextBlock>() |> Seq.exists (fun b -> not (isNull b.Text) && b.Text.StartsWith "ran in"))
+    press window Key.Escape RawInputModifiers.None
+    pumpUntil 5.0 "the full view left" (fun () -> window.CaptureRenderedFrame().Dispose(); editor.Bounds.Width > 0.0)
+    closeAll window
+
+    let again = new Shell.MainWindow("", Some dir)
+    again.Show()
+    pumpUntil 60.0 "the workers' start again" (fun () -> again.Started.IsCompleted)
+    again.Post(Shell.SelectTab 1)
+    pumpUntil 10.0 "the grid with its layout" (fun () ->
+        again.Active.GetVisualDescendants().OfType<TableGrid>() |> Seq.exists (fun g -> g.Layout = laid))
+    closeAll again
