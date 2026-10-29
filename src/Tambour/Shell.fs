@@ -602,7 +602,17 @@ let private withTables (model: Model) (tables: Map<string, Tambour.Data.Table>) 
         |> List.filter (fun (name, _) -> not (kept |> List.exists (fun s -> s.Table.Name = name)))
         |> List.map (fun (name, t) -> { Tambour.Data.Prelude.Table = t; Tambour.Data.Prelude.File = name + ".csv" })
 
-    { model with Tables = kept @ added }
+    // A renamed table's column layout goes with it to the new name.
+    let layouts =
+        model.Tables
+        |> List.fold
+            (fun (m: Map<string, GridLayout>) s ->
+                match tables.ContainsKey s.Table.Name, m.TryFind s.Table.Name, renamed s with
+                | false, Some l, Some r -> m.Remove(s.Table.Name).Add(r.Table.Name, l)
+                | _ -> m)
+            model.Layouts
+
+    { model with Tables = kept @ added; Layouts = layouts }
 
 /// The model and what follows once the script and the tables are `state`: a table that changed
 /// is sent to the worker, the prelude is written again when the columns changed, and the figure
@@ -622,6 +632,8 @@ let private toState (env: Env) (model: Model) (state: History.State) (schema: bo
         match next.Project with
         | Some dir -> Tables.writePrelude dir next.Tables |> ignore
         | None -> ()
+
+    if not (obj.ReferenceEquals(next.Layouts, model.Layouts)) then writeProject next
 
     next,
     Cmd.OfTask.either

@@ -798,6 +798,35 @@ let ``a table's columns as laid out come back at the next start, and the full vi
         again.Active.GetVisualDescendants().OfType<TableGrid>() |> Seq.exists (fun g -> g.Layout = laid))
     closeAll again
 
+/// A table renamed keeps its column layout under the new name, in the grid and the workspace,
+/// and an undo takes it back to the old name with the table.
+[<AvaloniaFact>]
+let ``a table's rename carries its column layout, and an undo brings it back`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-layout-rename").FullName
+    Project.makeWorkspace dir
+    Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", "runs.csv")) (trial "runs" "auc")
+    File.WriteAllText(Path.Combine(dir, "figure.fsx"), "let n = 1\n")
+    let laid: GridLayout = { Widths = Map.ofList [ "auc", 150.0 ]; Hidden = Set.empty; Collapsed = set [ "auc" ] }
+    let workspace () = File.ReadAllText(Path.Combine(dir, Project.WorkspaceFile))
+
+    let window = new Shell.MainWindow("", Some dir)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    pumpUntil 10.0 "the script" (fun () -> (editorOf window).Text.Contains "let n")
+    window.Post(Shell.SelectTab 1)
+    window.Post(Shell.LaidOut("runs", laid))
+    pumpUntil 5.0 "the layout written" (fun () -> workspace().Contains "Collapsed")
+
+    let grid () = window.Active.GetVisualDescendants().OfType<TableGrid>() |> Seq.tryHead
+    window.Post(Shell.RenameTableNow("runs", "trials", false))
+    pumpUntil 5.0 "the layout under the new name" (fun () -> workspace().Contains "\"trials\"" && not (workspace().Contains "\"runs\""))
+    pumpUntil 5.0 "the grid with its layout" (fun () -> grid () |> Option.exists (fun g -> g.Layout = laid))
+
+    window.Post Shell.Undo
+    pumpUntil 5.0 "the layout back under the old name" (fun () -> workspace().Contains "\"runs\"" && not (workspace().Contains "\"trials\""))
+    pumpUntil 5.0 "the grid with its layout again" (fun () -> grid () |> Option.exists (fun g -> g.Layout = laid))
+    closeAll window
+
 /// The window's place and size, and which panes are open, are kept in the settings and back at
 /// the next start; a pane closed in one tab is closed in the next one opened.
 [<AvaloniaFact>]
