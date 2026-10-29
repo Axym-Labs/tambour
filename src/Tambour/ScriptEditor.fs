@@ -196,6 +196,23 @@ module Shown =
 
 /// One completion as the completion list shows and inserts it: its kind's glyph, and its name in
 /// the kind's colour with what has been typed of it in bold. The kind's name is its description.
+/// Where a hover's tip goes beside the hovered word.
+module Tip =
+
+    type Side =
+        | Above
+        | Below
+
+    /// Above the word where the tip fits, as an editor's hover is; below where only that fits; and
+    /// where neither does, the side with more room, the tip slid into the window from there.
+    let side (word: Rect) (tip: Size) (bounds: Rect) =
+        let above, below = word.Top - bounds.Top, bounds.Bottom - word.Bottom
+
+        if tip.Height <= above then Above
+        elif tip.Height <= below then Below
+        elif above >= below then Above
+        else Below
+
 type private CompletionItem(item: Completion, look: Palette.Look, typed: Typed) =
     let content =
         lazy
@@ -972,7 +989,9 @@ type ScriptEditor() as this =
         applyLook ()
 
         // On the hovered word, as an editor's hover is: above its line and starting where it
-        // starts, or below the line where there is no room above.
+        // starts, or below the line where there is room only there (`Tip.side`). Avalonia's own
+        // flip keeps a tip that fits on neither side where it was, off the window's edge; the side
+        // is chosen here against the window, where Linux draws popups.
         ToolTip.SetPlacement(editor, PlacementMode.Custom)
 
         ToolTip.SetCustomPopupPlacementCallback(
@@ -980,13 +999,25 @@ type ScriptEditor() as this =
             Primitives.PopupPositioning.CustomPopupPlacementCallback(fun p ->
                 // The rectangle Avalonia offers is the editor's own bounds in the window's
                 // coordinates; the word's box is in the editor's.
-                p.AnchorRectangle <- hovered.Translate(Vector(p.AnchorRectangle.X, p.AnchorRectangle.Y))
-                p.Anchor <- Primitives.PopupPositioning.PopupAnchor.TopLeft
-                p.Gravity <- Primitives.PopupPositioning.PopupGravity.TopRight
+                let word = hovered.Translate(Vector(p.AnchorRectangle.X, p.AnchorRectangle.Y))
+                p.AnchorRectangle <- word
+
+                let window =
+                    match TopLevel.GetTopLevel editor with
+                    | null -> Rect(p.PopupSize)
+                    | top -> Rect(top.ClientSize)
+
+                match Tip.side word p.PopupSize window with
+                | Tip.Above ->
+                    p.Anchor <- Primitives.PopupPositioning.PopupAnchor.TopLeft
+                    p.Gravity <- Primitives.PopupPositioning.PopupGravity.TopRight
+                | Tip.Below ->
+                    p.Anchor <- Primitives.PopupPositioning.PopupAnchor.BottomLeft
+                    p.Gravity <- Primitives.PopupPositioning.PopupGravity.BottomRight
                 // Not the tooltip's own 20 px below the pointer.
                 p.Offset <- Point()
                 p.ConstraintAdjustment <-
-                    Primitives.PopupPositioning.PopupPositionerConstraintAdjustment.FlipY
+                    Primitives.PopupPositioning.PopupPositionerConstraintAdjustment.SlideY
                     ||| Primitives.PopupPositioning.PopupPositionerConstraintAdjustment.SlideX)
         )
         this.ActualThemeVariantChanged.Add(fun _ -> applyLook ())
