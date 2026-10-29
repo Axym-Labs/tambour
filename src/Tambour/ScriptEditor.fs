@@ -106,6 +106,11 @@ module Shown =
         // The colour of the name before a dot, which the name after it continues.
         let mutable last: IBrush = plain
         let mutable dotted: IBrush option = None
+        // `custom operation: name (Type)`, a computation expression's operation, its name drawn as
+        // the editor draws the operation, a keyword, and its argument a type.
+        let mutable custom = false
+        // `Calls Type.Method` under it: the method the operation calls.
+        let mutable calls = false
 
         for m in pieces.Matches text do
             let p = m.Value
@@ -118,14 +123,34 @@ module Shown =
                         depth <- 0
                         lineStart <- true
                         nameKind <- "function"
+                        custom <- false
+                        calls <- false
 
                     plain
                 elif Char.IsLetter p.[0] || p.[0] = '_' then
                     // `from Marey` under a module's or type's name: where it is from.
                     let isFrom = p = "from" && lineStart
+                    let first = lineStart
                     lineStart <- false
 
-                    if depth = 0 && not expectType && (keywords.Contains p || isFrom) then
+                    if first && p = "Calls" then
+                        calls <- true
+                        plain
+                    elif calls then
+                        // A type before each dot, the method after the last.
+                        let next = m.Index + m.Length
+                        brush (if next < text.Length && text.[next] = '.' then "type" else "method")
+                    elif first && p = "custom" then
+                        brush "keyword"
+                    elif p = "operation" && previous = " " && not named && not custom then
+                        custom <- true
+                        brush "keyword"
+                    elif custom && not named then
+                        named <- true
+                        brush "keyword"
+                    elif custom then
+                        brush "type"
+                    elif depth = 0 && not expectType && (keywords.Contains p || isFrom) then
                         match naming.TryFind p with
                         | Some kind when not named -> nameKind <- kind
                         | _ -> ()
@@ -142,6 +167,8 @@ module Shown =
                     lineStart <- false
 
                     match p with
+                    // The name follows the colon of `custom operation:`.
+                    | ":" when custom && not named -> ()
                     | "<" -> depth <- depth + 1
                     | ">" when previous = "-" -> expectType <- true
                     | ">" -> depth <- max 0 (depth - 1)
@@ -157,7 +184,7 @@ module Shown =
 
             let colour =
                 match dotted with
-                | Some qualified when Char.IsLetter p.[0] || p.[0] = '_' -> qualified
+                | Some qualified when (Char.IsLetter p.[0] || p.[0] = '_') && not calls -> qualified
                 | _ -> coloured
 
             dotted <- if p = "."&& (Char.IsLetter previous.[0] || previous.[0] = '_') then Some last else None
