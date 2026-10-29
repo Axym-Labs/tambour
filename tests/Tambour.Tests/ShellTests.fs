@@ -113,19 +113,23 @@ let ``an action writes the script, and the figure is run again`` () =
     window.KeyPress(Key.F5, RawInputModifiers.None, PhysicalKey.F5, null)
     pumpUntil 30.0 "a figure" (fun () -> not (isNull pane.Picture))
 
-    let button (label: string) =
-        window.GetVisualDescendants().OfType<Button>().FirstOrDefault(fun b -> b.Content = box label)
+    let title () =
+        window.GetVisualDescendants().OfType<TextBox>().FirstOrDefault(fun t -> t.PlaceholderText = "title")
 
-    pumpUntil 30.0 "the actions" (fun () -> not (isNull (button "Title")) && (button "Title").IsEnabled)
-    let colourBy = window.GetVisualDescendants().OfType<ComboBox>().Single(fun c -> c.PlaceholderText = "Colour by")
+    pumpUntil 30.0 "the actions" (fun () -> not (isNull (title ())) && (title ()).IsEnabled)
+    let more = window.GetVisualDescendants().OfType<Button>().Single(fun b -> b.Name = "more actions")
+    let colourBy = more.ContextMenu.Items.OfType<MenuItem>().Single(fun m -> string m.Header = "_Colour by")
     Assert.False(colourBy.IsEnabled, "colour by is offered for a pipeline")
     Assert.Contains("plot { }", string (ToolTip.GetTip colourBy))
 
-    let title = window.GetVisualDescendants().OfType<TextBox>().Single(fun t -> t.PlaceholderText = "title")
+    // A field applies on Enter.
+    let title = title ()
     title.Text <- "Decay"
     Dispatcher.UIThread.RunJobs()
     let before = pane.Picture
-    (button "Title").RaiseEvent(Avalonia.Interactivity.RoutedEventArgs Button.ClickEvent)
+    title.Focus() |> ignore
+    window.KeyPress(Key.Enter, RawInputModifiers.None, PhysicalKey.Enter, null)
+    Dispatcher.UIThread.RunJobs()
     let editor = window.GetVisualDescendants().OfType<ScriptEditor>().Single()
     (try
         pumpUntil 30.0 "the script written" (fun () -> editor.Text.Contains "Chart.withTitle \"Decay\"")
