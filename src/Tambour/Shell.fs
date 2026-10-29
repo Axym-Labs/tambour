@@ -2787,11 +2787,11 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
             | None -> Border.create [ DockPanel.dock Dock.Left; Border.isVisible false ]
             Grid.create [
                 // The full view gives the right side the whole width.
-                Grid.columnDefinitions (if model.FullView then "0,0,*" else $"{inv split}*,4,{inv (1.0 - split)}*")
+                Grid.columnDefinitions (if model.FullView then "0,0,*" else $"{inv split}*,{Tokens.border},{inv (1.0 - split)}*")
                 Grid.children [
                     Grid.create [
                         Grid.column 0
-                        Grid.rowDefinitions (if model.BottomOpen then $"*,4,{inv model.Bottom}" else "*,0,0")
+                        Grid.rowDefinitions (if model.BottomOpen then $"*,{Tokens.border},{inv model.Bottom}" else "*,0,0")
                         Grid.children [
                             Editor.create [
                                 Grid.row 0
@@ -2803,10 +2803,14 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                 Editor.onProblemsChanged (Problems >> dispatch)
                                 Editor.onCaretMoved (Caret >> dispatch)
                             ]
+                            Border.create [ Grid.row 1; Border.background (brush look.Line) ]
                             GridSplitter.create [
                                 Grid.row 1
                                 GridSplitter.isVisible model.BottomOpen
-                                GridSplitter.background (brush look.Line)
+                                GridSplitter.resizeDirection GridResizeDirection.Rows
+                                GridSplitter.background Brushes.Transparent
+                                GridSplitter.margin (Thickness(0.0, -Tokens.Space.s1))
+                                Visual.zIndex 1
                                 Primitives.Thumb.onDragCompleted dragged
                             ]
                             DockPanel.create [
@@ -2816,7 +2820,16 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                             ]
                         ]
                     ]
-                    GridSplitter.create [ Grid.column 1; GridSplitter.background (brush look.Line); Primitives.Thumb.onDragCompleted dragged ]
+                    // A rule of one pixel, grabbed a little either side of it.
+                    Border.create [ Grid.column 1; Border.background (brush look.Line) ]
+                    GridSplitter.create [
+                        Grid.column 1
+                        GridSplitter.resizeDirection GridResizeDirection.Columns
+                        GridSplitter.background Brushes.Transparent
+                        GridSplitter.margin (Thickness(-Tokens.Space.s1, 0.0))
+                        Visual.zIndex 1
+                        Primitives.Thumb.onDragCompleted dragged
+                    ]
                     DockPanel.create [
                       Grid.column 2
                       DockPanel.children [

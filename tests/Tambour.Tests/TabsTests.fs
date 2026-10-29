@@ -837,3 +837,36 @@ let ``the window's place, size and open panes come back at the next start`` () =
         again.Close()
     finally
         App.SettingsDirectory <- before
+
+/// The dividers between the panes are rules of one pixel, and still taken by a drag a little to
+/// either side of the rule.
+[<AvaloniaFact>]
+let ``a divider is a one-pixel rule that a drag beside it still moves`` () =
+    let window = new Shell.MainWindow("let x = 1\n")
+    window.Show()
+    window.Width <- 1200.0
+    window.Height <- 800.0
+    editorOf window |> ignore
+    Dispatcher.UIThread.RunJobs()
+
+    let splitter =
+        window.Active.GetVisualDescendants().OfType<GridSplitter>()
+        |> Seq.find (fun s -> Grid.GetColumn s = 1 && s.IsVisible)
+
+    let grid = splitter.Parent :?> Grid
+    Assert.Equal(1.0, grid.ColumnDefinitions.[1].ActualWidth)
+    let before = grid.ColumnDefinitions.[0].ActualWidth
+
+    // Three pixels left of the rule: inside the grab, outside the line.
+    let at = (Avalonia.VisualExtensions.TranslatePoint(splitter, Avalonia.Point(1.0, splitter.Bounds.Height / 2.0), window)).Value
+    Assert.True(splitter.Bounds.Width > 4.0, $"the grab is {splitter.Bounds.Width} px wide")
+    window.MouseMove at
+    window.MouseDown(at, MouseButton.Left, RawInputModifiers.None)
+    window.MouseMove(at + Avalonia.Point(100.0, 0.0), RawInputModifiers.LeftMouseButton)
+    window.MouseUp(at + Avalonia.Point(100.0, 0.0), MouseButton.Left, RawInputModifiers.None)
+    Dispatcher.UIThread.RunJobs()
+    Assert.InRange(grid.ColumnDefinitions.[0].ActualWidth - before, 90.0, 110.0)
+    Assert.Equal(1.0, grid.ColumnDefinitions.[1].ActualWidth)
+
+    window.Ask <- fun _ -> Task.FromResult Discard
+    window.Close()
