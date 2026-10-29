@@ -2015,23 +2015,127 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
             )
         ]
 
+    /// One of a pane's tabs in its header: the accent under the one shown.
+    let paneTab (text: string) (glyph: string option) (count: int option) (selected: bool) (act: unit -> unit) : IView =
+        Button.create [
+            Button.background Brushes.Transparent
+            Button.cornerRadius (CornerRadius 0.0)
+            Button.padding (Thickness 0.0)
+            Button.minHeight 0.0
+            Button.height Tokens.Height.paneHeader
+            Button.borderThickness (Thickness(0.0, 0.0, 0.0, 2.0 * Tokens.border))
+            Button.borderBrush (if selected then brush look.Accent :> IBrush else Brushes.Transparent)
+            Button.verticalContentAlignment VerticalAlignment.Center
+            Button.onClick ((fun _ -> act ()), SubPatchOptions.Always)
+            Button.content (
+                StackPanel.create [
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.spacing Tokens.Space.s2
+                    StackPanel.children [
+                        match glyph with
+                        | Some data -> icon look data false (if selected then look.Text else look.Dim) true
+                        | None -> ()
+                        TextBlock.create [
+                            TextBlock.text text
+                            TextBlock.verticalAlignment VerticalAlignment.Center
+                            TextBlock.fontWeight FontWeight.Medium
+                            TextBlock.foreground (brush (if selected then look.Text else look.Dim))
+                        ]
+                        match count with
+                        | Some n ->
+                            Border.create [
+                                Border.minWidth Tokens.Space.s4
+                                Border.height Tokens.Space.s4
+                                Border.padding (Thickness(Tokens.Space.s1, 0.0))
+                                Border.cornerRadius (CornerRadius Tokens.Space.s2)
+                                Border.background (brush look.Raised)
+                                Border.verticalAlignment VerticalAlignment.Center
+                                Border.child (
+                                    TextBlock.create [
+                                        TextBlock.text (string n)
+                                        TextBlock.fontSize Tokens.Type.small
+                                        TextBlock.horizontalAlignment HorizontalAlignment.Center
+                                        TextBlock.verticalAlignment VerticalAlignment.Center
+                                        TextBlock.foreground (brush look.Dim)
+                                    ]
+                                )
+                            ]
+                        | None -> ()
+                    ]
+                ]
+            )
+        ]
+
+    /// A small icon button of a pane's header, lit while what it shows is shown.
+    let paneAction (data: string) (tip: string) (on: bool) (act: unit -> unit) : IView =
+        Button.create [
+            Button.width Tokens.Height.controlSm
+            Button.height Tokens.Height.controlSm
+            Button.minHeight 0.0
+            Button.padding (Thickness 0.0)
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.horizontalContentAlignment HorizontalAlignment.Center
+            Button.verticalContentAlignment VerticalAlignment.Center
+            Button.background (if on then brush look.Roles.Hover :> IBrush else Brushes.Transparent)
+            Button.tip tip
+            Button.onClick ((fun _ -> act ()), SubPatchOptions.Always)
+            Button.content (icon look data false look.Text true)
+        ]
+
+    /// A pane's header: its tabs, what follows them, and its actions at the right.
+    let paneHeader (tabs: IView list) (after: IView list) (actions: IView list) : IView =
+        Border.create [
+            Border.dock Dock.Top
+            Border.height Tokens.Height.paneHeader
+            Border.background (brush look.Surface)
+            Border.borderBrush (brush look.Line)
+            Border.borderThickness (Thickness(0.0, 0.0, 0.0, Tokens.border))
+            Border.padding (Thickness(Tokens.Space.s3, 0.0, Tokens.Space.s2, 0.0))
+            Border.child (
+                DockPanel.create [
+                    DockPanel.children [
+                        StackPanel.create [
+                            StackPanel.dock Dock.Right
+                            StackPanel.orientation Orientation.Horizontal
+                            StackPanel.spacing Tokens.Space.s1
+                            StackPanel.children actions
+                        ]
+                        StackPanel.create [
+                            StackPanel.orientation Orientation.Horizontal
+                            StackPanel.spacing Tokens.Space.s4
+                            StackPanel.children (tabs @ after)
+                        ]
+                    ]
+                ]
+            )
+        ]
+
+    let tableGlyph = "M2.5,3 H13.5 V13 H2.5 Z M2.5,6.5 H13.5 M6.5,6.5 V13"
+
+    let bottomHeader =
+        paneHeader
+            [ paneTab "Problems" None (Some model.Problems.Length) (model.BottomTab = 0) (fun () -> dispatch (ShowBottom 0))
+              paneTab "Output" None None (model.BottomTab = 1) (fun () -> dispatch (ShowBottom 1)) ]
+            []
+            [ paneAction "M4.5,6.5 L8,10 L11.5,6.5" "Hide the panel (Ctrl+J)" false (fun () -> dispatch ToggleBottom) ]
+
     let bottomPanel =
         TabControl.create [
-            Grid.row 2
+            TabControl.classes [ "bare" ]
+            TabControl.padding (Thickness 0.0)
             TabControl.isVisible model.BottomOpen
             TabControl.selectedIndex model.BottomTab
             TabControl.onSelectedIndexChanged ((fun i -> if i >= 0 && i <> model.BottomTab then dispatch (ShowBottom i)), SubPatchOptions.Always)
             TabControl.viewItems [
                 TabItem.create [
                     TabItem.header (if model.Problems.Length = 0 then "Problems" else $"Problems ({model.Problems.Length})")
-                    TabItem.fontSize 13.0
                     TabItem.content (
                         ScrollViewer.create [
                             ScrollViewer.content (
                                 StackPanel.create [
                                     StackPanel.children [
                                         if model.Problems.Length = 0 then
-                                            TextBlock.create [ TextBlock.margin (Thickness gap); TextBlock.text "No problems in the script."; TextBlock.foreground (brush look.Dim) ]
+                                            TextBlock.create [ TextBlock.margin (Thickness Tokens.Space.s3); TextBlock.text "No problems in the script."; TextBlock.foreground (brush look.Dim) ]
                                         for d in model.Problems do
                                             problemView look dispatch model.Problems d
                                     ]
@@ -2042,7 +2146,6 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                 ]
                 TabItem.create [
                     TabItem.header "Output"
-                    TabItem.fontSize 13.0
                     TabItem.content (
                         TextBox.create [
                             TextBox.text output
@@ -2071,23 +2174,6 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
 
     let split = Math.Clamp(model.Split, 0.05, 0.95)
     let inv (v: float) = v.ToString(Globalization.CultureInfo.InvariantCulture)
-
-    let actionsHeader =
-        Button.create [
-            Button.horizontalAlignment HorizontalAlignment.Left
-            Button.horizontalContentAlignment HorizontalAlignment.Left
-            Button.background Brushes.Transparent
-            Button.padding (Thickness(2.0 * gap, gap / 2.0))
-            Button.tip "show or hide the figure's actions (Ctrl+Shift+A)"
-            Button.onClick ((fun _ -> dispatch ToggleActions), SubPatchOptions.Always)
-            Button.content (
-                TextBlock.create [
-                    TextBlock.text ((if model.ActionsOpen then "▾ " else "▸ ") + "Actions")
-                    TextBlock.fontWeight FontWeight.SemiBold
-                    TextBlock.foreground (brush look.Text)
-                ]
-            )
-        ]
 
     // The project's scripts, each open one in the text colour and dotted while unsaved, the shown
     // one in bold with its workspace's tables under it.
@@ -2191,6 +2277,55 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
             )
         ]
 
+    // The figure pane's header: Figure and each table, Add for another table, and the figure's
+    // actions and the zoom hint at the right.
+    let addTable : IView =
+        let item (header: string) (keys: string) (msg: Msg) : IView =
+            MenuItem.create [
+                MenuItem.header header
+                MenuItem.inputGesture (KeyGesture.Parse keys)
+                MenuItem.onClick ((fun _ -> dispatch msg), SubPatchOptions.Always)
+            ]
+
+        Button.create [
+            Button.background Brushes.Transparent
+            Button.height Tokens.Height.controlSm
+            Button.minHeight 0.0
+            Button.padding (Thickness(Tokens.Space.s1, 0.0))
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.verticalContentAlignment VerticalAlignment.Center
+            Button.tip "Add a table to this workspace"
+            Button.contextMenu (ContextMenu.create [ ContextMenu.viewItems [ item "_New table" "Ctrl+T" NewTable; item "_Import table…" "Ctrl+Shift+I" ChooseImport ] ])
+            Button.onClick (
+                (fun e ->
+                    match e.Source with
+                    | :? Control as c when not (isNull c.ContextMenu) -> c.ContextMenu.Open c
+                    | _ -> ()),
+                SubPatchOptions.Always
+            )
+            Button.content (
+                StackPanel.create [
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.spacing Tokens.Space.s1
+                    StackPanel.children [
+                        icon look "M8,3.5 V12.5 M3.5,8 H12.5" false look.Text true
+                        TextBlock.create [ TextBlock.text "Add"; TextBlock.verticalAlignment VerticalAlignment.Center ]
+                        icon look "M4.5,6.5 L8,10 L11.5,6.5" false look.Dim true
+                    ]
+                ]
+            )
+        ]
+
+    let figureHeader =
+        paneHeader
+            [ paneTab "Figure" None None (model.Tab = 0) (fun () -> dispatch (SelectTab 0))
+              for i, source in List.indexed model.Tables do
+                  paneTab source.Table.Name (Some tableGlyph) None (model.Tab = i + 1) (fun () -> dispatch (SelectTab(i + 1))) ]
+            [ addTable ]
+            [ if model.Tab = 0 then
+                  paneAction "M2,4.5 H14 M2,11.5 H14 M5.5,2.75 V6.25 M10.5,9.75 V13.25" "Show or hide the figure's actions (Ctrl+Shift+A)" model.ActionsOpen (fun () -> dispatch ToggleActions)
+                  paneAction "M8,1.75 A6.25,6.25 0 1 1 7.99,1.75 Z M8,7.25 V11.25 M8,4.8 V4.81" "Drag to zoom · Shift+drag pans · double-click resets" false ignore ]
+
     DockPanel.create [
         DockPanel.background (brush look.Surface)
         DockPanel.children [
@@ -2222,36 +2357,30 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                 GridSplitter.background (brush look.Line)
                                 Primitives.Thumb.onDragCompleted dragged
                             ]
-                            bottomPanel
+                            DockPanel.create [
+                                Grid.row 2
+                                DockPanel.isVisible model.BottomOpen
+                                DockPanel.children [ bottomHeader; bottomPanel ]
+                            ]
                         ]
                     ]
                     GridSplitter.create [ Grid.column 1; GridSplitter.background (brush look.Line); Primitives.Thumb.onDragCompleted dragged ]
-                    TabControl.create [
-                        Grid.column 2
+                    DockPanel.create [
+                      Grid.column 2
+                      DockPanel.children [
+                        figureHeader
+                        TabControl.create [
                         TabControl.name "sheets"
+                        TabControl.classes [ "bare" ]
+                        TabControl.padding (Thickness 0.0)
                         TabControl.selectedIndex model.Tab
                         TabControl.onSelectedIndexChanged ((fun i -> if i >= 0 && i <> model.Tab then dispatch (SelectTab i)), SubPatchOptions.Always)
                         TabControl.viewItems [
                             TabItem.create [
                                 TabItem.header "Figure"
-                                TabItem.fontSize 15.0
                                 TabItem.content (
                                     DockPanel.create [
                                         DockPanel.children [
-                                            DockPanel.create [
-                                                DockPanel.dock Dock.Top
-                                                DockPanel.children [
-                                                    TextBlock.create [
-                                                        TextBlock.dock Dock.Right
-                                                        TextBlock.margin (Thickness(gap, 0.0, 2.0 * gap, 0.0))
-                                                        TextBlock.verticalAlignment VerticalAlignment.Center
-                                                        TextBlock.fontSize 12.0
-                                                        TextBlock.foreground (brush look.Dim)
-                                                        TextBlock.text "drag to zoom · Shift+drag pans · double-click resets"
-                                                    ]
-                                                    actionsHeader
-                                                ]
-                                            ]
                                             Border.create [
                                                 Border.dock Dock.Top
                                                 Border.isVisible model.ActionsOpen
@@ -2275,8 +2404,10 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                 )
                             ]
                             for source in model.Tables do
-                                TabItem.create [ TabItem.header source.Table.Name; TabItem.fontSize 15.0; TabItem.content (tableView model dispatch source.Table) ]
+                                TabItem.create [ TabItem.header source.Table.Name; TabItem.content (tableView model dispatch source.Table) ]
                         ]
+                        ]
+                      ]
                     ]
                 ]
             ]

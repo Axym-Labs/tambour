@@ -78,6 +78,10 @@ type App() =
               "MenuFlyoutItemThemePadding", box (Thickness(Tokens.Space.s3, (Tokens.Height.row - Tokens.Type.uiLine) / 2.0)) ]
         for key, value in sizes do
             this.Resources.[key] <- value
+        // A pane draws its own header over a tab control of class `bare`, whose own strip goes.
+        let bare = Style(fun x -> x.OfType<TabControl>().Class("bare").Template().OfType<Avalonia.Controls.Presenters.ItemsPresenter>())
+        bare.Setters.Add(Setter(Visual.IsVisibleProperty, false))
+        this.Styles.Add bare
         // AvaloniaEdit's control template.
         this.Styles.Add(Avalonia.Markup.Xaml.Styling.StyleInclude(Uri "avares://Tambour", Source = Uri "avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml"))
         this.RequestedThemeVariant <- App.VariantOf App.Theme
