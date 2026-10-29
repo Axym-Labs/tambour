@@ -1549,7 +1549,7 @@ let private actionsView (model: Model) (dispatch: Msg -> unit) : IView =
     /// A row's label, in the column of labels.
     let rowLabel (text: string) : IView =
         TextBlock.create [
-            TextBlock.width Tokens.Space.s7
+            TextBlock.width Tokens.Width.label
             TextBlock.verticalAlignment VerticalAlignment.Center
             TextBlock.foreground (SolidColorBrush model.Look.Dim)
             TextBlock.text text
@@ -1710,25 +1710,152 @@ let rec private headerView (model: Model) (dispatch: Msg -> unit) (column: int) 
 
 /// A table's tab: what can be done to it, the header's form when one is open, and its grid.
 and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Table) : IView =
+    let look = model.Look
+
+    let glyph (data: string) (colour: Color) : IView =
+        Avalonia.FuncUI.DSL.Path.create [
+            Shapes.Path.data (Geometry.Parse data)
+            Shapes.Path.width Tokens.Height.icon
+            Shapes.Path.height Tokens.Height.icon
+            Shapes.Path.verticalAlignment VerticalAlignment.Center
+            Shapes.Path.stroke (SolidColorBrush colour)
+            Shapes.Path.strokeThickness 1.5
+            Shapes.Path.strokeLineCap PenLineCap.Round
+            Shapes.Path.strokeJoin PenLineJoin.Round
+        ]
+
+    let plus = "M8,3.5 V12.5 M3.5,8 H12.5"
+    let chevron = "M4.5,6.5 L8,10 L11.5,6.5"
+
+    /// A button of the bar: an icon, a word, and a chevron where it opens a menu.
+    let barButton (icon: string option) (word: string) (primary: bool) (menu: (string * Msg) list) (act: Msg option) : IView =
+        let fore = if primary then look.Roles.OnAccent else look.Text
+
+        Button.create [
+            Button.height Tokens.Height.control
+            Button.padding (Thickness(Tokens.Space.s2, 0.0, Tokens.Space.s3, 0.0))
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.verticalContentAlignment VerticalAlignment.Center
+            if primary then
+                Button.background (SolidColorBrush look.Roles.AccentFill)
+                Button.foreground (SolidColorBrush fore)
+            if not menu.IsEmpty then
+                Button.contextMenu (
+                    ContextMenu.create [
+                        ContextMenu.viewItems [
+                            for header, msg in menu do
+                                MenuItem.create [ MenuItem.header header; MenuItem.onClick ((fun _ -> dispatch msg), SubPatchOptions.Always) ]
+                        ]
+                    ]
+                )
+            Button.onClick (
+                (fun e ->
+                    match act, e.Source with
+                    | Some msg, _ -> dispatch msg
+                    | None, (:? Control as c) when not (isNull c.ContextMenu) -> c.ContextMenu.Open c
+                    | _ -> ()),
+                SubPatchOptions.Always
+            )
+            Button.content (
+                StackPanel.create [
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.spacing Tokens.Space.s1
+                    StackPanel.children [
+                        match icon with
+                        | Some data -> glyph data fore
+                        | None -> ()
+                        TextBlock.create [ TextBlock.text word; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.foreground (SolidColorBrush fore) ]
+                        if not menu.IsEmpty && act.IsNone then glyph chevron look.Dim
+                    ]
+                ]
+            )
+        ]
+
+    let selected =
+        match model.TableSelection with
+        | Some(name, columns) when name = t.Name && not columns.IsEmpty ->
+            let names = columns |> List.choose (fun c -> List.tryItem c t.Columns) |> List.map (fun c -> c.Name)
+            " · " + String.Join(", ", names) + " selected"
+        | _ -> ""
+
     DockPanel.create [
         DockPanel.children [
-            StackPanel.create [
-                StackPanel.dock Dock.Top
-                StackPanel.orientation Orientation.Horizontal
-                StackPanel.spacing 6.0
-                StackPanel.margin (Thickness(6.0, 4.0))
-                StackPanel.children [
-                    Button.create [ Button.content "Add column"; Button.onClick ((fun _ -> dispatch (EditHeader(t.Name, -1 - t.Columns.Length))), SubPatchOptions.Always) ]
-                    Button.create [
-                        Button.content "Add 10 rows"
-                        Button.onClick ((fun _ -> dispatch (TableEdited [ Tambour.Data.TableEdit.addRows t t.Rows 10 ])), SubPatchOptions.Always)
+            Border.create [
+                Border.dock Dock.Top
+                Border.padding (Thickness(Tokens.Space.s3, Tokens.Space.s2))
+                Border.borderBrush (SolidColorBrush look.Line)
+                Border.borderThickness (Thickness(0.0, 0.0, 0.0, Tokens.border))
+                Border.child (
+                    DockPanel.create [
+                        DockPanel.children [
+                            Button.create [
+                                Button.dock Dock.Right
+                                Button.width Tokens.Height.control
+                                Button.height Tokens.Height.control
+                                Button.padding (Thickness 0.0)
+                                Button.background Brushes.Transparent
+                                Button.horizontalContentAlignment HorizontalAlignment.Center
+                                Button.verticalContentAlignment VerticalAlignment.Center
+                                Button.tip "More: rename, duplicate, remove the table"
+                                Button.contextMenu (
+                                    ContextMenu.create [
+                                        ContextMenu.viewItems [
+                                            MenuItem.create [ MenuItem.header "_Rename…"; MenuItem.onClick ((fun _ -> dispatch (RenameTable t.Name)), SubPatchOptions.Always) ]
+                                            MenuItem.create [ MenuItem.header "_Duplicate"; MenuItem.onClick ((fun _ -> dispatch (DuplicateTable t.Name)), SubPatchOptions.Always) ]
+                                            MenuItem.create [ MenuItem.header "Re_move table"; MenuItem.onClick ((fun _ -> dispatch (RemoveTable t.Name)), SubPatchOptions.Always) ]
+                                        ]
+                                    ]
+                                )
+                                Button.onClick (
+                                    (fun e ->
+                                        match e.Source with
+                                        | :? Control as c when not (isNull c.ContextMenu) -> c.ContextMenu.Open c
+                                        | _ -> ()),
+                                    SubPatchOptions.Always
+                                )
+                                Button.content (
+                                    Avalonia.FuncUI.DSL.Path.create [
+                                        Shapes.Path.data (Geometry.Parse "M2.25,8 A1.25,1.25 0 1 1 2.26,8 Z M6.75,8 A1.25,1.25 0 1 1 6.76,8 Z M11.25,8 A1.25,1.25 0 1 1 11.26,8 Z")
+                                        Shapes.Path.fill (SolidColorBrush look.Text)
+                                        Shapes.Path.width Tokens.Height.icon
+                                        Shapes.Path.height Tokens.Height.icon
+                                    ]
+                                )
+                            ]
+                            StackPanel.create [
+                                StackPanel.dock Dock.Left
+                                StackPanel.orientation Orientation.Horizontal
+                                StackPanel.spacing Tokens.Space.s2
+                                StackPanel.children [
+                                    barButton (Some plus) "Column" false [] (Some(EditHeader(t.Name, -1 - t.Columns.Length)))
+                                    barButton
+                                        (Some plus)
+                                        "Rows"
+                                        false
+                                        [ for n in [ 1; 10; 100 ] ->
+                                              (if n = 1 then "Add 1 row" else $"Add {n} rows"), TableEdited [ Tambour.Data.TableEdit.addRows t t.Rows n ] ]
+                                        None
+                                    Border.create [
+                                        Border.width Tokens.border
+                                        Border.height Tokens.Height.icon
+                                        Border.verticalAlignment VerticalAlignment.Center
+                                        Border.background (SolidColorBrush look.Line)
+                                    ]
+                                    barButton (Some "M2.5,2.5 V13.5 H13.5 M5,10 L8,6.5 L10,8.5 L13.5,4.5") "Plot selected columns" true [] (Some PlotSelected)
+                                ]
+                            ]
+                            // What the table holds and what is selected, in the room left, cut short there.
+                            TextBlock.create [
+                                TextBlock.text $"{t.Rows} rows · {t.Columns.Length} columns{selected}"
+                                TextBlock.verticalAlignment VerticalAlignment.Center
+                                TextBlock.margin (Thickness(Tokens.Space.s3, 0.0, Tokens.Space.s2, 0.0))
+                                TextBlock.foreground (SolidColorBrush look.Dim)
+                                TextBlock.textTrimming TextTrimming.CharacterEllipsis
+                                TextBlock.tip "Right-click, or the Table menu, for what can be done to cells, rows and columns; Ctrl+click or Alt+drag in a figure picks rows."
+                            ]
+                        ]
                     ]
-                    Button.create [ Button.content "Rename…"; Button.onClick ((fun _ -> dispatch (RenameTable t.Name)), SubPatchOptions.Always) ]
-                    Button.create [ Button.content "Duplicate"; Button.onClick ((fun _ -> dispatch (DuplicateTable t.Name)), SubPatchOptions.Always) ]
-                    Button.create [ Button.content "Remove table"; Button.onClick ((fun _ -> dispatch (RemoveTable t.Name)), SubPatchOptions.Always) ]
-                    Button.create [ Button.content "Plot selected columns"; Button.onClick (fun _ -> dispatch PlotSelected) ]
-                    label $"{t.Rows} rows. Right-click, or the Table menu, for what can be done to cells, rows and columns; Ctrl+click or Alt+drag in a figure picks rows."
-                ]
+                )
             ]
             // Always there, and hidden when no header is being edited, so the grid after it keeps its
             // place among the children and is not made again.
@@ -2354,7 +2481,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
     let filesPanel (dir: string) : IView =
         Border.create [
             DockPanel.dock Dock.Left
-            Border.width 224.0
+            Border.width Tokens.Width.files
             Border.background (brush look.Surface)
             Border.borderBrush (brush look.Line)
             Border.borderThickness (Thickness(0.0, 0.0, Tokens.border, 0.0))

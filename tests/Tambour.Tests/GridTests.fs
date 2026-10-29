@@ -172,3 +172,44 @@ let ``a row header selects its row, and the grid's commands are on its context m
     let expected = AddRows("trials", 3, trials.Columns |> List.map (fun c -> Values.slice 1 2 c.Values))
     Assert.Equal<TableEdit list>([ expected ], Seq.exactlyOne edits)
     window.Close()
+
+/// Gate 16 (b), the columns: each is as wide as its content asks, within the tokens' bounds; a drag
+/// on a column's edge in the header resizes that column alone, and a double-click there fits it to
+/// its content again.
+[<AvaloniaFact>]
+let ``columns fit their content, and an edge dragged or double-clicked changes that column alone`` () =
+    let wide =
+        { Name = "wide"
+          Columns =
+            [ { Name = "n"; Unit = null; Values = Ints [| 1; 2; 3 |] }
+              { Name = "a header far longer than any column may be wide, so cut with an ellipsis"; Unit = "m"; Values = Floats [| 1.0; 2.0; 3.0 |] }
+              { Name = "note"; Unit = null; Values = Texts [| "short"; "a somewhat longer note than the others"; "" |] } ] }
+
+    let grid, window, _, _ = shown wide
+    let widths () = [ for j in 0..2 -> grid.ColumnWidth j ]
+    let before = widths ()
+    Assert.Equal(Tokens.Width.columnMax, before.[1])
+    Assert.True(before.[0] < before.[2], $"the narrow column is not narrower than the notes: {before}")
+    Assert.True(before |> List.forall (fun w -> w >= Tokens.Width.columnMin && w <= Tokens.Width.columnMax), $"a width out of bounds: {before}")
+
+    // A drag on the first column's edge, 50 px to the right.
+    let edge = grid.ColumnEdge 0
+    let y = 10.0
+    window.MouseMove(Avalonia.Point(edge, y))
+    window.MouseDown(Avalonia.Point(edge, y), Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    window.MouseMove(Avalonia.Point(edge + 50.0, y), Avalonia.Input.RawInputModifiers.LeftMouseButton)
+    window.MouseUp(Avalonia.Point(edge + 50.0, y), Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    Dispatcher.UIThread.RunJobs()
+    let dragged = widths ()
+    Assert.Equal(before.[0] + 50.0, dragged.[0], 3)
+    Assert.Equal<float list>(before.Tail, dragged.Tail)
+
+    // An edit makes the column anew: its width stays.
+    grid.Table <- Some { wide with Columns = { wide.Columns.[0] with Values = Ints [| 1; 2; 4 |] } :: wide.Columns.Tail }
+    Assert.Equal(dragged.[0], grid.ColumnWidth 0, 3)
+
+    // A double-click on the edge fits it again.
+    grid.AutoFit 0
+    Assert.Equal(before.[0], grid.ColumnWidth 0, 3)
+    Assert.Equal<float list>(before.Tail, (widths ()).Tail)
+    window.Close()

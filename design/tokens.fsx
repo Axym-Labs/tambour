@@ -51,6 +51,7 @@ let css =
         line $"  --line-{n}: {height v}px;"
     for n, v in group "weight" do line $"  --weight-{n}: {number v};"
     for n, v in group "height" do line $"  --h-{n}: {number v}px;"
+    for n, v in group "width" do line $"  --w-{n}: {number v}px;"
     for n, v in group "radius" do line $"  --radius-{n}: {number v}px;"
     line $"  --border: {border}px;"
     line $"  --shadow: {shadowX}px {shadowY}px {shadowBlur}px var(--shadow-colour);"
@@ -91,6 +92,7 @@ let fsharp =
     line ""
     literals "Weight" "Font weights." [ for n, v in group "weight" -> n, number v ]
     literals "Height" "The heights of controls, rows and the window's bars." [ for n, v in group "height" -> n, number v ]
+    literals "Width" "The widths of the file list, a grid column's bounds, and a row's label." [ for n, v in group "width" -> n, number v ]
     literals "Radius" "Corner radii." [ for n, v in group "radius" -> n, number v ]
     line "[<Literal>]"
     line $"let border = %.1f{border}"

@@ -85,6 +85,17 @@ module Height =
     [<Literal>]
     let icon = 16.0
 
+/// The widths of the file list, a grid column's bounds, and a row's label.
+module Width =
+    [<Literal>]
+    let files = 224.0
+    [<Literal>]
+    let columnMin = 40.0
+    [<Literal>]
+    let columnMax = 320.0
+    [<Literal>]
+    let label = 48.0
+
 /// Corner radii.
 module Radius =
     [<Literal>]

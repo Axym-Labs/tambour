@@ -280,9 +280,12 @@ type private Hit =
 type TableGrid() as this =
     inherit Control()
 
-    static let rowHeight = 22.0
-    static let headerHeight = 40.0
-    static let columnWidth = 120.0
+    static let rowHeight = Tokens.Height.gridRow
+    /// A header's two lines, the column's name and its type, with a margin.
+    static let headerHeight = 2.0 * Tokens.Type.smallLine + Tokens.Space.s2
+    /// Where a line of text starts in a row.
+    static let textTop = (rowHeight - Tokens.Type.uiLine) / 2.0 + Tokens.border
+    static let resizeCursor = lazy (new Cursor(StandardCursorType.SizeWestEast))
 
     let edited = Event<TableEdit list>()
     let selectionChanged = Event<int list>()
@@ -298,10 +301,12 @@ type TableGrid() as this =
     let mutable anchor = { Column = 0; Row = 0 }
     let mutable focus = { Column = 0; Row = 0 }
     let mutable editing: CellRef option = None
+    /// A column edge being dragged: the column, where the drag began, and its width then.
+    let mutable resizing: (int * float * float) option = None
 
     let vertical = ScrollBar(Orientation = Orientation.Vertical, Minimum = 0.0, SmallChange = 1.0, LargeChange = 20.0)
     let horizontal = ScrollBar(Orientation = Orientation.Horizontal, Minimum = 0.0, SmallChange = 1.0, LargeChange = 1.0)
-    let editor = TextBox(IsVisible = false, BorderThickness = Thickness 1.0, Padding = Thickness(3.0, 1.0), MinHeight = 0.0)
+    let editor = TextBox(IsVisible = false, BorderThickness = Thickness Tokens.border, Padding = Thickness(Tokens.Space.s2 - Tokens.border, 0.0), MinHeight = 0.0, VerticalContentAlignment = VerticalAlignment.Center)
 
     // The UI's font, Inter, where the app carries it.
     let font = FontFamily "fonts:Inter#Inter, $Default"
@@ -345,8 +350,8 @@ type TableGrid() as this =
                        let advance = (FormattedText(string c, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, size, Brushes.Black)).WidthIncludingTrailingWhitespace
                        c, (glyphs.CharacterToGlyphMap.[int c], advance) ])
 
-    let cellNumerals = numerals 12.5
-    let rowNumerals = numerals 11.0
+    let cellNumerals = numerals Tokens.Type.ui
+    let rowNumerals = numerals Tokens.Type.small
     let shaped = Collections.Generic.Dictionary<string, FormattedText>()
 
     /// A cell's text at a size, at its left edge and the top of its line: as a run of numerals where
@@ -379,33 +384,160 @@ type TableGrid() as this =
 
             formatted.Width, (fun (dc: DrawingContext) (at: Point) -> dc.DrawText(formatted, at))
 
+    /// A text cut to a width with an ellipsis where it is longer, shaped once per text and width.
+    let trimmed (s: string) (face: Typeface) (size: float) (width: float) (brush: IBrush) =
+        let key = $"{size}|{width}|{face.Weight}|{s}"
+
+        match shaped.TryGetValue key with
+        | true, f -> f
+        | _ ->
+            if shaped.Count > 20_000 then shaped.Clear()
+            let f = FormattedText(s, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, face, size, brush)
+            f.MaxTextWidth <- max 0.0 width
+            f.MaxLineCount <- 1
+            f.Trimming <- TextTrimming.CharacterEllipsis
+            shaped.[key] <- f
+            f
+
     let rows () = match table with Some t -> t.Rows | None -> 0
     let columns () = match table with Some t -> t.Columns.Length | None -> 0
 
+    /// Each column's width, by its name, so the column an edit makes anew keeps it: fitted to its
+    /// content when first shown, or as its edge was dragged.
+    let fitted = Collections.Generic.Dictionary<string, float>()
+    let chosen = Collections.Generic.Dictionary<string, float>()
+
+    /// The width a column's name, type and cells ask for, within the tokens' bounds; at most 400
+    /// cells are measured, spread over the column.
+    let fit (column: Column) (count: int) =
+        let ink = SolidColorBrush (Palette.forVariant this.ActualThemeVariant).Foreground
+        let name = (text column.Name bold Tokens.Type.ui ink).WidthIncludingTrailingWhitespace
+        let kind = (text (kindOf column) typeface Tokens.Type.small ink).WidthIncludingTrailingWhitespace
+        let sample = if count <= 400 then seq { 0 .. count - 1 } else seq { for k in 0..399 -> int (int64 k * int64 (count - 1) / 399L) }
+
+        let cells =
+            sample
+            |> Seq.map (fun i ->
+                let shown = CellText.shown column.Values i
+                if shown = "" then 0.0 else fst (cellText shown Tokens.Type.ui cellNumerals ink))
+            |> Seq.fold max 0.0
+
+        Math.Clamp(Math.Ceiling(max name (max kind cells)) + 2.0 * Tokens.Space.s2 + Tokens.border, Tokens.Width.columnMin, Tokens.Width.columnMax)
+
+    let widthOf (j: int) =
+        match table with
+        | Some t when j >= 0 && j < t.Columns.Length ->
+            let column = t.Columns.[j]
+
+            match chosen.TryGetValue column.Name with
+            | true, w -> w
+            | _ ->
+                match fitted.TryGetValue column.Name with
+                | true, w -> w
+                | _ ->
+                    let w = fit column t.Rows
+                    fitted.[column.Name] <- w
+                    w
+        | _ -> Tokens.Width.columnMin
+
     /// The width of the row numbers, by the digits of the last.
-    let numberWidth () = 14.0 + 8.0 * float (string (max 1 (rows ()))).Length
+    let numberWidth () = 2.0 * Tokens.Space.s2 + Tokens.Space.s2 * float (string (max 1 (rows ()))).Length
 
     let visibleRows () =
         max 1 (int ((this.Bounds.Height - headerHeight - horizontal.Bounds.Height) / rowHeight))
 
+    let available () = this.Bounds.Width - numberWidth () - vertical.Bounds.Width
+
+    /// How many whole columns fit from the first in view.
     let visibleColumns () =
-        max 1 (int ((this.Bounds.Width - numberWidth () - vertical.Bounds.Width) / columnWidth))
+        let mutable n = 0
+        let mutable x = 0.0
+
+        while left + n < columns () && x + widthOf (left + n) <= available () do
+            x <- x + widthOf (left + n)
+            n <- n + 1
+
+        max 1 n
+
+    /// The first column in view when a column is the last whole one.
+    let leftShowing (last: int) =
+        let mutable j = last
+        let mutable x = widthOf last
+
+        while j > 0 && x + widthOf (j - 1) <= available () do
+            j <- j - 1
+            x <- x + widthOf j
+
+        j
 
     let clampScroll () =
+        let lastLeft = if columns () = 0 then 0 else leftShowing (columns () - 1)
         top <- max 0 (min top (rows () - visibleRows ()))
-        left <- max 0 (min left (columns () - visibleColumns ()))
+        left <- max 0 (min left lastLeft)
         vertical.Maximum <- float (max 0 (rows () - visibleRows ()))
         vertical.ViewportSize <- float (visibleRows ())
         vertical.Value <- float top
-        horizontal.Maximum <- float (max 0 (columns () - 1))
+        horizontal.Maximum <- float lastLeft
         horizontal.ViewportSize <- float (visibleColumns ())
         horizontal.Value <- float left
 
+    /// Where a column in view begins.
+    let xOf (j: int) =
+        let mutable x = numberWidth ()
+
+        for k in left .. j - 1 do
+            x <- x + widthOf k
+
+        x
+
     /// Where a cell is drawn, when it is in view.
     let cellRect (c: CellRef) =
-        let x = numberWidth () + float (c.Column - left) * columnWidth
         let y = headerHeight + float (c.Row - top) * rowHeight
-        Rect(x, y, columnWidth, rowHeight)
+        Rect(xOf c.Column, y, widthOf c.Column, rowHeight)
+
+    /// The column whose right edge, in the header, is under a point.
+    let edgeAt (p: Point) =
+        if p.Y < 0.0 || p.Y >= headerHeight then
+            None
+        else
+            let mutable j = left
+            let mutable x = numberWidth ()
+            let mutable found = None
+
+            while found.IsNone && j < columns () && x <= p.X + Tokens.Space.s1 do
+                x <- x + widthOf j
+                if abs (p.X - x) <= Tokens.Space.s1 then found <- Some j
+                j <- j + 1
+
+            found
+
+    let setWidth (j: int) (width: float) =
+        match table with
+        | Some t when j >= 0 && j < t.Columns.Length ->
+            chosen.[t.Columns.[j].Name] <- Math.Clamp(width, Tokens.Width.columnMin, Tokens.Width.columnMax)
+            clampScroll ()
+            this.InvalidateArrange()
+            this.InvalidateVisual()
+        | _ -> ()
+
+    /// A column fitted to its content again, its dragged width forgotten.
+    let autoFit (j: int) =
+        match table with
+        | Some t when j >= 0 && j < t.Columns.Length ->
+            chosen.Remove t.Columns.[j].Name |> ignore
+            fitted.Remove t.Columns.[j].Name |> ignore
+            clampScroll ()
+            this.InvalidateArrange()
+            this.InvalidateVisual()
+        | _ -> ()
+
+    /// A column's whole name and unit, as its header's tip shows them.
+    let fullName (j: int) =
+        match table with
+        | Some t when j >= 0 && j < t.Columns.Length ->
+            let c = t.Columns.[j]
+            if String.IsNullOrEmpty c.Unit then $"{c.Name} ({kindOf c})" else $"{c.Name} [{c.Unit}]"
+        | _ -> null
 
     let bringIntoView (c: CellRef) =
         // Not before the grid has a size: what fits is not known, and a hidden tab's grid has none.
@@ -414,7 +546,7 @@ type TableGrid() as this =
             elif c.Row >= top + visibleRows () then top <- c.Row - visibleRows () + 1
 
             if c.Column < left then left <- c.Column
-            elif c.Column >= left + visibleColumns () then left <- c.Column - visibleColumns () + 1
+            elif c.Column >= left + visibleColumns () then left <- leftShowing c.Column
 
             clampScroll ()
 
@@ -433,7 +565,16 @@ type TableGrid() as this =
 
     /// The cell under a point, or the column or row whose header it is over.
     let hit (p: Point) =
-        let column = left + int (floor ((p.X - numberWidth ()) / columnWidth))
+        let column =
+            let mutable j = left
+            let mutable x = numberWidth ()
+
+            while j < columns () && x + widthOf j <= p.X do
+                x <- x + widthOf j
+                j <- j + 1
+
+            j
+
         let row = top + int (floor ((p.Y - headerHeight) / rowHeight))
 
         if p.X < numberWidth () then
@@ -661,6 +802,18 @@ type TableGrid() as this =
     /// Pastes a block of text at the selection.
     member _.Paste(text: string) = paste (CellText.ofTsv text)
 
+    /// A column's width now.
+    member _.ColumnWidth(j: int) = widthOf j
+
+    /// Where a column in view ends: its edge in the header.
+    member _.ColumnEdge(j: int) = xOf j + widthOf j
+
+    /// A column's width set, as a drag of its edge sets it.
+    member _.SetColumnWidth(j: int, width: float) = setWidth j width
+
+    /// A column fitted to its content again, as a double-click on its edge does.
+    member _.AutoFit(j: int) = autoFit j
+
     /// Types into the selected cell, as keys would.
     member _.TypeInto(text: string) =
         beginEdit (Some text)
@@ -673,7 +826,7 @@ type TableGrid() as this =
         Size(0.0, 0.0)
 
     override _.ArrangeOverride(size: Size) =
-        let bar = 14.0
+        let bar = Tokens.Space.s4 - Tokens.Space.s1 / 2.0
         vertical.Arrange(Rect(size.Width - bar, headerHeight, bar, max 0.0 (size.Height - headerHeight - bar)))
         horizontal.Arrange(Rect(numberWidth (), size.Height - bar, max 0.0 (size.Width - numberWidth () - bar), bar))
 
@@ -698,7 +851,7 @@ type TableGrid() as this =
         match table with
         | None -> ()
         | Some t ->
-            let line = Pen(SolidColorBrush look.Line, 1.0)
+            let line = Pen(SolidColorBrush look.Line, Tokens.border)
             let headerBrush = SolidColorBrush look.Raised
             let numbers = numberWidth ()
             let shownRows = min (visibleRows () + 1) (t.Rows - top)
@@ -718,17 +871,19 @@ type TableGrid() as this =
 
             if c1 >= left && r1 >= top then
                 dc.FillRectangle(SolidColorBrush look.Selected, Rect(a.TopLeft, b.BottomRight))
-                dc.DrawRectangle(Pen(SolidColorBrush look.Accent, 1.5), cellRect focus)
+                dc.DrawRectangle(Pen(SolidColorBrush look.Accent, 2.0 * Tokens.border), cellRect focus)
+
+            let mutable x = numbers
 
             for j in 0 .. shownColumns - 1 do
                 let column = t.Columns.[left + j]
-                let x = numbers + float j * columnWidth
-                dc.DrawText(text column.Name bold 12.5 (SolidColorBrush look.Text), Point(x + 6.0, 4.0))
-
-                dc.DrawText(text (kindOf column) typeface 11.0 dim, Point(x + 6.0, 21.0))
+                let columnWidth = widthOf (left + j)
+                let inner = columnWidth - 2.0 * Tokens.Space.s2
+                dc.DrawText(trimmed column.Name bold Tokens.Type.ui inner (SolidColorBrush look.Text), Point(x + Tokens.Space.s2, Tokens.Space.s1))
+                dc.DrawText(trimmed (kindOf column) typeface Tokens.Type.small inner dim, Point(x + Tokens.Space.s2, headerHeight - Tokens.Space.s1 - Tokens.Type.smallLine))
 
                 // The column's cells in view, clipped to it.
-                use _ = dc.PushClip(Rect(x + 2.0, headerHeight, columnWidth - 4.0, bounds.Height - headerHeight))
+                use _ = dc.PushClip(Rect(x + Tokens.border, headerHeight, columnWidth - 2.0 * Tokens.border, bounds.Height - headerHeight))
 
                 let numeric =
                     match column.Values with
@@ -740,16 +895,21 @@ type TableGrid() as this =
                     let shown = (CellText.shown column.Values (top + i)).Replace('\n', '⏎').Replace('\r', '⏎')
 
                     if shown <> "" then
-                        let width, draw = cellText shown 12.5 cellNumerals ink
-                        let y = headerHeight + float i * rowHeight + 3.0
-                        draw dc (Point((if numeric then x + columnWidth - 5.0 - width else x + 5.0), y))
+                        let y = headerHeight + float i * rowHeight + textTop
+
+                        if numeric then
+                            let width, draw = cellText shown Tokens.Type.ui cellNumerals ink
+                            draw dc (Point(x + columnWidth - Tokens.Space.s2 - width, y))
+                        else
+                            dc.DrawText(trimmed shown typeface Tokens.Type.ui inner ink, Point(x + Tokens.Space.s2, y))
 
                 dc.DrawLine(line, Point(x + columnWidth, 0.0), Point(x + columnWidth, bounds.Height))
+                x <- x + columnWidth
 
             for i in 0 .. shownRows - 1 do
                 let y = headerHeight + float i * rowHeight
-                let width, draw = cellText (string (top + i + 1)) 11.0 rowNumerals dim
-                draw dc (Point(numbers - 6.0 - width, y + 4.0))
+                let width, draw = cellText (string (top + i + 1)) Tokens.Type.small rowNumerals dim
+                draw dc (Point(numbers - Tokens.Space.s2 - width, y + textTop + Tokens.border))
                 dc.DrawLine(line, Point(0.0, y + rowHeight), Point(bounds.Width, y + rowHeight))
 
             dc.DrawLine(line, Point(0.0, headerHeight), Point(bounds.Width, headerHeight))
@@ -760,6 +920,45 @@ type TableGrid() as this =
     override _.OnPointerPressed(e: PointerPressedEventArgs) =
         base.OnPointerPressed e
         this.Focus() |> ignore
+
+        match edgeAt (e.GetPosition this) with
+        | Some j when e.GetCurrentPoint(this).Properties.IsLeftButtonPressed ->
+            // A column's edge: a drag resizes it, a double-click fits it to its content.
+            if e.ClickCount = 2 then
+                resizing <- None
+                autoFit j
+            else
+                resizing <- Some(j, (e.GetPosition this).X, widthOf j)
+                e.Pointer.Capture this
+
+            e.Handled <- true
+        | _ -> this.Pressed e
+
+    override _.OnPointerMoved(e: PointerEventArgs) =
+        base.OnPointerMoved e
+        let p = e.GetPosition this
+
+        match resizing with
+        | Some(j, x0, w0) -> setWidth j (w0 + p.X - x0)
+        | None ->
+            this.Cursor <- (if (edgeAt p).IsSome then resizeCursor.Value else null)
+
+            let tip =
+                match hit p with
+                | Some(OnColumnHeader c) -> fullName c
+                | _ -> null
+
+            if not (Object.Equals(ToolTip.GetTip this, tip)) then ToolTip.SetTip(this, tip)
+
+    override _.OnPointerReleased(e: PointerReleasedEventArgs) =
+        base.OnPointerReleased e
+
+        if resizing.IsSome then
+            resizing <- None
+            e.Pointer.Capture null
+
+    /// A press anywhere but on a column's edge: selects, edits, or opens a header.
+    member private _.Pressed(e: PointerPressedEventArgs) =
         let extend = e.KeyModifiers.HasFlag KeyModifiers.Shift || e.KeyModifiers.HasFlag KeyModifiers.Control
         let c0, c1, r0, r1 = selectionBounds ()
 

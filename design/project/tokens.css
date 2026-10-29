@@ -35,6 +35,10 @@
   --h-pane-header: 36px;
   --h-status: 24px;
   --h-icon: 16px;
+  --w-files: 224px;
+  --w-column-min: 40px;
+  --w-column-max: 320px;
+  --w-label: 48px;
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 8px;
