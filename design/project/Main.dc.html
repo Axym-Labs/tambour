@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tambour workspace</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="components.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div class="window tb {{mode}}">
+
+  <div class="tabs">
+    <div class="tab active">
+      <span>figure.fsx</span>
+      <button class="icon-btn sm" aria-label="Close figure.fsx"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></button>
+    </div>
+    <div class="tab">
+      <span>calibration.fsx</span>
+      <span class="dot" aria-label="unsaved"></span>
+      <button class="icon-btn sm" aria-label="Close calibration.fsx"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></button>
+    </div>
+    <div class="tab">
+      <span>decay.fsx</span>
+      <button class="icon-btn sm" aria-label="Close decay.fsx"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></button>
+    </div>
+    <button class="icon-btn sm" style="margin: 0 0 var(--space-1) var(--space-1)" aria-label="New script (Ctrl+N)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
+  </div>
+
+  <div class="toolbar">
+    <button class="menu">File</button>
+    <button class="menu">Edit</button>
+    <button class="menu">Run</button>
+    <button class="menu">Table</button>
+    <button class="menu">View</button>
+    <button class="menu">Help</button>
+    <span class="sep"></span>
+    <button class="icon-btn run" aria-label="Run (Ctrl+Enter)"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 3.2v9.6l7.5-4.8z"/></svg></button>
+    <button class="icon-btn off" aria-label="Cancel the run (Escape)"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1"/></svg></button>
+    <span class="sep"></span>
+    <button class="icon-btn" aria-label="Undo (Ctrl+Z)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5L3 6.5l3 3M3 6.5h6.5a3.5 3.5 0 0 1 0 7H8"/></svg></button>
+    <button class="icon-btn off" aria-label="Redo (Ctrl+Y)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3.5l3 3-3 3M13 6.5H6.5a3.5 3.5 0 0 0 0 7H8"/></svg></button>
+    <span class="sep"></span>
+    <button class="btn quiet icon-left" aria-label="Export the figure (Ctrl+E)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 10V2.5M5 5.5l3-3 3 3M3 10v3.5h10V10"/></svg>Export</button>
+    <button class="select" aria-label="Export format">PNG<svg class="chev" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
+  </div>
+
+  <div style="display: grid; grid-template-columns: 224px minmax(0, 1fr) 560px; min-height: 0">
+
+    <div class="pane" style="border-right: var(--border) solid var(--line)">
+      <div class="pane-header" style="align-items: center">
+        <span class="title ellipsis">dropped-ball</span>
+        <div class="pane-actions">
+          <button class="icon-btn sm" aria-label="New script"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
+          <button class="icon-btn sm" aria-label="More project actions"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="12.5" cy="8" r="1.25"/></svg></button>
+        </div>
+      </div>
+      <div style="padding: var(--space-2); display: flex; flex-direction: column">
+        <div class="list-row active">
+          <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.75h5l3 3v9.5H4zM9 1.75v3h3"/></svg>
+          <span class="name">figure.fsx</span>
+        </div>
+        <div class="list-row" style="padding-left: calc(var(--space-2) + var(--space-5))">
+          <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><rect x="2.5" y="3" width="11" height="10" rx="1"/><path d="M2.5 6.5h11M6.5 6.5V13"/></svg>
+          <span class="name">trials</span>
+          <span class="end">14 × 31</span>
+        </div>
+        <div class="list-row">
+          <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.75h5l3 3v9.5H4zM9 1.75v3h3"/></svg>
+          <span class="name">calibration.fsx</span>
+          <span class="end" style="color: var(--text)" aria-label="unsaved">●</span>
+        </div>
+        <div class="list-row" style="padding-left: calc(var(--space-2) + var(--space-5))">
+          <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><rect x="2.5" y="3" width="11" height="10" rx="1"/><path d="M2.5 6.5h11M6.5 6.5V13"/></svg>
+          <span class="name">gates</span>
+          <span class="end">40 × 6</span>
+        </div>
+        <div class="list-row">
+          <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.75h5l3 3v9.5H4zM9 1.75v3h3"/></svg>
+          <span class="name muted">notes.fsx</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: grid; grid-template-rows: minmax(0, 1fr) 176px; min-width: 0; min-height: 0; border-right: var(--border) solid var(--line)">
+      <div style="background: var(--page); display: grid; grid-template-columns: 48px minmax(0, 1fr); padding-top: var(--space-2); overflow: hidden">
+        <div class="code" style="color: var(--faint); text-align: right; padding-right: var(--space-3)">
+          <div>1</div><div>2</div><div>3</div><div>4</div><div>5</div><div>6</div><div>7</div><div>8</div><div style="color: var(--text)">9</div>
+        </div>
+        <div>
+          <div class="code com">// Ctrl+Enter (or F5) runs the script; Escape cancels a run.</div>
+          <div class="code"><span class="k">let</span> <span class="v">fig</span> =</div>
+          <div class="code">    <span class="fn">plot</span> <span class="v">trials</span> {</div>
+          <div class="code">        <span class="fn">x</span> <span class="ty">U</span>.<span class="v">second</span> (<span class="k">fun</span> <span class="v">r</span> -&gt; <span class="v">r</span>.<span class="v">time</span>)</div>
+          <div class="code">        <span class="fn">y</span> <span class="ty">U</span>.<span class="v">metre</span> (<span class="k">fun</span> <span class="v">r</span> -&gt; <span class="v">r</span>.<span class="v">height</span>)</div>
+          <div class="code">        <span class="fn">layer</span> <span class="ty">GeomPoint</span></div>
+          <div class="code">    }</div>
+          <div class="code">    |&gt; <span class="ty">Chart</span>.<span class="fn">withTitle</span> <span class="str">"A dropped ball"</span></div>
+          <div class="code" style="background: var(--hover)"> </div>
+        </div>
+      </div>
+      <div class="pane" style="border-top: var(--border) solid var(--line)">
+        <div class="pane-header">
+          <span class="pane-tab active">Problems <span class="count">0</span></span>
+          <span class="pane-tab">Output</span>
+          <div class="pane-actions">
+            <button class="icon-btn sm" aria-label="Hide the panel (Ctrl+J)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
+          </div>
+        </div>
+        <div style="padding: var(--space-3); display: flex; gap: var(--space-2); align-items: center; align-self: start">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--success)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg>
+          <span class="muted">No problems in the script.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="pane">
+      <div class="pane-header">
+        <span class="pane-tab active">Figure</span>
+        <span class="pane-tab"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><rect x="2.5" y="3" width="11" height="10" rx="1"/><path d="M2.5 6.5h11M6.5 6.5V13"/></svg>trials</span>
+        <div class="pane-actions">
+          <button class="icon-btn sm on" aria-label="Hide the figure's actions"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2 4.5h12M2 11.5h12"/><circle cx="5.5" cy="4.5" r="1.75" fill="var(--surface)"/><circle cx="10.5" cy="11.5" r="1.75" fill="var(--surface)"/></svg></button>
+          <button class="icon-btn sm" aria-label="How to zoom: drag to zoom, Shift+drag pans, double-click resets"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 7.25v4M8 4.8v.01"/></svg></button>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0">
+        <div style="padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); border-bottom: var(--border) solid var(--line)">
+          <div class="labelled">
+            <label style="width: 48px">Title</label>
+            <input class="field focus" style="flex: 1 1 0" value="A dropped ball" aria-label="Title">
+          </div>
+          <div style="display: flex; gap: var(--space-3)">
+            <div class="labelled" style="flex: 1 1 0">
+              <label style="width: 48px">x label</label>
+              <input class="field" style="flex: 1 1 0" placeholder="t [s]" aria-label="x label">
+            </div>
+            <div class="labelled" style="flex: 1 1 0">
+              <label>y label</label>
+              <input class="field" style="flex: 1 1 0" placeholder="height [m]" aria-label="y label">
+            </div>
+          </div>
+          <div style="display: flex; gap: var(--space-2); align-items: center">
+            <label class="label" style="width: 48px">y axis</label>
+            <button class="btn">Log</button>
+            <input class="field" style="width: 56px" placeholder="from" aria-label="y from">
+            <span class="muted">–</span>
+            <input class="field" style="width: 56px" placeholder="to" aria-label="y to">
+            <span class="spacer"></span>
+            <button class="select" aria-label="Theme">publication<svg class="chev" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
+            <button class="btn icon-left"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg>Layer</button>
+            <button class="icon-btn" aria-label="More figure actions: legend, colour by, facet by, fit"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="12.5" cy="8" r="1.25"/></svg></button>
+          </div>
+        </div>
+        <div style="padding: var(--space-4); min-height: 0; display: flex">
+          <div style="flex: 1 1 0; background: #FFFFFF; border: var(--border) solid var(--line); border-radius: var(--radius-md); overflow: hidden; display: flex; align-items: center; justify-content: center">
+            <svg width="520" height="420" viewBox="0 0 520 420" role="img" aria-label="A dropped ball: height against time, falling from 50 m to 0 in about 3.2 s" style="font-family: var(--font-ui)">
+              <text x="270" y="26" text-anchor="middle" font-size="15" font-weight="600" fill="#1F2328">A dropped ball</text>
+              <path d="M60 320H500M60 250H500M60 180H500M60 110H500M60 40H500" stroke="#E6E8EB" stroke-width="1"/>
+              <path d="M60 40V390H500" stroke="#1F2328" stroke-width="1" fill="none"/>
+              <path d="{{ticks}}" stroke="#1F2328" stroke-width="1"/>
+              <path d="{{curve}}" stroke="#0969DA" stroke-width="1.5" fill="none" opacity="0.35"/>
+              <path d="{{points}}" fill="#0969DA"/>
+              <g font-size="11" fill="#1F2328" text-anchor="middle">
+                <text x="60" y="406">0</text><text x="128.75" y="406">0.5</text><text x="197.5" y="406">1</text><text x="266.25" y="406">1.5</text><text x="335" y="406">2</text><text x="403.75" y="406">2.5</text><text x="472.5" y="406">3</text>
+              </g>
+              <g font-size="11" fill="#1F2328" text-anchor="end">
+                <text x="52" y="394">0</text><text x="52" y="324">10</text><text x="52" y="254">20</text><text x="52" y="184">30</text><text x="52" y="114">40</text><text x="52" y="44">50</text>
+              </g>
+              <text x="280" y="418" text-anchor="middle" font-size="12" fill="#1F2328">t [s]</text>
+              <text x="16" y="215" text-anchor="middle" font-size="12" fill="#1F2328" transform="rotate(-90 16 215)">height [m]</text>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="status">
+    <span class="ok">●</span><span style="margin-left: calc(0px - var(--space-3))">ran in 21 ms</span>
+    <span class="spacer"></span>
+    <span>no problems</span>
+    <span>Ln 9, Col 1</span>
+    <span>Marey 1.0.0-dev.323</span>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const X = (t) => 60 + t / 3.2 * 440;
+    const Y = (h) => 390 - h / 50 * 350;
+    let points = '';
+    let curve = '';
+    for (let i = 0; i <= 31; i++) {
+      const t = i * 0.1;
+      const h = 50 - 4.905 * t * t;
+      curve += (i === 0 ? 'M' : 'L') + X(t).toFixed(1) + ' ' + Y(Math.max(0, h)).toFixed(1);
+      const noise = Math.sin(i * 12.9898) * 0.45;
+      const x = X(t), y = Y(Math.max(0, h + noise));
+      points += 'M' + (x - 2.5).toFixed(1) + ' ' + y.toFixed(1) + 'a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0';
+    }
+    let ticks = '';
+    [0, 0.5, 1, 1.5, 2, 2.5, 3].forEach((t) => { ticks += 'M' + X(t) + ' 390v4'; });
+    [0, 10, 20, 30, 40, 50].forEach((h) => { ticks += 'M60 ' + Y(h) + 'h-4'; });
+    return { mode: this.props.dark ? 'dark' : '', points, curve, ticks };
+  }
+}
+</script>
+</body>
+</html>

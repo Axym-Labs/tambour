@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tambour preferences</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="components.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div class="tb {{mode}}" style="width: 1280px; height: 800px; position: relative; overflow: hidden">
+  <dc-import name="Main" dark="{{dark}}" hint-size="1280px,800px"></dc-import>
+  <div class="scrim"></div>
+
+  <div class="popup" role="dialog" aria-label="Preferences" style="position: absolute; left: 280px; top: 132px; width: 720px; height: 536px; display: grid; grid-template-rows: var(--h-toolbar) minmax(0, 1fr) auto; overflow: hidden; background: var(--surface)">
+    <div style="display: flex; align-items: center; padding: 0 var(--space-2) 0 var(--space-4); border-bottom: var(--border) solid var(--line)">
+      <span class="title">Preferences</span>
+      <span class="spacer"></span>
+      <button class="icon-btn" aria-label="Close (Escape)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></button>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 176px minmax(0, 1fr); min-height: 0">
+      <div style="padding: var(--space-2); border-right: var(--border) solid var(--line); display: flex; flex-direction: column">
+        <div class="list-row active">Appearance</div>
+        <div class="list-row">Editor</div>
+        <div class="list-row">Export</div>
+        <div class="list-row">Recent files</div>
+        <div class="section-label" style="margin-top: var(--space-2)">This project</div>
+        <div class="list-row">Figures</div>
+      </div>
+
+      <div style="background: var(--page); padding: var(--space-5); display: flex; flex-direction: column; gap: var(--space-5); overflow: hidden">
+        <div style="display: flex; flex-direction: column; gap: var(--space-3)">
+          <div class="title">Appearance</div>
+          <div style="display: grid; grid-template-columns: 136px minmax(0, 1fr); gap: var(--space-3) var(--space-4); align-items: center">
+            <label class="label">Theme</label>
+            <div class="segmented" role="group" aria-label="Theme" style="justify-self: start">
+              <button class="on">System</button><button>Light</button><button>Dark</button>
+            </div>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: var(--space-3); border-top: var(--border) solid var(--line); padding-top: var(--space-5)">
+          <div class="title">Editor</div>
+          <div style="display: grid; grid-template-columns: 136px minmax(0, 1fr); gap: var(--space-3) var(--space-4); align-items: center">
+            <label class="label">Font</label>
+            <div style="display: flex; gap: var(--space-2)">
+              <button class="select" style="width: 200px" aria-label="Editor font">JetBrains Mono<svg class="chev" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
+              <input class="field" style="width: 64px; text-align: right" value="14" aria-label="Font size">
+              <span class="muted" style="align-self: center">px</span>
+            </div>
+            <span></span>
+            <label class="check"><span class="box on"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg></span>Ligatures</label>
+            <span></span>
+            <label class="check"><span class="box on"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg></span>Close brackets and quotes as I type<span class="muted small">not &lt; or &#39;</span></label>
+            <span></span>
+            <label class="check"><span class="box"></span>Run the script on save</label>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: var(--space-3); border-top: var(--border) solid var(--line); padding-top: var(--space-5)">
+          <div class="title">Recent files</div>
+          <div style="display: grid; grid-template-columns: 136px minmax(0, 1fr); gap: var(--space-3) var(--space-4); align-items: center">
+            <label class="label">Keep</label>
+            <div style="display: flex; align-items: center; gap: var(--space-2)">
+              <input class="field" style="width: 64px; text-align: right" value="10" aria-label="Recent files to keep">
+              <span class="muted">files and folders</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4); border-top: var(--border) solid var(--line)">
+      <button class="btn quiet icon-left"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.75h5l3 3v9.5H4zM9 1.75v3h3"/></svg>Open settings.json</button>
+      <span class="spacer"></span>
+      <span class="muted small">Changes apply at once.</span>
+      <button class="btn primary">Close</button>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = !!this.props.dark;
+    return { dark, mode: dark ? 'dark' : '' };
+  }
+}
+</script>
+</body>
+</html>

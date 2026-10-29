@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tambour start view</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="components.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div class="window tb {{mode}}">
+
+  <div class="tabs">
+    <button class="icon-btn sm" style="margin: 0 0 var(--space-1) 0" aria-label="New script (Ctrl+N)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
+  </div>
+
+  <div class="toolbar">
+    <button class="menu">File</button>
+    <button class="menu">Edit</button>
+    <button class="menu">View</button>
+    <button class="menu">Help</button>
+  </div>
+
+  <div style="display: flex; justify-content: center; padding-top: var(--space-7); min-height: 0">
+    <div style="width: 800px; display: flex; flex-direction: column; gap: var(--space-6)">
+      <div style="display: flex; align-items: baseline; gap: var(--space-3)">
+        <span class="display">Tambour</span>
+        <span class="muted">Measured data, figures and F# scripting</span>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: var(--space-6)">
+        <div style="display: flex; flex-direction: column">
+          <div class="section-label">Start</div>
+          <a class="list-row hover" href="Main.dc.html" style="color: var(--text); text-decoration: none">
+            <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.75h5l3 3v9.5H4zM9 1.75v3h3M8 7.5v4M6 9.5h4"/></svg>
+            <span class="name">New script</span><span class="end">Ctrl+N</span>
+          </a>
+          <div class="list-row">
+            <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.75h5l3 3v9.5H4zM9 1.75v3h3"/></svg>
+            <span class="name">Open…</span><span class="end">Ctrl+O</span>
+          </div>
+          <div class="list-row">
+            <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 4.25a1 1 0 0 1 1-1h3l1.5 1.5h6a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1z"/></svg>
+            <span class="name">Open folder…</span><span class="end">Ctrl+Shift+O</span>
+          </div>
+          <div class="list-row">
+            <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 2.5v11h11M5 10l3-3.5 2 2 3.5-4"/></svg>
+            <span class="name">The example figure</span>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; min-width: 0">
+          <div class="section-label">Recent</div>
+          <div class="list-row">
+            <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.75h5l3 3v9.5H4zM9 1.75v3h3"/></svg>
+            <span class="name">figure.fsx</span><span class="end ellipsis">~/papers/dropped-ball</span>
+          </div>
+          <div class="list-row">
+            <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.75h5l3 3v9.5H4zM9 1.75v3h3"/></svg>
+            <span class="name">calibration.fsx</span><span class="end ellipsis">~/papers/dropped-ball</span>
+          </div>
+          <div class="list-row">
+            <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 4.25a1 1 0 0 1 1-1h3l1.5 1.5h6a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1z"/></svg>
+            <span class="name">pendulum</span><span class="end ellipsis">~/teaching</span>
+          </div>
+          <div class="list-row">
+            <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.75h5l3 3v9.5H4zM9 1.75v3h3"/></svg>
+            <span class="name">decay.fsx</span><span class="end ellipsis">~/scratch</span>
+          </div>
+          <div class="list-row gone">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.75h5l3 3v9.5H4zM9 1.75v3h3"/></svg>
+            <span class="name">old-figure.fsx</span><span class="end ellipsis" style="color: var(--faint)">missing · ~/Downloads</span>
+          </div>
+          <div style="display: flex; gap: var(--space-2); margin-top: var(--space-2)">
+            <button class="btn quiet">Remove missing</button>
+            <button class="btn quiet">Clear</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="status">
+    <span>no script open</span>
+    <span class="spacer"></span>
+    <span>Marey 1.0.0-dev.323</span>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { mode: this.props.dark ? 'dark' : '' };
+  }
+}
+</script>
+</body>
+</html>

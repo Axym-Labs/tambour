@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tambour wide table</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="components.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div class="window tb {{mode}}">
+
+  <div class="tabs">
+    <div class="tab active">
+      <span>figure.fsx</span>
+      <button class="icon-btn sm" aria-label="Close figure.fsx"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></button>
+    </div>
+    <div class="tab">
+      <span>calibration.fsx</span>
+      <span class="dot" aria-label="unsaved"></span>
+      <button class="icon-btn sm" aria-label="Close calibration.fsx"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></button>
+    </div>
+    <div class="tab">
+      <span>decay.fsx</span>
+      <button class="icon-btn sm" aria-label="Close decay.fsx"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></button>
+    </div>
+    <button class="icon-btn sm" style="margin: 0 0 var(--space-1) var(--space-1)" aria-label="New script (Ctrl+N)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
+  </div>
+
+  <div class="toolbar">
+    <button class="menu">File</button>
+    <button class="menu">Edit</button>
+    <button class="menu">Run</button>
+    <button class="menu">Table</button>
+    <button class="menu">View</button>
+    <button class="menu">Help</button>
+    <span class="sep"></span>
+    <button class="icon-btn run" aria-label="Run (Ctrl+Enter)"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 3.2v9.6l7.5-4.8z"/></svg></button>
+    <button class="icon-btn off" aria-label="Cancel the run (Escape)"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1"/></svg></button>
+    <span class="sep"></span>
+    <button class="icon-btn" aria-label="Undo (Ctrl+Z)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5L3 6.5l3 3M3 6.5h6.5a3.5 3.5 0 0 1 0 7H8"/></svg></button>
+    <button class="icon-btn off" aria-label="Redo (Ctrl+Y)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3.5l3 3-3 3M13 6.5H6.5a3.5 3.5 0 0 0 0 7H8"/></svg></button>
+    <span class="sep"></span>
+    <button class="btn quiet icon-left" aria-label="Export the figure (Ctrl+E)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 10V2.5M5 5.5l3-3 3 3M3 10v3.5h10V10"/></svg>Export</button>
+    <button class="select" aria-label="Export format">PNG<svg class="chev" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
+  </div>
+
+  <div class="pane" style="grid-template-rows: var(--h-pane-header) auto minmax(0, 1fr)">
+    <div class="pane-header">
+      <span class="pane-tab">Figure</span>
+      <span class="pane-tab active"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><rect x="2.5" y="3" width="11" height="10" rx="1"/><path d="M2.5 6.5h11M6.5 6.5V13"/></svg>trials</span>
+      <div class="pane-actions">
+        <button class="btn quiet icon-left" aria-label="Leave the full view (Escape)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2.5V6H2.5M10 2.5V6h3.5M13.5 10H10v3.5M2.5 10H6v3.5"/></svg>Leave full view<span class="muted small" style="margin-left: var(--space-1)">Esc</span></button>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-bottom: var(--border) solid var(--line)">
+      <button class="btn icon-left"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg>Column</button>
+      <button class="btn icon-left"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg>Rows<svg class="chev" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
+      <span class="sep"></span>
+      <button class="btn primary icon-left"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 2.5v11h11M5 10l3-3.5 2 2 3.5-4"/></svg>Plot selected columns</button>
+      <span class="muted" style="margin-left: var(--space-2)">14 rows · 30 columns · drop time selected</span>
+      <span class="spacer"></span>
+      <button class="select" style="background: var(--hover)" aria-label="Choose columns" aria-expanded="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><rect x="2.5" y="3" width="11" height="10" rx="1"/><path d="M6.17 3v10M9.83 3v10"/></svg>Columns<span class="muted">27 of 30</span><svg class="chev" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
+      <button class="icon-btn" aria-label="More table actions: rename, duplicate, remove"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="12.5" cy="8" r="1.25"/></svg></button>
+    </div>
+
+    <div style="display: grid; grid-template-columns: auto minmax(0, 1fr); min-height: 0; overflow: hidden; background: var(--page)">
+      <div style="display: flex; flex-direction: column; border-right: var(--border) solid var(--line-strong); box-shadow: var(--border) 0 0 var(--line-strong)">
+        <div style="display: flex">
+          <div class="grid-head" style="width: 40px"></div>
+          <div class="grid-head" style="width: 64px"><div class="name">trial</div><div class="unit">int</div></div>
+        </div>
+        <sc-for list="{{rows}}" as="row" hint-placeholder-count="14">
+          <div style="display: flex">
+            <div class="grid-cell grid-num" style="width: 40px">{{row.n}}</div>
+            <div class="grid-cell" style="width: 64px; text-align: right">{{row.trial}}</div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display: flex; flex-direction: column; overflow: hidden">
+        <div style="display: flex">
+          <sc-for list="{{shown}}" as="c" hint-placeholder-count="14">
+            <div class="grid-head" style="{{c.headStyle}}" title="{{c.full}}"><div class="name">{{c.name}}</div><div class="unit">{{c.unit}}</div></div>
+          </sc-for>
+        </div>
+        <sc-for list="{{rows}}" as="row" hint-placeholder-count="14">
+          <div style="display: flex">
+            <sc-for list="{{row.cells}}" as="cell" hint-placeholder-count="14">
+              <div class="grid-cell" style="{{cell.style}}">{{cell.text}}</div>
+            </sc-for>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+
+  <div class="status">
+    <span>trials · row 6, drop time</span>
+    <span class="muted">frozen: trial</span>
+    <span class="spacer"></span>
+    <span>no problems</span>
+    <span>Marey 1.0.0-dev.323</span>
+  </div>
+
+  <div class="popup" style="position: absolute; top: 160px; right: 52px; width: 300px; display: flex; flex-direction: column">
+    <div style="padding: var(--space-2); border-bottom: var(--border) solid var(--line)">
+      <div class="field focus" style="display: flex; align-items: center; gap: var(--space-2)">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.25"/><path d="M10.25 10.25L13.5 13.5"/></svg>
+        <input style="border: 0; background: none; outline: none; flex: 1 1 0; min-width: 0; padding: 0" value="gate" aria-label="Filter columns">
+      </div>
+    </div>
+    <div style="padding: var(--space-1) var(--space-2); display: flex; flex-direction: column">
+      <sc-for list="{{chooser}}" as="c" hint-placeholder-count="6">
+        <div class="list-row">
+          <span class="box {{c.on}}"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg></span>
+          <span class="name">{{c.name}}</span>
+          <span class="muted small">{{c.unit}}</span>
+          <span class="end">{{c.state}}</span>
+        </div>
+      </sc-for>
+    </div>
+    <div style="display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); border-top: var(--border) solid var(--line)">
+      <span class="muted small">6 of 30 match</span>
+      <span class="spacer"></span>
+      <button class="btn quiet">Show all</button>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const materials = ['steel', 'brass', 'nylon'];
+    const mass = { steel: 28.2, brass: 30.6, nylon: 4.1 };
+    const diam = { steel: 19.0, brass: 19.0, nylon: 20.0 };
+    const rows = [];
+    const data = [];
+    for (let i = 1; i <= 14; i++) {
+      const m = materials[i % 3];
+      const h = 0.5 + ((i - 1) % 4) * 0.5;
+      const drag = m === 'nylon' ? 0.012 : 0.002;
+      const t = Math.sqrt(2 * h / 9.81) * (1 + drag) + Math.sin(i * 3.7) * 0.0015;
+      const g = 2 * h / (t * t);
+      const v = {
+        material: m, mass: mass[m].toFixed(1), diameter: diam[m].toFixed(1), height: h.toFixed(2),
+        time: t.toFixed(4), g1: (t * 0.25).toFixed(4), g2: (t * 0.5).toFixed(4), g3: (t * 0.75).toFixed(4), g4: (t * 0.98).toFixed(4),
+        vel: (9.81 * t * 0.98).toFixed(3), gest: g.toFixed(3), gsig: (0.018 + (i % 5) * 0.003).toFixed(3), res: (g - 9.81).toFixed(3),
+        temp: (21.2 + (i % 4) * 0.1).toFixed(1), press: (1012.4 - (i % 3) * 0.3).toFixed(1), hum: String(41 + (i % 3)),
+        dens: (1.199 - (i % 4) * 0.001).toFixed(3), cd: '0.47', re: String(Math.round(9.81 * t * diam[m] / 1000 / 1.5e-5)),
+        rate: '240', frames: String(Math.round(t * 240)), delay: String(11 + (i % 3)), offset: '0.8', cal: 'cal-03',
+        inc: i === 9 ? 'false' : 'true', notes: i === 9 ? 're-run: gate 2 missed the ball on release' : ''
+      };
+      data.push(v);
+      rows.push({ n: i, trial: i });
+    }
+    const cols = [
+      ['material', '', 'material', 72, 'left'], ['mass', 'g', 'mass', 64], ['diameter', 'mm', 'diameter', 76],
+      ['release height', 'm', 'height', 104], ['drop time', 's', 'time', 84], ['gate 1', 's', 'g1', 72],
+      ['gate 2', 's', 'g2', 0], ['gate 3', 's', 'g3', 72], ['gate 4', 's', 'g4', 72],
+      ['velocity at gate 4', 'm/s', 'vel', 92], ['g estimate', 'm/s²', 'gest', 88], ['g uncertainty', 'm/s²', 'gsig', 96],
+      ['residual', 'm/s²', 'res', 80], ['temperature', '°C', 'temp', 96], ['air pressure', 'hPa', 'press', 92],
+      ['relative humidity', '%', 'hum', 84], ['air density', 'kg/m³', 'dens', 88], ['drag coefficient', '', 'cd', 96],
+      ['Reynolds number', '', 're', 104], ['camera rate', 'Hz', 'rate', 88], ['frames', '', 'frames', 64],
+      ['release delay', 'ms', 'delay', 96], ['sensor offset', 'mm', 'offset', 96], ['calibration', '', 'cal', 88, 'left'],
+      ['included', 'bool', 'inc', 72, 'left'], ['notes', '', 'notes', 200, 'left']
+    ];
+    const selected = 'time';
+    const shown = cols.map(([name, unit, key, w]) => {
+      if (w === 0) return { name: '', unit: '', full: name + ' (collapsed: click to expand)', headStyle: 'width: var(--space-3); padding: 0; background: var(--raised)' };
+      const tint = key === selected ? '; background: var(--accent-subtle)' : '';
+      return { name, unit: unit || (key === 'material' || key === 'cal' || key === 'notes' ? 'string' : 'float'), full: unit ? name + ' [' + unit + ']' : name, headStyle: 'width: ' + w + 'px' + tint };
+    });
+    rows.forEach((row, r) => {
+      row.cells = cols.map(([name, unit, key, w, align]) => {
+        if (w === 0) return { text: '', style: 'width: var(--space-3); padding: 0; background: var(--raised)' };
+        let style = 'width: ' + w + 'px; text-align: ' + (align || 'right');
+        if (key === selected) style += '; background: var(--accent-subtle)';
+        if (key === selected && r === 5) style += '; box-shadow: inset 0 0 0 2px var(--accent)';
+        if (key === 'inc' && data[r].inc === 'false') style += '; color: var(--muted)';
+        return { text: data[r][key], style };
+      });
+    });
+    const chooser = [
+      { name: 'gate 1', unit: 's', on: 'on', state: '' },
+      { name: 'gate 2', unit: 's', on: 'on', state: 'collapsed' },
+      { name: 'gate 3', unit: 's', on: 'on', state: '' },
+      { name: 'gate 4', unit: 's', on: 'on', state: '' },
+      { name: 'velocity at gate 4', unit: 'm/s', on: 'on', state: '' },
+      { name: 'gate spacing', unit: 'm', on: '', state: 'hidden' }
+    ];
+    return { mode: this.props.dark ? 'dark' : '', rows, shown, chooser };
+  }
+}
+</script>
+</body>
+</html>

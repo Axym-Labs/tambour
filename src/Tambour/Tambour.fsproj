@@ -9,6 +9,7 @@
   <ItemGroup>
     <Compile Include="Paths.fs" />
     <Compile Include="Preferences.fs" />
+    <Compile Include="Tokens.fs" />
     <Compile Include="Palette.fs" />
     <Compile Include="Markdown.fs" />
     <Compile Include="Evaluation.fs" />
