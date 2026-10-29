@@ -35,7 +35,9 @@ type Look =
       Warning: Color
       Info: Color
       /// A semantic token type's colour, by its name (`function`, `enumMember`, …).
-      Kinds: Map<string, Color> }
+      Kinds: Map<string, Color>
+      /// Every colour role of the design tokens, for what the fields above do not name.
+      Roles: Tokens.Colours }
 
 let private rgb (hex: string) = Color.Parse hex
 
@@ -45,23 +47,25 @@ let code = FontFamily "avares://tambour/Fonts#JetBrains Mono, Cascadia Code, Con
 
 /// The editor's colours are Visual Studio Code's Light+, as its grammar theme is.
 let light =
-    { Background = rgb "#FFFFFF"
+    let roles = Tokens.light
+
+    { Background = roles.Page
       Foreground = rgb "#000000"
-      Surface = rgb "#F3F4F6"
-      Raised = rgb "#EAECEF"
-      Line = rgb "#D8DCE1"
-      Text = rgb "#1F2328"
-      Dim = rgb "#57606A"
-      Accent = rgb "#0969DA"
-      Selected = Color.Parse "#330969DA"
-      Marked = Color.Parse "#50F5C028"
+      Surface = roles.Surface
+      Raised = roles.Raised
+      Line = roles.Line
+      Text = roles.Text
+      Dim = roles.Muted
+      Accent = roles.Accent
+      Selected = roles.Selected
+      Marked = roles.Marked
       LineNumbers = rgb "#6E7681"
       CurrentLine = rgb "#F3F3F3"
       Selection = rgb "#ADD6FF"
       Uses = Color.Parse "#40A0C8FF"
       Bracket = Color.Parse "#4080A0C0"
-      Error = rgb "#D11E1E"
-      Warning = rgb "#8A5C00"
+      Error = roles.Error
+      Warning = roles.Warning
       Info = rgb "#1A6FB0"
       Kinds =
         Map.ofList
@@ -80,28 +84,31 @@ let light =
               "function", rgb "#795E26"
               "method", rgb "#795E26"
               "operator", rgb "#000000"
-              "keyword", rgb "#0000FF" ] }
+              "keyword", rgb "#0000FF" ]
+      Roles = roles }
 
 /// A dark grey, not black. The editor's colours are Visual Studio Code's Dark+, as its grammar
 /// theme is.
 let dark =
-    { Background = rgb "#1E1E1E"
+    let roles = Tokens.dark
+
+    { Background = roles.Page
       Foreground = rgb "#D4D4D4"
-      Surface = rgb "#252526"
-      Raised = rgb "#2D2D30"
-      Line = rgb "#3E3E42"
-      Text = rgb "#CCCCCC"
-      Dim = rgb "#A0A4AA"
-      Accent = rgb "#4DA3FF"
-      Selected = Color.Parse "#404DA3FF"
-      Marked = Color.Parse "#50C8A028"
+      Surface = roles.Surface
+      Raised = roles.Raised
+      Line = roles.Line
+      Text = roles.Text
+      Dim = roles.Muted
+      Accent = roles.Accent
+      Selected = roles.Selected
+      Marked = roles.Marked
       LineNumbers = rgb "#858585"
       CurrentLine = rgb "#2A2D2E"
       Selection = rgb "#264F78"
       Uses = Color.Parse "#40C8C8C8"
       Bracket = Color.Parse "#50A0A0A0"
-      Error = rgb "#FF6464"
-      Warning = rgb "#CCA700"
+      Error = roles.Error
+      Warning = roles.Warning
       Info = rgb "#3794FF"
       Kinds =
         Map.ofList
@@ -120,7 +127,8 @@ let dark =
               "function", rgb "#DCDCAA"
               "method", rgb "#DCDCAA"
               "operator", rgb "#D4D4D4"
-              "keyword", rgb "#569CD6" ] }
+              "keyword", rgb "#569CD6" ]
+      Roles = roles }
 
 let forVariant (variant: ThemeVariant) = if variant = ThemeVariant.Dark then dark else light
 
@@ -136,15 +144,13 @@ let grammarTheme (look: Look) =
 /// Fluent's resources for a look, so its controls are drawn in the same colours on every OS
 /// rather than in the system's accent and Fluent's own greys.
 let fluent (look: Look) =
-    let isDark = obj.ReferenceEquals(look, dark)
-
     Avalonia.Themes.Fluent.ColorPaletteResources(
         Accent = look.Accent,
         RegionColor = look.Surface,
         AltHigh = look.Background,
         BaseHigh = look.Text,
         ChromeMediumLow = look.Raised,
-        ChromeMedium = (if isDark then rgb "#333337" else rgb "#E2E5E9"),
+        ChromeMedium = look.Roles.Line,
         ErrorText = look.Error
     )
 

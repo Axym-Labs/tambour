@@ -1734,17 +1734,20 @@ let commandFor (key: Key) (modifiers: KeyModifiers) =
 
 let private commandNamed (header: string) = commands |> List.find (fun c -> c.Header = header)
 
-/// A small drawn icon, in the look's text colour: stroked unless it is a solid shape.
-let private icon (look: Palette.Look) (data: string) (solid: bool) (enabled: bool) : IView =
+/// A small drawn icon: stroked in a colour, or a solid shape filled with it; faint while it
+/// cannot be taken.
+let private icon (look: Palette.Look) (data: string) (solid: bool) (colour: Color) (enabled: bool) : IView =
+    let colour = if enabled then colour else look.Roles.Faint
+
     Avalonia.FuncUI.DSL.Path.create [
         Shapes.Path.data (Geometry.Parse data)
-        Shapes.Path.width 16.0
-        Shapes.Path.height 16.0
-        Shapes.Path.opacity (if enabled then 1.0 else 0.4)
+        Shapes.Path.width Tokens.Height.icon
+        Shapes.Path.height Tokens.Height.icon
+        Shapes.Path.verticalAlignment VerticalAlignment.Center
         if solid then
-            Shapes.Path.fill (SolidColorBrush look.Accent)
+            Shapes.Path.fill (SolidColorBrush colour)
         else
-            Shapes.Path.stroke (SolidColorBrush look.Text)
+            Shapes.Path.stroke (SolidColorBrush colour)
             Shapes.Path.strokeThickness 1.5
             Shapes.Path.strokeLineCap PenLineCap.Round
             Shapes.Path.strokeJoin PenLineJoin.Round
@@ -1810,7 +1813,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
 
     let menuBar =
         Menu.create [
-            Menu.dock Dock.Top
+            Menu.verticalAlignment VerticalAlignment.Center
             Menu.viewItems [
                 for name in menus do
                     MenuItem.create [
@@ -1861,39 +1864,74 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
             ]
         ]
 
-    let tool (header: string) : IView =
+    /// A command's button on the bar: its icon alone, or with a word beside it.
+    let tool (header: string) (word: string option) : IView =
         let command = commandNamed header
         let data, solid = icons.[header]
         let enabled = command.Enabled model
         let name = header.Replace("_", "").TrimEnd('…')
+        let colour = if header = "_Run" then look.Roles.Success else look.Text
 
         Button.create [
-            Button.content (icon look data solid enabled)
+            match word with
+            | None ->
+                Button.content (icon look data solid colour enabled)
+                Button.width Tokens.Height.control
+                Button.padding (Thickness 0.0)
+            | Some word ->
+                Button.content (
+                    StackPanel.create [
+                        StackPanel.orientation Orientation.Horizontal
+                        StackPanel.spacing Tokens.Space.s1
+                        StackPanel.children [
+                            icon look data solid colour enabled
+                            TextBlock.create [ TextBlock.text word; TextBlock.verticalAlignment VerticalAlignment.Center ]
+                        ]
+                    ]
+                )
+                Button.padding (Thickness(Tokens.Space.s2, 0.0, Tokens.Space.s3, 0.0))
+            Button.height Tokens.Height.control
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.horizontalContentAlignment HorizontalAlignment.Center
+            Button.verticalContentAlignment VerticalAlignment.Center
             Button.isEnabled enabled
-            Button.padding (Thickness(gap, gap * 0.75))
             Button.background Brushes.Transparent
             Button.tip (match command.Gesture with Some g -> $"{name} ({g})" | None -> name)
             Button.onClick ((fun _ -> dispatch command.Msg), SubPatchOptions.Always)
         ]
 
+    let separator () : IView =
+        Border.create [
+            Border.width Tokens.border
+            Border.height Tokens.Height.icon
+            Border.margin (Thickness(Tokens.Space.s1, 0.0))
+            Border.verticalAlignment VerticalAlignment.Center
+            Border.background (brush look.Line)
+        ]
+
+    // One bar: the menus, then the commands most taken.
     let toolbar =
         Border.create [
             Border.dock Dock.Top
+            Border.height Tokens.Height.toolbar
+            Border.background (brush look.Surface)
             Border.borderBrush (brush look.Line)
-            Border.borderThickness (Thickness(0.0, 0.0, 0.0, 1.0))
+            Border.borderThickness (Thickness(0.0, 0.0, 0.0, Tokens.border))
             Border.child (
                 StackPanel.create [
                     StackPanel.orientation Orientation.Horizontal
-                    StackPanel.margin (Thickness(gap, gap / 2.0))
-                    StackPanel.spacing (gap / 2.0)
+                    StackPanel.margin (Thickness(Tokens.Space.s2, 0.0))
+                    StackPanel.spacing Tokens.Space.s1
                     StackPanel.children [
-                        tool "_Run"
-                        tool "_Cancel"
-                        Border.create [ Border.width 1.0; Border.margin (Thickness(gap, gap / 2.0)); Border.background (brush look.Line) ]
-                        tool "_Undo"
-                        tool "_Redo"
-                        Border.create [ Border.width 1.0; Border.margin (Thickness(gap, gap / 2.0)); Border.background (brush look.Line) ]
-                        tool "_Export figure…"
+                        menuBar
+                        separator ()
+                        tool "_Run" None
+                        tool "_Cancel" None
+                        separator ()
+                        tool "_Undo" None
+                        tool "_Redo" None
+                        separator ()
+                        tool "_Export figure…" (Some "Export")
                         ComboBox.create [
                             ComboBox.dataItems exportFormats
                             ComboBox.verticalAlignment VerticalAlignment.Center
@@ -1903,7 +1941,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                         ]
                         ComboBox.create [
                             ComboBox.minWidth 140.0
-                            ComboBox.margin (Thickness(gap, 0.0, 0.0, 0.0))
+                            ComboBox.margin (Thickness(Tokens.Space.s2, 0.0, 0.0, 0.0))
                             ComboBox.verticalAlignment VerticalAlignment.Center
                             ComboBox.isVisible (model.Figures.Length > 1)
                             ComboBox.tip "the figure shown"
@@ -1913,7 +1951,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                         ]
                         TextBlock.create [
                             TextBlock.text model.ActionNote
-                            TextBlock.margin (Thickness(gap, 0.0, 0.0, 0.0))
+                            TextBlock.margin (Thickness(Tokens.Space.s2, 0.0, 0.0, 0.0))
                             TextBlock.verticalAlignment VerticalAlignment.Center
                             TextBlock.foreground (brush (if model.ActionNote.Contains "whole expression" || model.ActionNote.StartsWith "not done" then look.Warning else look.Dim))
                         ]
@@ -1928,28 +1966,32 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
     let statusText (text: string) (colour: Color) : IView =
         TextBlock.create [
             TextBlock.text text
-            TextBlock.fontSize 12.0
+            TextBlock.fontSize Tokens.Type.small
+            TextBlock.lineHeight Tokens.Type.smallLine
             TextBlock.verticalAlignment VerticalAlignment.Center
-            TextBlock.margin (Thickness(gap, 0.0))
             TextBlock.foreground (brush colour)
         ]
 
     let statusBar =
         Border.create [
             Border.dock Dock.Bottom
-            Border.background (brush look.Raised)
+            Border.height Tokens.Height.status
+            Border.background (brush look.Surface)
             Border.borderBrush (brush look.Line)
-            Border.borderThickness (Thickness(0.0, 1.0, 0.0, 0.0))
+            Border.borderThickness (Thickness(0.0, Tokens.border, 0.0, 0.0))
             Border.child (
                 DockPanel.create [
-                    DockPanel.margin (Thickness(gap, 2.0))
+                    DockPanel.margin (Thickness(Tokens.Space.s3, 0.0))
                     DockPanel.children [
                         StackPanel.create [
                             StackPanel.dock Dock.Right
                             StackPanel.orientation Orientation.Horizontal
+                            StackPanel.spacing Tokens.Space.s4
                             StackPanel.children [
                                 Button.create [
-                                    Button.padding (Thickness(gap, 1.0))
+                                    Button.padding (Thickness 0.0)
+                                    Button.minHeight 0.0
+                                    Button.verticalAlignment VerticalAlignment.Center
                                     Button.background Brushes.Transparent
                                     Button.tip "show the problems (Ctrl+Shift+M)"
                                     Button.onClick ((fun _ -> dispatch (ShowBottom 0)), SubPatchOptions.Always)
@@ -1960,10 +2002,10 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                              | e, 0 -> $"""{e} error{if e = 1 then "" else "s"}"""
                                              | 0, w -> $"""{w} warning{if w = 1 then "" else "s"}"""
                                              | e, w -> $"""{e} error{if e = 1 then "" else "s"}, {w} warning{if w = 1 then "" else "s"}""")
-                                            (if errors > 0 then look.Error elif warnings > 0 then look.Warning else look.Text)
+                                            (if errors > 0 then look.Error elif warnings > 0 then look.Warning else look.Dim)
                                     )
                                 ]
-                                statusText $"Ln {fst model.Caret}, Col {snd model.Caret}" look.Text
+                                statusText $"Ln {fst model.Caret}, Col {snd model.Caret}" look.Dim
                                 statusText $"Marey {Project.mareyVersion}" look.Dim
                             ]
                         ]
@@ -2152,7 +2194,6 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
     DockPanel.create [
         DockPanel.background (brush look.Surface)
         DockPanel.children [
-            menuBar
             toolbar
             statusBar
             match model.Project with
@@ -2686,7 +2727,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
     let language = group.Language
     let workspaces = ResizeArray<Workspace>()
     let mutable active = -1
-    let strip = StackPanel(Orientation = Orientation.Horizontal)
+    let strip = StackPanel(Orientation = Orientation.Horizontal, Margin = Thickness(Tokens.Space.s2, 0.0))
     let deck = Avalonia.Controls.Grid()
     /// The start view, in the deck while no tab is open, and what it has to tell.
     let start = Border(IsVisible = false)
@@ -2768,24 +2809,65 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
             let look = look ()
             strip.Children.Clear()
 
+            // A drawn mark: stroked, at the icon size, in a colour.
+            let mark (data: string) (colour: Color) =
+                Shapes.Path(
+                    Data = Geometry.Parse data,
+                    Width = Tokens.Height.icon,
+                    Height = Tokens.Height.icon,
+                    Stroke = SolidColorBrush colour,
+                    StrokeThickness = 1.5,
+                    StrokeLineCap = PenLineCap.Round
+                )
+
+            let quiet (content: Control) (tip: string) =
+                let b =
+                    Button(
+                        Content = content,
+                        Width = Tokens.Height.controlSm,
+                        Height = Tokens.Height.controlSm,
+                        MinHeight = 0.0,
+                        Padding = Thickness 0.0,
+                        HorizontalContentAlignment = HorizontalAlignment.Center,
+                        VerticalContentAlignment = VerticalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center,
+                        Background = Brushes.Transparent
+                    )
+
+                ToolTip.SetTip(b, tip)
+                b
+
+            let tabHeight = Tokens.Height.tabs - Tokens.Space.s1
+
             workspaces
             |> Seq.iteri (fun i w ->
                 let shown = i = active
-                let name = TextBlock(Text = labelOf w, VerticalAlignment = VerticalAlignment.Center, Foreground = SolidColorBrush(if shown then look.Text else look.Dim))
-                let close = Button(Content = "×", Padding = Thickness(4.0, 0.0), Background = Brushes.Transparent, VerticalAlignment = VerticalAlignment.Center)
-                ToolTip.SetTip(close, "Close tab (Ctrl+W)")
+                let name = TextBlock(Text = w.ScriptName, VerticalAlignment = VerticalAlignment.Center, Foreground = SolidColorBrush(if shown then look.Text else look.Dim))
+                let close = quiet (mark "M4.5,4.5 L11.5,11.5 M11.5,4.5 L4.5,11.5" look.Dim) "Close tab (Ctrl+W)"
                 close.Click.Add(fun _ -> closeTab w |> ignore)
-                let row = StackPanel(Orientation = Orientation.Horizontal, Spacing = 6.0)
+                let row = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2)
                 row.Children.Add name
+
+                if not w.Unsaved.IsEmpty then
+                    let dot = Shapes.Ellipse(Width = Tokens.Space.s2, Height = Tokens.Space.s2, Fill = SolidColorBrush(if shown then look.Text else look.Dim), VerticalAlignment = VerticalAlignment.Center)
+                    ToolTip.SetTip(dot, "unsaved")
+                    row.Children.Add dot
+
                 row.Children.Add close
 
+                // The shown tab on the bar's colour, open to it below: one piece with the bar.
                 let tab =
                     Button(
                         Content = row,
-                        Padding = Thickness(10.0, 3.0, 4.0, 3.0),
-                        CornerRadius = CornerRadius(4.0, 4.0, 0.0, 0.0),
-                        Background = SolidColorBrush(if shown then look.Surface else look.Raised),
-                        BorderThickness = Thickness(0.0)
+                        Height = (if shown then tabHeight + Tokens.border else tabHeight),
+                        MinHeight = 0.0,
+                        VerticalAlignment = VerticalAlignment.Bottom,
+                        VerticalContentAlignment = VerticalAlignment.Center,
+                        Padding = Thickness(Tokens.Space.s3, 0.0, Tokens.Space.s1, 0.0),
+                        CornerRadius = CornerRadius(Tokens.Radius.md, Tokens.Radius.md, 0.0, 0.0),
+                        Background = (if shown then SolidColorBrush look.Surface :> IBrush else Brushes.Transparent),
+                        BorderBrush = (if shown then SolidColorBrush look.Line :> IBrush else Brushes.Transparent),
+                        BorderThickness = Thickness(Tokens.border, Tokens.border, Tokens.border, 0.0)
                     )
 
                 ToolTip.SetTip(tab, (match w.Path with Some p -> p | None -> "not saved yet"))
@@ -2836,6 +2918,12 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
 
                 tab.ContextMenu <- menu
                 strip.Children.Add tab)
+
+            let plus = quiet (mark "M8,3.5 V12.5 M3.5,8 H12.5" look.Dim) "New script (Ctrl+N)"
+            plus.Margin <- Thickness(Tokens.Space.s1, 0.0, 0.0, Tokens.Space.s1)
+            plus.VerticalAlignment <- VerticalAlignment.Bottom
+            plus.Click.Add(fun _ -> add "" None)
+            strip.Children.Add plus
 
     and show (i: int) =
         if i >= 0 && i < workspaces.Count then
@@ -3055,7 +3143,21 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
         confirm <-
             fun question yes no ->
                 if App.AnswerUnsaved.IsSome then Task.FromResult false else askToConfirm this (look ()) question yes no
-        let tabsRow = ScrollViewer(Content = strip, HorizontalScrollBarVisibility = Primitives.ScrollBarVisibility.Auto, VerticalScrollBarVisibility = Primitives.ScrollBarVisibility.Disabled)
+        // The strip, with its rule along the bottom drawn under the tabs, so that the shown one
+        // covers it.
+        let rule = Border(Height = Tokens.border, VerticalAlignment = VerticalAlignment.Bottom)
+        let tabsRow = Avalonia.Controls.Grid(Height = Tokens.Height.tabs)
+        tabsRow.Children.Add rule
+        tabsRow.Children.Add(ScrollViewer(Content = strip, HorizontalScrollBarVisibility = Primitives.ScrollBarVisibility.Auto, VerticalScrollBarVisibility = Primitives.ScrollBarVisibility.Disabled))
+
+        // The strip's colours follow the theme.
+        let paintStrip () =
+            let look = look ()
+            tabsRow.Background <- SolidColorBrush look.Raised
+            rule.Background <- SolidColorBrush look.Line
+
+        paintStrip ()
+        this.ActualThemeVariantChanged.Add(fun _ -> paintStrip ())
         let layout = DockPanel()
         DockPanel.SetDock(tabsRow, Dock.Top)
         layout.Children.Add tabsRow
