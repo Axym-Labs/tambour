@@ -224,7 +224,11 @@ type Tabs =
       /// Moves the workspace's tab into a window of its own.
       Detach: unit -> unit
       /// Opens the Preferences dialog.
-      Preferences: unit -> unit }
+      Preferences: unit -> unit
+      /// The tables of the other tabs, each with its tab's name.
+      OtherTables: unit -> (string * Tambour.Data.Table) list
+      /// Asks which of these tables to take; none where it was cancelled.
+      PickTable: (string * Tambour.Data.Table) list -> Task<Tambour.Data.Table option> }
 
 /// What a workspace runs with: its workers, started when first asked, the language service it
 /// shares with the other workspaces, the control it is drawn in, and the window's tabs.
@@ -368,6 +372,9 @@ type Msg =
     /// The shown table renamed or duplicated, from the Table menu.
     | RenameShownTable
     | DuplicateShownTable
+    /// Asks for a table of another tab, to copy into this workspace.
+    | ChooseCopyTable
+    | CopyTable of Tambour.Data.Table option
     | TableSelected of table: string * columns: int list
     | PlotSelected
     | Pick of Rect
@@ -1238,6 +1245,14 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         model, (match List.tryItem (model.Tab - 1) model.Tables with Some s -> Cmd.ofMsg (RenameTable s.Table.Name) | None -> Cmd.none)
     | DuplicateShownTable ->
         model, (match List.tryItem (model.Tab - 1) model.Tables with Some s -> Cmd.ofMsg (DuplicateTable s.Table.Name) | None -> Cmd.none)
+    | ChooseCopyTable ->
+        match env.Tabs.OtherTables() with
+        | [] -> { model with ActionNote = "no other tab has a table to copy" }, Cmd.none
+        | others -> model, Cmd.OfTask.either env.Tabs.PickTable others CopyTable Failed
+    | CopyTable None -> model, Cmd.none
+    | CopyTable(Some t) ->
+        let copy = { t with Name = freshName model t.Name }
+        { model with Tab = model.Tables.Length + 1; ActionNote = $"copied {t.Name} into this workspace" }, Cmd.ofMsg (TableEdited [ Tambour.Data.AddTable copy ])
     | TableSelected(table, columns) -> { model with TableSelection = Some(table, columns) }, Cmd.none
     | PlotSelected ->
         match model.TableSelection |> Option.bind (fun (name, columns) -> model.Tables |> List.tryFind (fun s -> s.Table.Name = name) |> Option.map (fun s -> s.Table, columns)) with
@@ -2113,6 +2128,7 @@ let commands: Command list =
       c "_Run" "_Cancel" "Escape" [] Cancel (fun m -> m.Running || m.FullView)
       c "_Table" "_New table" "Ctrl+T" [] NewTable always
       c "_Table" "_Import table…" "Ctrl+Shift+I" [] ChooseImport always
+      c "_Table" "_Copy a table from another tab…" "" [] ChooseCopyTable always
       c "_Table" "_Rename table…" "" [] RenameShownTable (fun m -> m.Tab > 0)
       c "_Table" "D_uplicate table" "" [] DuplicateShownTable (fun m -> m.Tab > 0)
       c "_Table" "_Plot selected columns" "Ctrl+Shift+P" [] PlotSelected (fun m -> m.TableSelection.IsSome)
@@ -2737,10 +2753,11 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
     // The figure pane's header: Figure and each table, Add for another table, and the figure's
     // actions and the zoom hint at the right.
     let addTable : IView =
-        let item (header: string) (keys: string) (msg: Msg) : IView =
+        // The Table menu's commands, with their keys as the user has them.
+        let item (header: string) (msg: Msg) : IView =
             MenuItem.create [
                 MenuItem.header header
-                MenuItem.inputGesture (KeyGesture.Parse keys)
+                MenuItem.inputGesture (gesturesOf (commandNamed header) |> List.tryHead |> Option.toObj)
                 MenuItem.onClick ((fun _ -> dispatch msg), SubPatchOptions.Always)
             ]
 
@@ -2752,7 +2769,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
             Button.verticalAlignment VerticalAlignment.Center
             Button.verticalContentAlignment VerticalAlignment.Center
             Button.tip "Add a table to this workspace"
-            Button.contextMenu (ContextMenu.create [ ContextMenu.viewItems [ item "_New table" "Ctrl+T" NewTable; item "_Import table…" "Ctrl+Shift+I" ChooseImport ] ])
+            Button.contextMenu (ContextMenu.create [ ContextMenu.viewItems [ item "_New table" NewTable; item "_Import table…" ChooseImport; item "_Copy a table from another tab…" ChooseCopyTable ] ])
             Button.onClick (
                 (fun e ->
                     match e.Source with
@@ -3169,6 +3186,48 @@ let askToConfirm (owner: Window) (look: Palette.Look) (question: string) (yes: s
     window.ShowDialog owner |> ignore
     answer.Task
 
+/// Asks which table to take, each named with its tab, its rows and columns; none where it was
+/// cancelled.
+let askForTable (owner: Window) (look: Palette.Look) (choices: (string * Tambour.Data.Table) list) : Task<Tambour.Data.Table option> =
+    let answer = TaskCompletionSource<Tambour.Data.Table option>()
+    let text = TextBlock(Text = "Copy which table into this workspace?", Foreground = SolidColorBrush look.Text)
+
+    let row (tab: string, t: Tambour.Data.Table) =
+        let line = DockPanel()
+        let size = TextBlock(Text = $"{tab} · {t.Rows} × {t.Columns.Length}", FontSize = Tokens.Type.small, Foreground = SolidColorBrush look.Dim, VerticalAlignment = VerticalAlignment.Center)
+        DockPanel.SetDock(size, Dock.Right)
+        line.Children.Add size
+        line.Children.Add(TextBlock(Text = t.Name, Foreground = SolidColorBrush look.Text, VerticalAlignment = VerticalAlignment.Center))
+        line
+
+    let list = ListBox(ItemsSource = [ for c in choices -> row c ], SelectedIndex = 0, MaxHeight = 320.0)
+    let yesButton = Button(Content = "Copy", IsDefault = true)
+    let noButton = Button(Content = "Cancel", IsCancel = true)
+    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2, HorizontalAlignment = HorizontalAlignment.Right)
+    buttons.Children.Add noButton
+    buttons.Children.Add yesButton
+    let panel = StackPanel(Spacing = Tokens.Space.s3, Margin = Thickness Tokens.Space.s4)
+    panel.Children.Add text
+    panel.Children.Add list
+    panel.Children.Add buttons
+
+    let window =
+        Window(Title = "Tambour", Width = 440.0, SizeToContent = SizeToContent.Height, CanResize = false, Content = panel, WindowStartupLocation = WindowStartupLocation.CenterOwner)
+
+    let take () =
+        match List.tryItem list.SelectedIndex choices with
+        | Some(_, t) -> answer.TrySetResult(Some t) |> ignore
+        | None -> ()
+
+        window.Close()
+
+    yesButton.Click.Add(fun _ -> take ())
+    list.DoubleTapped.Add(fun _ -> take ())
+    noButton.Click.Add(fun _ -> window.Close())
+    window.Closed.Add(fun _ -> answer.TrySetResult None |> ignore)
+    window.ShowDialog owner |> ignore
+    answer.Task
+
 /// A workspace: everything a window held before there were tabs. Its script or project, figure,
 /// tables, history and layout, run by its own program on its own workers, which end when it is
 /// disposed. The language service is the window's, shared by its workspaces. It opens `path` once
@@ -3194,7 +3253,9 @@ type Workspace(script: string, path: string option, language: LanguageService, t
           Renamed = fun before after -> owner.Renamed before after
           Deleted = fun files -> owner.Deleted files
           Detach = fun () -> owner.Detach()
-          Preferences = fun () -> owner.Preferences() }
+          Preferences = fun () -> owner.Preferences()
+          OtherTables = fun () -> owner.OtherTables()
+          PickTable = fun choices -> owner.PickTable choices }
 
     let mutable dispatch: Msg -> unit = ignore
     let mutable title = "Tambour"
@@ -3280,6 +3341,9 @@ type Workspace(script: string, path: string option, language: LanguageService, t
 
     /// The script's name, as its tab shows it.
     member _.ScriptName = scriptName latest
+
+    /// Its tables, as they are now.
+    member _.Tables = [ for s in latest.Tables -> s.Table ]
 
     /// What is unsaved in it, by name; empty when everything is on disk.
     member _.Unsaved = unsaved latest
@@ -3386,6 +3450,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
     let mutable askName: string -> string -> Task<string option> = fun _ _ -> Task.FromResult None
     let mutable confirmDelete: string list -> Task<bool> = fun _ -> Task.FromResult false
     let mutable confirm: string -> string -> string -> Task<bool> = fun _ _ _ -> Task.FromResult false
+    let mutable pickTable: (string * Tambour.Data.Table) list -> Task<Tambour.Data.Table option> = fun _ -> Task.FromResult None
     /// The open scripts as last told to the tabs.
     let mutable told: Map<string, bool> = Map.empty
 
@@ -3609,7 +3674,14 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
                         | Some p when List.contains p files -> (win :?> MainWindow).Forget w
                         | _ -> ()
           Detach = fun () -> if workspaces.Count > 1 then detach (self ()) None |> ignore
-          Preferences = fun () -> openPreferences () }
+          Preferences = fun () -> openPreferences ()
+          OtherTables =
+            fun () ->
+                [ for win in List.ofSeq group.Windows do
+                      for (w: Workspace) in (win :?> MainWindow).Workspaces do
+                          if not (obj.ReferenceEquals(w, self ())) then
+                              for t in w.Tables -> w.ScriptName, t ]
+          PickTable = fun choices -> pickTable choices }
 
     /// The Preferences dialog, over this window, with the commands' shortcuts to show and change.
     and openPreferences () =
@@ -3833,6 +3905,8 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
         confirm <-
             fun question yes no ->
                 if App.AnswerUnsaved.IsSome then Task.FromResult false else askToConfirm this (look ()) question yes no
+
+        pickTable <- fun choices -> if App.AnswerUnsaved.IsSome then Task.FromResult None else askForTable this (look ()) choices
         // The strip, with its rule along the bottom drawn under the tabs, so that the shown one
         // covers it.
         let rule = Border(Height = Tokens.border, VerticalAlignment = VerticalAlignment.Bottom)
@@ -4125,6 +4199,11 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
     member _.AskName
         with get () = askName
         and set (value: string -> string -> Task<string option>) = askName <- value
+
+    /// Asks which of the other tabs' tables to copy; a test's stands in for the dialog.
+    member _.PickTable
+        with get () = pickTable
+        and set (value: (string * Tambour.Data.Table) list -> Task<Tambour.Data.Table option>) = pickTable <- value
 
     member _.ConfirmDelete
         with get () = confirmDelete

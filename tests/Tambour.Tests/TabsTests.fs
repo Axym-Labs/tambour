@@ -290,6 +290,44 @@ let ``two tabs each compile against their own tables only`` () =
 
     closeAll window
 
+/// A table copied from another tab: the other tabs' tables offered, the one picked added to this
+/// workspace as one step that an undo takes back, and the tab it came from left as it was.
+[<AvaloniaFact>]
+let ``a table is copied from another tab into this one`` () =
+    let workspace (name: string) (table: Tambour.Data.Table) =
+        let dir = Path.Combine((Directory.CreateTempSubdirectory "tambour-copy").FullName, name)
+        Directory.CreateDirectory dir |> ignore
+        Project.makeWorkspace dir
+        Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", table.Name + ".csv")) table
+        File.WriteAllText(Path.Combine(dir, "figure.fsx"), "let n = 1\n")
+        dir
+
+    let a = workspace "a" (trial "alpha" "x")
+    let b = workspace "b" (trial "beta" "y")
+    let window = new Shell.MainWindow("", Some a)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    pumpUntil 10.0 "the first tab's table" (fun () -> window.Active.Tables |> List.exists (fun t -> t.Name = "alpha"))
+    window.Post(Shell.OpenTab b)
+    pumpUntil 10.0 "the second tab" (fun () -> window.Workspaces.Length = 2 && window.Active.Tables |> List.exists (fun t -> t.Name = "beta"))
+    let first = window.Workspaces.[0]
+
+    let mutable offered = []
+    window.PickTable <- fun choices ->
+        offered <- [ for _, t in choices -> t.Name ]
+        Task.FromResult(choices |> List.tryPick (fun (_, t) -> if t.Name = "alpha" then Some t else None))
+
+    window.Post Shell.ChooseCopyTable
+    pumpUntil 5.0 "the copy" (fun () -> window.Active.Tables |> List.exists (fun t -> t.Name = "alpha"))
+    Assert.Equal<string list>([ "alpha" ], offered)
+    let copy = window.Active.Tables |> List.find (fun t -> t.Name = "alpha")
+    Assert.Equal<Tambour.Data.Column list>((first.Tables |> List.find (fun t -> t.Name = "alpha")).Columns, copy.Columns)
+    Assert.Equal<string list>([ "alpha" ], [ for t in first.Tables -> t.Name ])
+
+    window.Post Shell.Undo
+    pumpUntil 5.0 "the copy undone" (fun () -> window.Active.Tables |> List.forall (fun t -> t.Name <> "alpha"))
+    closeAll window
+
 /// Gate 15 (b): fifteen open tabs hold no workers until one runs, and then only that one; workers
 /// start when a tab first runs.
 [<AvaloniaFact>]
