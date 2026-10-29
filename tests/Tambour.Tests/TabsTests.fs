@@ -797,3 +797,43 @@ let ``a table's columns as laid out come back at the next start, and the full vi
     pumpUntil 10.0 "the grid with its layout" (fun () ->
         again.Active.GetVisualDescendants().OfType<TableGrid>() |> Seq.exists (fun g -> g.Layout = laid))
     closeAll again
+
+/// The window's place and size, and which panes are open, are kept in the settings and back at
+/// the next start; a pane closed in one tab is closed in the next one opened.
+[<AvaloniaFact>]
+let ``the window's place, size and open panes come back at the next start`` () =
+    let before = App.SettingsDirectory
+    let settings = (Directory.CreateTempSubdirectory "tambour-place").FullName
+    App.SettingsDirectory <- settings
+
+    try
+        let window = Shell.MainWindow.Start None
+        window.Show()
+        window.Width <- 900.0
+        window.Height <- 600.0
+        window.Position <- Avalonia.PixelPoint(120, 90)
+        Dispatcher.UIThread.RunJobs()
+
+        // The panel under the script closed in a tab: closed in the next tab too.
+        press window Key.N RawInputModifiers.Control
+        pumpUntil 5.0 "a tab" (fun () -> window.Workspaces.Length = 1)
+        window.Post Shell.ToggleBottom
+        Dispatcher.UIThread.RunJobs()
+        Assert.False((Preferences.read settings).BottomOpen)
+        press window Key.N RawInputModifiers.Control
+        pumpUntil 5.0 "a second tab" (fun () -> window.Workspaces.Length = 2)
+        let bottom () = window.Active.GetVisualDescendants().OfType<TabControl>() |> Seq.tryFind (fun t -> t.Items.OfType<TabItem>().Any(fun i -> string i.Header = "Output"))
+        pumpUntil 5.0 "the second tab's panes" (fun () -> (bottom ()).IsSome)
+        Assert.False((bottom ()).Value.IsVisible, "the panel closed in one tab is open in the next")
+        closeAll window
+
+        Assert.Equal(Some({ X = 120; Y = 90; Width = 900.0; Height = 600.0; Maximized = false }: Preferences.Placement), (Preferences.read settings).Window)
+
+        let again = Shell.MainWindow.Start None
+        again.Show()
+        Dispatcher.UIThread.RunJobs()
+        Assert.Equal((900.0, 600.0), (again.Width, again.Height))
+        Assert.Equal(Avalonia.PixelPoint(120, 90), again.Position)
+        again.Close()
+    finally
+        App.SettingsDirectory <- before

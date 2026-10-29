@@ -420,7 +420,25 @@ type Msg =
 /// The bottom panel's height where a project has none.
 let defaultBottom = 170.0
 
+/// The user's preferences, or the defaults where they are kept nowhere (a test's run).
+let private preferences () =
+    match App.SettingsDirectory with
+    | null -> Preferences.defaults
+    | dir -> Preferences.read dir
+
+/// Which panes are open, kept for the next tab and the next start.
+let private keepPanes (model: Model) =
+    match App.SettingsDirectory with
+    | null -> ()
+    | dir ->
+        try
+            Preferences.write dir { Preferences.read dir with FilesOpen = model.FilesOpen; BottomOpen = model.BottomOpen; ActionsOpen = model.ActionsOpen }
+        with _ ->
+            ()
+
 let init (script: string) () : Model * Cmd<Msg> =
+    let panes = preferences ()
+
     { Script = script
       Figures = [||]
       Selected = -1
@@ -458,15 +476,15 @@ let init (script: string) () : Model * Cmd<Msg> =
       Look = Palette.light
       Caret = (1, 1)
       Split = 0.5
-      BottomOpen = true
+      BottomOpen = panes.BottomOpen
       BottomTab = 0
       Bottom = defaultBottom
-      ActionsOpen = true
+      ActionsOpen = panes.ActionsOpen
       Layouts = Map.empty
       FullView = false
       Recent = []
       Files = []
-      FilesOpen = true
+      FilesOpen = panes.FilesOpen
       OpenTabs = Map.empty },
     Cmd.none
 
@@ -1235,9 +1253,18 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         { model with Theme = theme }, Cmd.none
     | LookChanged look -> { model with Look = look }, Cmd.none
     | Caret(line, column) -> { model with Caret = (line, column) }, Cmd.none
-    | ToggleBottom -> { model with BottomOpen = not model.BottomOpen }, Cmd.none
-    | ShowBottom tab -> { model with BottomOpen = true; BottomTab = tab }, Cmd.none
-    | ToggleActions -> { model with ActionsOpen = not model.ActionsOpen }, Cmd.none
+    | ToggleBottom ->
+        let next = { model with BottomOpen = not model.BottomOpen }
+        keepPanes next
+        next, Cmd.none
+    | ShowBottom tab ->
+        let next = { model with BottomOpen = true; BottomTab = tab }
+        if not model.BottomOpen then keepPanes next
+        next, Cmd.none
+    | ToggleActions ->
+        let next = { model with ActionsOpen = not model.ActionsOpen }
+        keepPanes next
+        next, Cmd.none
     | ToggleFullView -> { model with FullView = not model.FullView }, Cmd.none
     | LaidOut(table, layout) ->
         let next = { model with Layouts = model.Layouts.Add(table, layout) }
@@ -1287,7 +1314,10 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             | _ -> []
 
         { model with Files = files }, Cmd.none
-    | ToggleFiles -> { model with FilesOpen = not model.FilesOpen }, Cmd.none
+    | ToggleFiles ->
+        let next = { model with FilesOpen = not model.FilesOpen }
+        keepPanes next
+        next, Cmd.none
     | TabsChanged tabs -> { model with OpenTabs = tabs }, Cmd.none
     | RenameFile path ->
         model,
@@ -3674,6 +3704,53 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
         this.Resources.["ButtonBorderBrushDisabled"] <- Brushes.Transparent
         this.Width <- 1280.0
         this.Height <- 800.0
+
+        // The window where it was last closed, as large, maximized if it was; not a window a tab
+        // was moved into. A place on no screen now (one unplugged since) is left to the system.
+        if not moved && group.Windows.Count = 0 then
+            match (preferences ()).Window with
+            | Some p ->
+                this.Width <- p.Width
+                this.Height <- p.Height
+                this.Position <- PixelPoint(p.X, p.Y)
+                this.WindowStartupLocation <- WindowStartupLocation.Manual
+
+                this.Opened.Add(fun _ ->
+                    let onScreen = this.Screens.All |> Seq.exists (fun s -> s.Bounds.Contains(PixelPoint(p.X + 16, p.Y + 16)))
+                    if not onScreen && this.Screens.All.Count > 0 then this.WindowStartupLocation <- WindowStartupLocation.CenterScreen
+                    if p.Maximized then this.WindowState <- WindowState.Maximized)
+            | None -> ()
+
+            // The size and place it had last while neither maximized nor minimized, kept on close.
+            let mutable normal = (this.Position, this.Width, this.Height)
+
+            let track () =
+                if this.WindowState = WindowState.Normal then normal <- (this.Position, this.Width, this.Height)
+
+            this.PositionChanged.Add(fun _ -> track ())
+            this.PropertyChanged.Add(fun e -> if e.Property = Window.ClientSizeProperty then track ())
+            // Taken as closing begins: once closed, the window no longer knows where it was.
+            this.Closing.Add(fun _ -> track ())
+
+            this.Closed.Add(fun _ ->
+                match App.SettingsDirectory with
+                | null -> ()
+                | dir ->
+                    let position, width, height = normal
+
+                    try
+                        Preferences.write
+                            dir
+                            { Preferences.read dir with
+                                Window =
+                                    Some
+                                        { X = position.X
+                                          Y = position.Y
+                                          Width = width
+                                          Height = height
+                                          Maximized = (this.WindowState = WindowState.Maximized) } }
+                    with _ ->
+                        ())
         ask <-
             fun names ->
                 match App.AnswerUnsaved with
@@ -3717,39 +3794,93 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
         startView.Value <-
             fun () ->
                 let look = look ()
-                let panel = StackPanel(Spacing = 8.0, Margin = Thickness(48.0, 40.0), Width = 520.0, HorizontalAlignment = HorizontalAlignment.Left)
-                let heading (text: string) (size: float) = TextBlock(Text = text, FontSize = size, FontWeight = FontWeight.SemiBold, Foreground = SolidColorBrush look.Text, Margin = Thickness(0.0, 12.0, 0.0, 4.0))
+                let brush (c: Color) = SolidColorBrush c
 
-                let entry (text: string) (keys: string) (enabled: bool) (act: unit -> unit) =
-                    let row = DockPanel()
-                    let shortcut = TextBlock(Text = keys, Foreground = SolidColorBrush look.Dim, Margin = Thickness(24.0, 0.0, 0.0, 0.0), TextTrimming = TextTrimming.CharacterEllipsis)
-                    DockPanel.SetDock(shortcut, Dock.Right)
-                    row.Children.Add shortcut
-                    row.Children.Add(TextBlock(Text = text, Foreground = SolidColorBrush(if enabled then look.Accent else look.Dim), TextTrimming = TextTrimming.CharacterEllipsis))
-                    let b = Button(Content = row, Background = Brushes.Transparent, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, IsEnabled = enabled, Padding = Thickness(4.0, 2.0))
+                let glyph (data: string) (colour: Color) =
+                    Shapes.Path(
+                        Data = Geometry.Parse data,
+                        Width = Tokens.Height.icon,
+                        Height = Tokens.Height.icon,
+                        Stroke = brush colour,
+                        StrokeThickness = 1.25,
+                        StrokeJoin = PenLineJoin.Round,
+                        StrokeLineCap = PenLineCap.Round,
+                        VerticalAlignment = VerticalAlignment.Center
+                    )
+
+                let file = "M4,1.75 H9 L12,4.75 V14.25 H4 Z M9,1.75 V4.75 H12"
+                let folder = "M1.75,4.25 A1,1 0 0 1 2.75,3.25 H5.75 L7.25,4.75 H13.25 A1,1 0 0 1 14.25,5.75 V12.25 A1,1 0 0 1 13.25,13.25 H2.75 A1,1 0 0 1 1.75,12.25 Z"
+
+                /// A row: an icon, a name, and at its end a shortcut or where the file is.
+                let entry (icon: string) (text: string) (fin: string) (there: bool) (act: unit -> unit) =
+                    let row = DockPanel(Height = Tokens.Height.row)
+                    let tail = TextBlock(Text = fin, FontSize = Tokens.Type.small, Foreground = brush (if there then look.Dim else look.Roles.Faint), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, Margin = Thickness(Tokens.Space.s4, 0.0, 0.0, 0.0))
+                    DockPanel.SetDock(tail, Dock.Right)
+                    row.Children.Add tail
+                    let name = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2)
+                    name.Children.Add(glyph icon (if there then look.Dim else look.Roles.Faint))
+                    name.Children.Add(TextBlock(Text = text, Foreground = brush (if there then look.Text else look.Roles.Faint), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center))
+                    row.Children.Add name
+
+                    let b =
+                        Button(
+                            Content = row,
+                            Background = Brushes.Transparent,
+                            HorizontalAlignment = HorizontalAlignment.Stretch,
+                            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                            Padding = Thickness(Tokens.Space.s2, 0.0),
+                            MinHeight = 0.0
+                        )
+
                     b.Click.Add(fun _ -> act ())
                     b
 
-                panel.Children.Add(heading "Tambour" 22.0)
+                let section (title: string) =
+                    let column = StackPanel()
+                    column.Children.Add(TextBlock(Text = title, FontSize = Tokens.Type.small, FontWeight = FontWeight.SemiBold, Foreground = brush look.Dim, Height = Tokens.Height.row, Padding = Thickness(Tokens.Space.s2, Tokens.Space.s1 + Tokens.border, 0.0, 0.0)))
+                    column
+
+                let quiet (text: string) (act: unit -> unit) =
+                    let b = Button(Content = text, Background = Brushes.Transparent)
+                    b.Click.Add(fun _ -> act ())
+                    b
+
+                let panel = StackPanel(Spacing = Tokens.Space.s6, Width = 800.0, Margin = Thickness(Tokens.Space.s4, Tokens.Space.s7, Tokens.Space.s4, Tokens.Space.s5), HorizontalAlignment = HorizontalAlignment.Center)
+                let title = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s3)
+                title.Children.Add(TextBlock(Text = "Tambour", FontSize = Tokens.Type.display, FontWeight = FontWeight.SemiBold, Foreground = brush look.Text, VerticalAlignment = VerticalAlignment.Bottom))
+                title.Children.Add(TextBlock(Text = "Measured data, figures and F# scripting", Foreground = brush look.Dim, VerticalAlignment = VerticalAlignment.Bottom, Margin = Thickness(0.0, 0.0, 0.0, Tokens.Space.s1)))
+                panel.Children.Add title
 
                 if startNote <> "" then
-                    panel.Children.Add(TextBlock(Text = startNote, Foreground = SolidColorBrush look.Warning, TextWrapping = TextWrapping.Wrap))
+                    panel.Children.Add(TextBlock(Text = startNote, Foreground = brush look.Warning, TextWrapping = TextWrapping.Wrap))
 
-                panel.Children.Add(heading "Start" 15.0)
-                panel.Children.Add(entry "New script" "Ctrl+N" true (fun () -> add "" None))
-                panel.Children.Add(entry "Open…" "Ctrl+O" true (fun () -> chooseOpen false))
-                panel.Children.Add(entry "Open folder…" "Ctrl+Shift+O" true (fun () -> chooseOpen true))
-                panel.Children.Add(entry "The example figure" "" true (fun () -> add example None))
+                let columns = Avalonia.Controls.Grid(ColumnDefinitions = ColumnDefinitions $"280,{Tokens.Space.s6},*")
+                let start = section "Start"
+                start.Children.Add(entry "M4,1.75 H9 L12,4.75 V14.25 H4 Z M9,1.75 V4.75 H12 M8,7.5 V11.5 M6,9.5 H10" "New script" "Ctrl+N" true (fun () -> add "" None))
+                start.Children.Add(entry file "Open…" "Ctrl+O" true (fun () -> chooseOpen false))
+                start.Children.Add(entry folder "Open folder…" "Ctrl+Shift+O" true (fun () -> chooseOpen true))
+                start.Children.Add(entry "M2.5,2.5 V13.5 H13.5 M5,10 L8,6.5 L10,8.5 L13.5,4.5" "The example figure" "" true (fun () -> add example None))
+                columns.Children.Add start
 
                 if not recent.IsEmpty then
-                    panel.Children.Add(heading "Recent" 15.0)
+                    let recentColumn = section "Recent"
+                    Avalonia.Controls.Grid.SetColumn(recentColumn, 2)
 
                     for p in recent do
                         let there = File.Exists p || Directory.Exists p
-                        let e = entry (Path.GetFileName p) (Path.GetDirectoryName p) there (fun () -> openPath p)
+                        let home = Environment.GetFolderPath Environment.SpecialFolder.UserProfile
+                        let where = Path.GetDirectoryName p |> fun d -> if not (String.IsNullOrEmpty home) && d.StartsWith home then "~" + d.Substring home.Length else d
+                        let e = entry (if Directory.Exists p then folder else file) (Path.GetFileName p) (if there then where else $"missing · {where}") there (fun () -> if there then openPath p)
                         ToolTip.SetTip(e, (if there then p else $"{p}: no longer there"))
-                        panel.Children.Add e
+                        recentColumn.Children.Add e
 
+                    let actions = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2, Margin = Thickness(0.0, Tokens.Space.s2, 0.0, 0.0))
+                    actions.Children.Add(quiet "Remove missing" (fun () -> setRecent (recent |> List.filter (fun p -> File.Exists p || Directory.Exists p))))
+                    actions.Children.Add(quiet "Clear" (fun () -> setRecent []))
+                    recentColumn.Children.Add actions
+                    columns.Children.Add recentColumn
+
+                panel.Children.Add columns
                 ScrollViewer(Content = panel) :> Control
 
         // While no tab is open, the start view's keys.

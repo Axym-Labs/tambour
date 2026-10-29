@@ -27,6 +27,15 @@ let private themeOf =
     | "dark" -> Dark
     | _ -> FollowSystem
 
+/// Where the window was and how large, in its screen's pixels and its own units, and whether it
+/// was maximized (its size then the one it returns to).
+type Placement =
+    { X: int
+      Y: int
+      Width: float
+      Height: float
+      Maximized: bool }
+
 type Preferences =
     { Theme: Theme
       /// The scripts and projects opened, most recent first.
@@ -34,10 +43,25 @@ type Preferences =
       /// The scripts open in the window's tabs when it was last changed, in their order, and the
       /// one shown, opened again at the next start.
       Tabs: string list
-      Shown: int }
+      Shown: int
+      /// The window as it was last closed; none before the first close.
+      Window: Placement option
+      /// Which of the window's panes are open: the file list, the panel under the script, the
+      /// figure's actions.
+      FilesOpen: bool
+      BottomOpen: bool
+      ActionsOpen: bool }
 
 /// A new user's: the theme follows the system's, and nothing opened yet.
-let defaults = { Theme = FollowSystem; Recent = []; Tabs = []; Shown = 0 }
+let defaults =
+    { Theme = FollowSystem
+      Recent = []
+      Tabs = []
+      Shown = 0
+      Window = None
+      FilesOpen = true
+      BottomOpen = true
+      ActionsOpen = true }
 
 /// How many opened files the recent list keeps.
 [<Literal>]
@@ -71,10 +95,33 @@ let read (directory: string) : Preferences =
             | true, n when n.ValueKind = JsonValueKind.Number -> n.GetInt32()
             | _ -> 0
 
+        let flag (name: string) =
+            match root.TryGetProperty name with
+            | true, b when b.ValueKind = JsonValueKind.False -> false
+            | _ -> true
+
+        let window =
+            match root.TryGetProperty "window" with
+            | true, w when w.ValueKind = JsonValueKind.Object ->
+                try
+                    Some
+                        { X = w.GetProperty("x").GetInt32()
+                          Y = w.GetProperty("y").GetInt32()
+                          Width = w.GetProperty("width").GetDouble()
+                          Height = w.GetProperty("height").GetDouble()
+                          Maximized = w.GetProperty("maximized").GetBoolean() }
+                with _ ->
+                    None
+            | _ -> None
+
         { Theme = theme
           Recent = paths "recent"
           Tabs = paths "tabs"
-          Shown = shown }
+          Shown = shown
+          Window = window
+          FilesOpen = flag "files"
+          BottomOpen = flag "bottom"
+          ActionsOpen = flag "actions" }
     with _ ->
         defaults
 
@@ -85,5 +132,11 @@ let write (directory: string) (preferences: Preferences) =
             [ "theme", box (themeName preferences.Theme)
               "recent", box (Array.ofList preferences.Recent)
               "tabs", box (Array.ofList preferences.Tabs)
-              "shown", box preferences.Shown ]
+              "shown", box preferences.Shown
+              "files", box preferences.FilesOpen
+              "bottom", box preferences.BottomOpen
+              "actions", box preferences.ActionsOpen
+              match preferences.Window with
+              | Some w -> "window", box (dict [ "x", box w.X; "y", box w.Y; "width", box w.Width; "height", box w.Height; "maximized", box w.Maximized ])
+              | None -> () ]
     File.WriteAllText(Path.Combine(directory, FileName), JsonSerializer.Serialize(stored, JsonSerializerOptions(WriteIndented = true)))
