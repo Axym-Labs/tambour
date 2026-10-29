@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <Compile Include="Paths.fs" />
+    <Compile Include="Scaling.fs" />
     <Compile Include="Preferences.fs" />
     <Compile Include="Tokens.fs" />
     <Compile Include="Palette.fs" />

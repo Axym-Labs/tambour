@@ -29,6 +29,7 @@
     <Compile Include="GridCommandTests.fs" />
     <Compile Include="PreludeAgainTests.fs" />
     <Compile Include="PickTests.fs" />
+    <Compile Include="ScalingTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

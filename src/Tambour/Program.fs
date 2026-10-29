@@ -4,7 +4,7 @@ open System.Runtime.CompilerServices
 open Avalonia
 open Avalonia.Controls
 
-let private usage = "usage: tambour [<script or folder> | --self-check | --check-pane [--scaling <s>] | --check-analysis <script> | --check-package | --worker <socket> <app pid> | --analysis <socket> <app pid>]"
+let private usage = "usage: tambour [<script or folder> | --self-check | --check-pane [--scaling <s>] | --check-analysis <script> | --check-package | --check-scaling | --worker <socket> <app pid> | --analysis <socket> <app pid>]"
 
 // Each role is its own method, kept out of `main`, so that starting one loads only what that role
 // touches: .NET loads an assembly when a method that names it is compiled, and the worker never
@@ -18,6 +18,8 @@ let private window (path: string option) =
     App.Theme <- preferences.Theme
     Preferences.Live.Current <- preferences
     App.MainWindow <- fun () -> Shell.MainWindow.Start path :> Window
+    // Each screen's scaling, which Avalonia under XWayland cannot find out for itself.
+    Scaling.apply () |> ignore
     App.builder().StartWithClassicDesktopLifetime [||]
 
 [<MethodImpl(MethodImplOptions.NoInlining)>]
@@ -31,6 +33,9 @@ let private worker (socket: string) (app: int) = Worker.run socket app
 
 [<MethodImpl(MethodImplOptions.NoInlining)>]
 let private checkPackage () = PackageCheck.run ()
+
+[<MethodImpl(MethodImplOptions.NoInlining)>]
+let private checkScaling () = Scaling.check ()
 
 [<MethodImpl(MethodImplOptions.NoInlining)>]
 let private checkAnalysis (script: string) = AnalysisCheck.run script
@@ -47,6 +52,7 @@ let main argv =
     | [| "--check-pane" |] -> checkPane None
     | [| "--check-analysis"; script |] -> checkAnalysis script
     | [| "--check-package" |] -> checkPackage ()
+    | [| "--check-scaling" |] -> checkScaling ()
     | [| "--check-pane"; "--scaling"; s |] when fst (System.Double.TryParse(s, System.Globalization.CultureInfo.InvariantCulture)) ->
         checkPane (Some(System.Double.Parse(s, System.Globalization.CultureInfo.InvariantCulture)))
     | [| "--worker"; socket; app |] when fst (System.Int32.TryParse app) -> worker socket (int app)
