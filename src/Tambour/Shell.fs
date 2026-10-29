@@ -821,6 +821,9 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | Run ->
         { model with Running = true; Status = "running…"; Playing = Set.empty },
         send env (Request.Evaluate { Text = model.Script; Path = Option.toObj model.Path })
+    // An export ends as a run does, with the worker doing it; its reply, if one comes, is let go.
+    | Cancel when model.Exporting.IsSome ->
+        { model with Exporting = None; Status = "export cancelled" }, Cmd.OfTask.attempt env.Workers.CancelAsync () Failed
     | Cancel when model.Running ->
         { model with Running = false; Status = "cancelled" }, Cmd.OfTask.attempt env.Workers.CancelAsync () Failed
     // With nothing running, Escape leaves the full view.
@@ -881,7 +884,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 with e ->
                     { model with Exporting = None; Status = $"the export was not written: {e.Message}" }, Cmd.none
             | None -> model, Cmd.none
-        | Reply.Failed message -> { model with Running = false; Status = message }, Cmd.none
+        | Reply.Failed message -> { model with Running = false; Exporting = None; Status = message }, Cmd.none
         | Reply.Picked located ->
             match model.Picking with
             | Some(plotted, area) ->
@@ -1114,7 +1117,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             (Option.map (fun path -> ExportTo(path, format, width, height)) >> Option.defaultValue Dismissed)
             Failed
     | ExportTo(path, format, width, height) when not (isNull model.Picture) ->
-        { model with Exporting = Some path; Status = "exporting…" },
+        { model with Exporting = Some path; Status = $"exporting {Path.GetFileName path}…" },
         send env (Request.Export { Format = format; Width = width; Height = height; Skia = skiaOf model })
     | ExportTo _ -> { model with Status = "there is no figure to export" }, Cmd.none
     | Dismissed -> model, Cmd.none
@@ -2132,7 +2135,7 @@ let commands: Command list =
       c "_Edit" "_Redo" "Ctrl+Y" [ "Ctrl+Shift+Z" ] Redo (fun m -> not m.History.Undone.IsEmpty)
       c "_Edit" "_Preferences…" "Ctrl+OemComma" [] OpenPreferences always
       c "_Run" "_Run" "F5" [ "Ctrl+Enter" ] Run always
-      c "_Run" "_Cancel" "Escape" [] Cancel (fun m -> m.Running || m.FullView)
+      c "_Run" "_Cancel" "Escape" [] Cancel (fun m -> m.Running || m.Exporting.IsSome || m.FullView)
       c "_Table" "_New table" "Ctrl+T" [] NewTable always
       c "_Table" "_Import table…" "Ctrl+Shift+I" [] ChooseImport always
       c "_Table" "_Copy a table from another tab…" "" [] ChooseCopyTable always
@@ -2441,6 +2444,18 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                 statusText $"Ln {fst model.Caret}, Col {snd model.Caret}" look.Dim
                                 statusText $"Marey {Project.mareyVersion}" look.Dim
                             ]
+                        ]
+                        // Something under way, a run or an export, which Cancel ends.
+                        ProgressBar.create [
+                            ProgressBar.dock Dock.Left
+                            ProgressBar.isIndeterminate true
+                            ProgressBar.isVisible (model.Running || model.Exporting.IsSome)
+                            ProgressBar.width Tokens.Width.label
+                            ProgressBar.minWidth 0.0
+                            ProgressBar.height Tokens.Space.s1
+                            ProgressBar.minHeight 0.0
+                            ProgressBar.verticalAlignment VerticalAlignment.Center
+                            ProgressBar.margin (Thickness(0.0, 0.0, Tokens.Space.s2, 0.0))
                         ]
                         statusText model.Status look.Text
                     ]
