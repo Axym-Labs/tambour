@@ -969,3 +969,25 @@ let ``the start view has a menu bar of what needs no tab`` () =
     pumpUntil 5.0 "a tab" (fun () -> window.Workspaces.Length = 1)
     Assert.False(window.Starting)
     closeAll window
+
+/// A window kept larger than its screen now allows (its scaling grown since) comes back fitted
+/// into the screen's working area.
+[<AvaloniaFact>]
+let ``a kept window larger than its screen comes back fitted to it`` () =
+    let before = App.SettingsDirectory
+    let settings = (Directory.CreateTempSubdirectory "tambour-fit").FullName
+    App.SettingsDirectory <- settings
+
+    try
+        Preferences.write settings { Preferences.defaults with Window = Some { X = 0; Y = 0; Width = 20000.0; Height = 15000.0; Maximized = false } }
+        let window = Shell.MainWindow.Start None
+        window.Show()
+        Dispatcher.UIThread.RunJobs()
+        let screen = window.Screens.ScreenFromWindow window
+        Assert.NotNull screen
+        let area = screen.WorkingArea
+        Assert.InRange(window.Width * screen.Scaling, 1.0, float area.Width)
+        Assert.InRange(window.Height * screen.Scaling, 1.0, float area.Height)
+        window.Close()
+    finally
+        App.SettingsDirectory <- before

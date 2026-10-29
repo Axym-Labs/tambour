@@ -3888,6 +3888,25 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
                 this.Opened.Add(fun _ ->
                     let onScreen = this.Screens.All |> Seq.exists (fun s -> s.Bounds.Contains(PixelPoint(p.X + 16, p.Y + 16)))
                     if not onScreen && this.Screens.All.Count > 0 then this.WindowStartupLocation <- WindowStartupLocation.CenterScreen
+
+                    // No larger than the screen it is on, nor past its edges: a screen's scaling
+                    // may have grown since, which makes the same size larger.
+                    match this.Screens.ScreenFromWindow this with
+                    | null -> ()
+                    | screen ->
+                        let area = screen.WorkingArea
+                        let scale = screen.Scaling
+                        let width = min this.Width (float area.Width / scale)
+                        let height = min this.Height (float area.Height / scale)
+
+                        if width < this.Width || height < this.Height then
+                            this.Width <- width
+                            this.Height <- height
+
+                        let x = Math.Clamp(this.Position.X, area.X, max area.X (area.Right - int (width * scale)))
+                        let y = Math.Clamp(this.Position.Y, area.Y, max area.Y (area.Bottom - int (height * scale)))
+                        if PixelPoint(x, y) <> this.Position then this.Position <- PixelPoint(x, y)
+
                     if p.Maximized then this.WindowState <- WindowState.Maximized)
             | None -> ()
 
