@@ -127,8 +127,9 @@ module CellText =
 /// on the history. The grid's context menu, the Table menu and the grid's keys all take them.
 module GridCommand =
 
-    /// Columns `C0`..`C1` and rows `R0`..`R1`, both inclusive.
-    type Selection = { C0: int; C1: int; R0: int; R1: int }
+    /// Columns `C0`..`C1` and rows `R0`..`R1`, both inclusive; the columns in `Hidden` are not on
+    /// screen, and the commands on cells pass over them.
+    type Selection = { C0: int; C1: int; R0: int; R1: int; Hidden: Set<int> }
 
     type Kind =
         | Copy
@@ -167,13 +168,16 @@ module GridCommand =
 
     let private count (s: Selection) = s.R1 - s.R0 + 1
 
+    /// The selected columns on screen.
+    let private shown (s: Selection) = [ for c in s.C0 .. s.C1 do if not (s.Hidden.Contains c) then c ]
+
     /// Values one after another, as one run.
     let private join (kind: string) (runs: Values seq) =
         runs |> Seq.fold (fun (acc: Values) v -> Values.insert acc.Length v acc) (Values.blank kind 0)
 
     /// The selected cells as a block of exact text.
     let copyCells (t: Table) (s: Selection) =
-        CellText.toTsv [| for r in s.R0 .. s.R1 -> [| for c in s.C0 .. s.C1 -> CellText.exact t.Columns.[c].Values r |] |]
+        CellText.toTsv [| for r in s.R0 .. s.R1 -> [| for c in shown s -> CellText.exact t.Columns.[c].Values r |] |]
 
     /// The selected rows, every column of them, as a block of exact text.
     let copyRows (t: Table) (s: Selection) =
@@ -181,7 +185,7 @@ module GridCommand =
 
     /// The selected cells emptied: a float's missing, a text's empty, an int's 0.
     let clear (t: Table) (s: Selection) =
-        [ for c in s.C0 .. s.C1 -> TableEdit.setCells t c s.R0 (Values.blank t.Columns.[c].Values.Kind (count s)) ]
+        [ for c in shown s -> TableEdit.setCells t c s.R0 (Values.blank t.Columns.[c].Values.Kind (count s)) ]
 
     /// A column's run read from its cells' texts (a cell there is none of, blank), or why one is
     /// not of its type.
@@ -194,20 +198,22 @@ module GridCommand =
         | None -> Ok(parsed |> Array.choose (function Ok v -> Some v | Error _ -> None) |> join kind)
 
     /// A block pasted at the selection's corner: rows added where it runs past the end, each
-    /// column's cells read as its type, and refused whole if one is not.
+    /// column's cells read as its type, and refused whole if one is not. Its columns go to the
+    /// columns on screen from the corner on.
     let paste (t: Table) (s: Selection) (block: string[][]) : Result<TableEdit list, string> =
         if block.Length = 0 || t.Columns.IsEmpty then
             Ok []
         else
-            let width = min (block |> Array.map Array.length |> Array.max) (t.Columns.Length - s.C0)
+            let targets = [| for c in s.C0 .. t.Columns.Length - 1 do if not (s.Hidden.Contains c) then c |]
+            let width = min (block |> Array.map Array.length |> Array.max) targets.Length
             let added = max 0 (s.R0 + block.Length - t.Rows)
             let grow = if added > 0 then [ TableEdit.addRows t t.Rows added ] else []
             let t' = (grow |> List.fold TableEdit.apply (Map.ofList [ t.Name, t ])).[t.Name]
 
             let cells =
                 [ for j in 0 .. width - 1 ->
-                      read t'.Columns.[s.C0 + j] (block |> Array.map (fun r -> Some(if j < r.Length then r.[j] else "")))
-                      |> Result.map (TableEdit.setCells t' (s.C0 + j) s.R0) ]
+                      read t'.Columns.[targets.[j]] (block |> Array.map (fun r -> Some(if j < r.Length then r.[j] else "")))
+                      |> Result.map (TableEdit.setCells t' targets.[j] s.R0) ]
 
             match cells |> List.tryPick (function Error e -> Some e | Ok _ -> None) with
             | Some why -> Error why
@@ -236,14 +242,15 @@ module GridCommand =
     /// Each selected column's first selected cell copied into the cells below it.
     let fillDown (t: Table) (s: Selection) =
         [ if s.R1 > s.R0 then
-              for c in s.C0 .. s.C1 ->
+              for c in shown s ->
                   let values = t.Columns.[c].Values
                   TableEdit.setCells t c (s.R0 + 1) (Seq.replicate (s.R1 - s.R0) (Values.slice s.R0 1 values) |> join values.Kind) ]
 
     /// The selected columns removed, right to left so each index holds; none where that would
     /// leave the table no column.
     let deleteColumns (t: Table) (s: Selection) =
-        if s.C1 - s.C0 + 1 >= t.Columns.Length then [] else [ for c in s.C1 .. -1 .. s.C0 -> TableEdit.removeColumn t c ]
+        let gone = shown s
+        if gone.Length >= t.Columns.Length then [] else [ for c in List.rev gone -> TableEdit.removeColumn t c ]
 
     /// The edits a command makes, for those that need no clipboard and no form.
     let edits (kind: Kind) (t: Table) (s: Selection) : TableEdit list =
@@ -701,7 +708,7 @@ type TableGrid() as this =
 
     let selection () : GridCommand.Selection =
         let c0, c1, r0, r1 = selectionBounds ()
-        { C0 = c0; C1 = c1; R0 = r0; R1 = r1 }
+        { C0 = c0; C1 = c1; R0 = r0; R1 = r1; Hidden = set [ for j in c0..c1 do if posOf j < 0 then j ] }
 
     /// The selection's cells as a block of exact text.
     let copied () =
