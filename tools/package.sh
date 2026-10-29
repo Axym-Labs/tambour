@@ -59,6 +59,8 @@ windows=$(publish win-x64)
 name=tambour-$version-win-x64
 staging=$(mktemp -d)
 cp -r "$windows" "$staging/$name"
-(cd "$staging" && python3 -m zipfile -c "$OLDPWD/$out/$name.zip" "$name")
+# Zipped by .NET itself, which the publish needs anyway, so packaging needs nothing else.
+echo 'System.IO.Compression.ZipFile.CreateFromDirectory(fsi.CommandLineArgs[1], fsi.CommandLineArgs[2], System.IO.Compression.CompressionLevel.Optimal, true)' >"$staging/zip.fsx"
+dotnet fsi --quiet --exec "$staging/zip.fsx" "$staging/$name" "$out/$name.zip"
 rm -rf "$staging"
 echo "$out/$name.zip"
