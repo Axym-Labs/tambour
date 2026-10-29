@@ -11,7 +11,8 @@
     "Tokens.dc.html": { "x": 4080, "y": 0, "w": 1280, "h": 1040, "title": "Tokens and components" },
     "MainDark.dc.html": { "x": 0, "y": 920, "w": 1280, "h": 800, "title": "Workspace (dark)" },
     "TableDark.dc.html": { "x": 1360, "y": 920, "w": 1280, "h": 800, "title": "Wide table (dark)" },
-    "Preferences.dc.html": { "x": 2720, "y": 920, "w": 1280, "h": 800, "title": "Preferences dialog (light)" }
+    "Preferences.dc.html": { "x": 2720, "y": 920, "w": 1280, "h": 800, "title": "Preferences dialog (light)" },
+    "PreferencesKeys.dc.html": { "x": 4080, "y": 1160, "w": 1280, "h": 800, "title": "Preferences: keyboard shortcuts (light)" }
   },
   "order": [
     "Main.dc.html",
@@ -20,7 +21,8 @@
     "Tokens.dc.html",
     "MainDark.dc.html",
     "TableDark.dc.html",
-    "Preferences.dc.html"
+    "Preferences.dc.html",
+    "PreferencesKeys.dc.html"
   ],
   "notes": {},
   "designSystems": []

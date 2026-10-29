@@ -125,6 +125,7 @@ body{margin:0}
       <div class="pane-header">
         <span class="pane-tab active">Figure</span>
         <span class="pane-tab"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><rect x="2.5" y="3" width="11" height="10" rx="1"/><path d="M2.5 6.5h11M6.5 6.5V13"/></svg>trials</span>
+        <button class="btn quiet icon-left" style="align-self: center; height: var(--h-control-sm); padding-right: var(--space-1); background: var(--hover)" aria-label="Add a table to this workspace" aria-haspopup="menu" aria-expanded="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg>Add<svg class="chev" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
         <div class="pane-actions">
           <button class="icon-btn sm on" aria-label="Hide the figure's actions"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2 4.5h12M2 11.5h12"/><circle cx="5.5" cy="4.5" r="1.75" fill="var(--surface)"/><circle cx="10.5" cy="11.5" r="1.75" fill="var(--surface)"/></svg></button>
           <button class="icon-btn sm" aria-label="How to zoom: drag to zoom, Shift+drag pans, double-click resets"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 7.25v4M8 4.8v.01"/></svg></button>
@@ -188,6 +189,23 @@ body{margin:0}
     <span>no problems</span>
     <span>Ln 9, Col 1</span>
     <span>Marey 1.0.0-dev.323</span>
+  </div>
+
+  <div class="popup" role="menu" aria-label="Add a table" style="position: absolute; left: 868px; top: 110px; width: 300px; padding: var(--space-1); display: flex; flex-direction: column">
+    <div class="list-row hover" role="menuitem">
+      <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><rect x="2.5" y="3" width="11" height="10" rx="1"/><path d="M2.5 6.5h11M6.5 6.5V13"/></svg>
+      <span class="name">New table</span><span class="end"><span class="kbd">Ctrl+T</span></span>
+    </div>
+    <div class="list-row" role="menuitem">
+      <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5V10M5 7l3 3 3-3M3 10v3.5h10V10"/></svg>
+      <span class="name">Import table…</span><span class="muted small">CSV, Arrow</span><span class="end"><span class="kbd">Ctrl+Shift+I</span></span>
+    </div>
+    <div style="height: var(--border); background: var(--line); margin: var(--space-1) 0"></div>
+    <div class="list-row" role="menuitem">
+      <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8.5" height="8.5" rx="1"/><path d="M11 5V3.5a1 1 0 0 0-1-1H3.5a1 1 0 0 0-1 1V10a1 1 0 0 0 1 1H5"/></svg>
+      <span class="name">Copy a table from another tab</span>
+      <span class="end"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 4.5L10 8l-3.5 3.5"/></svg></span>
+    </div>
   </div>
 </div>
 </x-dc>

@@ -232,6 +232,22 @@
 .display { font-size: var(--size-display); line-height: var(--line-display); font-weight: var(--weight-semibold); }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
+/* A key or a shortcut, as menus and the shortcuts page show it. */
+.kbd {
+  height: calc(var(--h-control-sm) - var(--space-1));
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-1);
+  border: var(--border) solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--size-small);
+  line-height: var(--line-small);
+  white-space: nowrap;
+  flex: none;
+}
+
 /* What floats: popups, menus and dialogs, with the one shadow. */
 .popup {
   background: var(--page);
