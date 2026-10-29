@@ -3561,6 +3561,16 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
         start.IsVisible <- true
         refresh true
 
+    /// What the start view's menus and keys do, there being no tab to do it.
+    and startCommand (msg: Msg) =
+        match msg with
+        | NewScript -> add "" None
+        | ChooseOpen folder -> chooseOpen folder |> ignore
+        | OpenPreferences -> openPreferences ()
+        | Quit -> this.Close()
+        | About -> (aboutWindow (look ())).ShowDialog this |> ignore
+        | _ -> ()
+
     /// Asks for a script or a folder, and opens it in a tab.
     and chooseOpen (folder: bool) =
         task {
@@ -3937,16 +3947,51 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
                     columns.Children.Add recentColumn
 
                 panel.Children.Add columns
-                ScrollViewer(Content = panel) :> Control
 
-        // While no tab is open, the start view's keys.
+                // The menus that need no tab, as the tabs' bar has them.
+                let item (header: string) (act: unit -> unit) =
+                    let command = commandNamed header
+                    let m = MenuItem(Header = header, InputGesture = (gesturesOf command |> List.tryHead |> Option.toObj))
+                    m.Click.Add(fun _ -> act ())
+                    m
+
+                let top (header: string) (items: Control list) =
+                    let m = MenuItem(Header = header)
+                    for i in items do
+                        m.Items.Add i |> ignore
+                    m
+
+                let recentItem = MenuItem(Header = "Open _recent", IsEnabled = not recent.IsEmpty)
+                for p in recent do
+                    let there = File.Exists p || Directory.Exists p
+                    let m = MenuItem(Header = p, IsEnabled = there)
+                    m.Click.Add(fun _ -> openPath p)
+                    recentItem.Items.Add m |> ignore
+
+                let menu = Menu(VerticalAlignment = VerticalAlignment.Center)
+                menu.Items.Add(
+                    top "_File" [ for h in [ "_New script"; "_Open…"; "Open _folder…" ] do
+                                      yield item h (fun () -> startCommand (commandNamed h).Msg) :> Control
+                                  yield recentItem
+                                  yield Separator()
+                                  yield item "_Quit" (fun () -> startCommand Quit) ]) |> ignore
+                menu.Items.Add(top "_Edit" [ item "_Preferences…" (fun () -> startCommand OpenPreferences) ]) |> ignore
+                menu.Items.Add(top "_Help" [ item "_About Tambour" (fun () -> startCommand About) ]) |> ignore
+
+                let bar = Border(Child = menu, Height = Tokens.Height.toolbar, Padding = Thickness(Tokens.Space.s2, 0.0), Background = brush look.Surface, BorderBrush = brush look.Line, BorderThickness = Thickness(0.0, 0.0, 0.0, Tokens.border))
+                let view = DockPanel()
+                DockPanel.SetDock(bar, Dock.Top)
+                view.Children.Add bar
+                view.Children.Add(ScrollViewer(Content = panel))
+                view :> Control
+
+        // While no tab is open, the start view's keys: those of its menus, as the user has them.
         this.KeyDown.Add(fun e ->
             if workspaces.Count = 0 then
-                match e.Key, e.KeyModifiers with
-                | Key.N, KeyModifiers.Control -> add "" None; e.Handled <- true
-                | Key.O, KeyModifiers.Control -> chooseOpen false; e.Handled <- true
-                | Key.O, m when m = (KeyModifiers.Control ||| KeyModifiers.Shift) -> chooseOpen true; e.Handled <- true
-                | Key.Q, KeyModifiers.Control -> this.Close(); e.Handled <- true
+                match commandFor e.Key e.KeyModifiers with
+                | Some c when (match c.Msg with NewScript | ChooseOpen _ | OpenPreferences | Quit | About -> true | _ -> false) ->
+                    startCommand c.Msg
+                    e.Handled <- true
                 | _ -> ())
 
         if opening.IsEmpty then showStart ()

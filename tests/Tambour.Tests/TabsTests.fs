@@ -899,3 +899,35 @@ let ``a divider is a one-pixel rule that a drag beside it still moves`` () =
 
     window.Ask <- fun _ -> Task.FromResult Discard
     window.Close()
+
+/// The start view has the menus that need no tab: File with the recent list, Edit with the
+/// preferences, and Help; its items and keys do what the tabs' do.
+[<AvaloniaFact>]
+let ``the start view has a menu bar of what needs no tab`` () =
+    let window = Shell.MainWindow.Start None
+    window.Show()
+    Dispatcher.UIThread.RunJobs()
+    Assert.True(window.Starting)
+
+    let menu = window.GetVisualDescendants().OfType<Menu>() |> Seq.exactlyOne
+    let rec leaves (items: obj seq) = [ for i in items do match i with :? MenuItem as m -> yield m; yield! leaves (m.Items |> Seq.cast) | _ -> () ]
+    let headers = menu.Items |> Seq.cast<MenuItem> |> Seq.map (fun m -> string m.Header) |> List.ofSeq
+    Assert.Equal<string list>([ "_File"; "_Edit"; "_Help" ], headers)
+    let named = leaves (menu.Items |> Seq.cast) |> List.map (fun m -> string m.Header)
+    for h in [ "_New script"; "_Open…"; "Open _folder…"; "Open _recent"; "_Quit"; "_Preferences…"; "_About Tambour" ] do
+        Assert.Contains(h, named)
+    let preferences = leaves (menu.Items |> Seq.cast) |> List.find (fun m -> string m.Header = "_Preferences…")
+    Assert.Equal("Ctrl+OemComma", string preferences.InputGesture)
+
+    // Ctrl+, opens the preferences over the start view.
+    press window Key.OemComma RawInputModifiers.Control
+    pumpUntil 5.0 "the preferences" (fun () -> window.OwnedWindows.Count = 1)
+    window.OwnedWindows.[0].Close()
+    Dispatcher.UIThread.RunJobs()
+
+    // New script from the menu: a tab, and the start view gone.
+    let fresh = leaves (menu.Items |> Seq.cast) |> List.find (fun m -> string m.Header = "_New script")
+    fresh.RaiseEvent(Avalonia.Interactivity.RoutedEventArgs MenuItem.ClickEvent)
+    pumpUntil 5.0 "a tab" (fun () -> window.Workspaces.Length = 1)
+    Assert.False(window.Starting)
+    closeAll window
