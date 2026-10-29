@@ -204,17 +204,17 @@ type private CompletionItem(item: Completion, look: Palette.Look, typed: Typed) 
 
              let glyph =
                  Border(
-                     Width = 16.0,
-                     Height = 16.0,
-                     CornerRadius = CornerRadius 3.0,
+                     Width = Tokens.Height.icon,
+                     Height = Tokens.Height.icon,
+                     CornerRadius = CornerRadius Tokens.Radius.sm,
                      BorderBrush = colour,
-                     BorderThickness = Thickness 1.0,
-                     Margin = Thickness(0.0, 0.0, 6.0, 0.0),
+                     BorderThickness = Thickness Tokens.border,
+                     Margin = Thickness(0.0, 0.0, Tokens.Space.s2, 0.0),
                      Child =
                          TextBlock(
                              Text = mark,
                              Foreground = colour,
-                             FontSize = 10.0,
+                             FontSize = Tokens.Type.mark,
                              FontWeight = FontWeight.Bold,
                              HorizontalAlignment = HorizontalAlignment.Center,
                              VerticalAlignment = VerticalAlignment.Center
@@ -570,7 +570,7 @@ type ScriptEditor() as this =
 
     /// A name's signature in its colours, and its documentation below it.
     let describedView (h: Hovered) : Control =
-        let panel = StackPanel(Spacing = 6.0)
+        let panel = StackPanel(Spacing = Tokens.Space.s2)
 
         panel.Children.Add(
             TextBlock(Inlines = Shown.signature look h.Text, FontFamily = Shown.code, TextWrapping = TextWrapping.Wrap)
@@ -588,8 +588,8 @@ type ScriptEditor() as this =
             Border(
                 Background = SolidColorBrush look.Background,
                 BorderBrush = SolidColorBrush look.Line,
-                BorderThickness = Thickness(1.0),
-                Padding = Thickness(10.0, 8.0),
+                BorderThickness = Thickness(Tokens.border),
+                Padding = Thickness(Tokens.Space.s3, Tokens.Space.s2),
                 Width = 400.0,
                 MaxHeight = 320.0,
                 IsVisible = false
@@ -854,7 +854,7 @@ type ScriptEditor() as this =
             s.StartOffset <= offset && offset < s.EndOffset)
 
     let tipView (problems: Diagnostic[]) (hovered: Hovered option) : Control =
-        let panel = StackPanel(Spacing = 6.0, MaxWidth = 640.0)
+        let panel = StackPanel(Spacing = Tokens.Space.s2, MaxWidth = 640.0)
         let texts = ResizeArray<string>()
 
         for p in problems do

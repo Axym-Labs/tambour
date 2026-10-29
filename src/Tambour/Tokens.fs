@@ -26,6 +26,10 @@ module Space =
 /// The type scale: each step's size and line height.
 module Type =
     [<Literal>]
+    let mark = 10.0
+    [<Literal>]
+    let markLine = 12.0
+    [<Literal>]
     let small = 12.0
     [<Literal>]
     let smallLine = 16.0
@@ -129,6 +133,7 @@ type Colours =
       Hover: Color
       Selected: Color
       Marked: Color
+      Pick: Color
       Error: Color
       Warning: Color
       Success: Color
@@ -158,6 +163,7 @@ let light =
       Hover = Color.Parse "#0F1F2328"
       Selected = Color.Parse "#330969DA"
       Marked = Color.Parse "#50F5C028"
+      Pick = Color.Parse "#C25E00"
       Error = Color.Parse "#CF222E"
       Warning = Color.Parse "#9A6700"
       Success = Color.Parse "#1A7F37"
@@ -187,6 +193,7 @@ let dark =
       Hover = Color.Parse "#12FFFFFF"
       Selected = Color.Parse "#404DA3FF"
       Marked = Color.Parse "#50C8A028"
+      Pick = Color.Parse "#F08A24"
       Error = Color.Parse "#F85149"
       Warning = Color.Parse "#D29922"
       Success = Color.Parse "#3FB950"

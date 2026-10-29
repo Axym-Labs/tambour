@@ -10,6 +10,8 @@
   --space-7: 48px;
   --font-ui: "Inter", system-ui, sans-serif;
   --font-code: "JetBrains Mono", ui-monospace, monospace;
+  --size-mark: 10px;
+  --line-mark: 12px;
   --size-small: 12px;
   --line-small: 16px;
   --size-ui: 13px;
@@ -59,6 +61,7 @@
   --hover: #1F23280F;
   --selected: #0969DA33;
   --marked: #F5C02850;
+  --pick: #C25E00;
   --error: #CF222E;
   --warning: #9A6700;
   --success: #1A7F37;
@@ -88,6 +91,7 @@
   --hover: #FFFFFF12;
   --selected: #4DA3FF40;
   --marked: #C8A02850;
+  --pick: #F08A24;
   --error: #F85149;
   --warning: #D29922;
   --success: #3FB950;

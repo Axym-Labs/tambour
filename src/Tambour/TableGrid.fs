@@ -360,7 +360,7 @@ type TableGrid() as this =
 
              dict
                  [ for c in "0123456789.-+E" ->
-                       let advance = (FormattedText(string c, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, size, Brushes.Black)).WidthIncludingTrailingWhitespace
+                       let advance = (FormattedText(string c, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, size, Brushes.Transparent)).WidthIncludingTrailingWhitespace
                        c, (glyphs.CharacterToGlyphMap.[int c], advance) ])
 
     let cellNumerals = numerals Tokens.Type.ui

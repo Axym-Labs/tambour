@@ -755,7 +755,7 @@ let private aboutWindow (look: Palette.Look) =
             Foreground = SolidColorBrush look.Text
         )
 
-    let panel = StackPanel(Spacing = 12.0, Margin = Thickness 18.0)
+    let panel = StackPanel(Spacing = Tokens.Space.s3, Margin = Thickness Tokens.Space.s4)
     panel.Children.Add text
     panel.Children.Add close
 
@@ -1431,17 +1431,14 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | Note text -> { model with ActionNote = text }, Cmd.none
     | Failed e -> { model with Status = e.Message }, Cmd.none
 
-/// The one spacing unit; every margin and gap is a multiple of it.
-let gap = 6.0
-
 let private label (text: string) : IView =
-    TextBlock.create [ TextBlock.text text; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.margin (Thickness(0.0, 0.0, 8.0, 0.0)) ]
+    TextBlock.create [ TextBlock.text text; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.margin (Thickness(0.0, 0.0, Tokens.Space.s2, 0.0)) ]
 
 let private controlView (dispatch: Msg -> unit) (index: int) (c: ControlInfo) (playing: bool) : IView =
     let row (children: IView list) : IView =
-        DockPanel.create [ DockPanel.margin (Thickness(8.0, 2.0)); DockPanel.children children ]
+        DockPanel.create [ DockPanel.margin (Thickness(Tokens.Space.s2, Tokens.Space.s1)); DockPanel.children children ]
 
-    let shown = TextBlock.create [ TextBlock.dock Dock.Right; TextBlock.text c.Shown; TextBlock.width 90.0; TextBlock.margin (Thickness(12.0, 0.0, 0.0, 0.0)); TextBlock.verticalAlignment VerticalAlignment.Center ]
+    let shown = TextBlock.create [ TextBlock.dock Dock.Right; TextBlock.text c.Shown; TextBlock.width 90.0; TextBlock.margin (Thickness(Tokens.Space.s3, 0.0, 0.0, 0.0)); TextBlock.verticalAlignment VerticalAlignment.Center ]
 
     let slider =
         Slider.create [
@@ -1456,7 +1453,7 @@ let private controlView (dispatch: Msg -> unit) (index: int) (c: ControlInfo) (p
     | "time" ->
         row [
             Button.create [ Button.dock Dock.Left; Button.content (if playing then "Pause" else "Play"); Button.onClick (fun _ -> dispatch (TogglePlay index)) ]
-            TextBlock.create [ TextBlock.dock Dock.Left; TextBlock.text c.Label; TextBlock.margin (Thickness(8.0, 0.0)); TextBlock.verticalAlignment VerticalAlignment.Center ]
+            TextBlock.create [ TextBlock.dock Dock.Left; TextBlock.text c.Label; TextBlock.margin (Thickness(Tokens.Space.s2, 0.0)); TextBlock.verticalAlignment VerticalAlignment.Center ]
             shown
             slider
         ]
@@ -1700,7 +1697,7 @@ let private problemView (look: Palette.Look) (dispatch: Msg -> unit) (all: Diagn
         Button.background Brushes.Transparent
         Button.horizontalAlignment HorizontalAlignment.Stretch
         Button.horizontalContentAlignment HorizontalAlignment.Left
-        Button.padding (Thickness(6.0, 1.0))
+        Button.padding (Thickness(Tokens.Space.s2, Tokens.border))
         Button.onClick ((fun _ -> dispatch (GoTo(d.StartLine, d.StartColumn))), SubPatchOptions.Always)
         Button.onKeyDown (
             (fun e ->
@@ -1756,8 +1753,8 @@ let rec private headerView (model: Model) (dispatch: Msg -> unit) (column: int) 
         StackPanel.dock Dock.Top
         StackPanel.isVisible shown
         StackPanel.orientation Orientation.Horizontal
-        StackPanel.spacing 6.0
-        StackPanel.margin (Thickness(6.0, 4.0))
+        StackPanel.spacing Tokens.Space.s2
+        StackPanel.margin (Thickness(Tokens.Space.s2, Tokens.Space.s1))
         StackPanel.children [
             label (if column < 0 then "New column" else "Column")
             input "header name" "name" 140.0
@@ -2840,7 +2837,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                                 Border.dock Dock.Top
                                                 Border.isVisible model.ActionsOpen
                                                 Border.borderBrush (brush look.Line)
-                                                Border.borderThickness (Thickness(0.0, 0.0, 0.0, 1.0))
+                                                Border.borderThickness (Thickness(0.0, 0.0, 0.0, Tokens.border))
                                                 Border.child (actionsView model dispatch)
                                             ]
                                             StackPanel.create [
@@ -3041,11 +3038,11 @@ let askToSave (owner: Window) (look: Palette.Look) (names: string list) : Task<U
     let save = Button(Content = "Save", IsDefault = true)
     let discard = Button(Content = "Don't save")
     let keep = Button(Content = "Cancel", IsCancel = true)
-    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = 8.0, HorizontalAlignment = HorizontalAlignment.Right)
+    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2, HorizontalAlignment = HorizontalAlignment.Right)
     buttons.Children.Add discard
     buttons.Children.Add keep
     buttons.Children.Add save
-    let panel = StackPanel(Spacing = 12.0, Margin = Thickness 18.0)
+    let panel = StackPanel(Spacing = Tokens.Space.s3, Margin = Thickness Tokens.Space.s4)
     panel.Children.Add text
     panel.Children.Add buttons
 
@@ -3069,10 +3066,10 @@ let askForName (owner: Window) (title: string) (current: string) : Task<string o
     let box = TextBox(Text = current, SelectionStart = 0, SelectionEnd = current.Length)
     let ok = Button(Content = "OK", IsDefault = true)
     let cancel = Button(Content = "Cancel", IsCancel = true)
-    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = 8.0, HorizontalAlignment = HorizontalAlignment.Right)
+    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2, HorizontalAlignment = HorizontalAlignment.Right)
     buttons.Children.Add cancel
     buttons.Children.Add ok
-    let panel = StackPanel(Spacing = 12.0, Margin = Thickness 18.0)
+    let panel = StackPanel(Spacing = Tokens.Space.s3, Margin = Thickness Tokens.Space.s4)
     panel.Children.Add box
     panel.Children.Add buttons
 
@@ -3102,10 +3099,10 @@ let confirmDeleting (owner: Window) (look: Palette.Look) (files: string list) : 
 
     let delete = Button(Content = "Delete")
     let cancel = Button(Content = "Cancel", IsDefault = true, IsCancel = true)
-    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = 8.0, HorizontalAlignment = HorizontalAlignment.Right)
+    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2, HorizontalAlignment = HorizontalAlignment.Right)
     buttons.Children.Add delete
     buttons.Children.Add cancel
-    let panel = StackPanel(Spacing = 12.0, Margin = Thickness 18.0)
+    let panel = StackPanel(Spacing = Tokens.Space.s3, Margin = Thickness Tokens.Space.s4)
     panel.Children.Add text
     panel.Children.Add buttons
 
@@ -3128,10 +3125,10 @@ let askToConfirm (owner: Window) (look: Palette.Look) (question: string) (yes: s
     let text = TextBlock(Text = question, TextWrapping = TextWrapping.Wrap, Foreground = SolidColorBrush look.Text)
     let yesButton = Button(Content = yes, IsDefault = true)
     let noButton = Button(Content = no, IsCancel = true)
-    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = 8.0, HorizontalAlignment = HorizontalAlignment.Right)
+    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2, HorizontalAlignment = HorizontalAlignment.Right)
     buttons.Children.Add noButton
     buttons.Children.Add yesButton
-    let panel = StackPanel(Spacing = 12.0, Margin = Thickness 18.0)
+    let panel = StackPanel(Spacing = Tokens.Space.s3, Margin = Thickness Tokens.Space.s4)
     panel.Children.Add text
     panel.Children.Add buttons
 
