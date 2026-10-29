@@ -49,6 +49,7 @@
     <PackageReference Include="Marey.Backend.Skia" />
     <PackageReference Include="Marey.Backend.Gpu" />
     <PackageReference Include="FSharp.Compiler.Service" />
+    <PackageReference Include="Marey.Witnesses" />
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Skia" />

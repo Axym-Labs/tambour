@@ -127,6 +127,7 @@ module Editor =
     let onEdited f = subscription "Edited" (fun e -> e.Edited) f
     let onProblemsChanged f = subscription "ProblemsChanged" (fun e -> e.ProblemsChanged) f
     let onCaretMoved f = subscription "CaretMoved" (fun e -> e.CaretMoved) f
+    let onFixed f = subscription "Fixed" (fun e -> e.Fixed) f
 
 /// The table grid in FuncUI's terms.
 module Sheet =
@@ -294,6 +295,8 @@ type Msg =
     | Typed of field: string * text: string
     | Act of ActionSpec
     | Acted of Acted
+    /// A fix of Marey's made in the editor: its title, and the script after it.
+    | Fixed of title: string * text: string
     | OpenPath of string
     | ChooseOpen of folder: bool
     | Save
@@ -764,6 +767,12 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             Script = a.Text
             ActionNote = note
             History = History.record DateTime.UtcNow false (History.TextEdit.between model.Script a.Text) model.History },
+        Cmd.ofMsg Run
+    | Fixed(title, text) ->
+        { model with
+            Script = text
+            ActionNote = title
+            History = History.record DateTime.UtcNow false (History.TextEdit.between model.Script text) model.History },
         Cmd.ofMsg Run
     | OpenPath path ->
         try
@@ -1667,6 +1676,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                 Editor.onEdited (Edited >> dispatch)
                                 Editor.onProblemsChanged (Problems >> dispatch)
                                 Editor.onCaretMoved (Caret >> dispatch)
+                                Editor.onFixed (Fixed >> dispatch)
                             ]
                             GridSplitter.create [
                                 Grid.row 1

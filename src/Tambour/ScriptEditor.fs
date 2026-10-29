@@ -251,6 +251,8 @@ module private Segments =
 
     let ofProblem (doc: TextDocument) (p: Diagnostic) = of' doc p.StartLine p.StartColumn p.EndLine p.EndColumn
 
+    let ofFinding (doc: TextDocument) (f: Finding) = of' doc f.StartLine f.StartColumn f.EndLine f.EndColumn
+
 /// The squiggles under the script's problems, the marks on the uses of the symbol at the caret,
 /// and on the bracket at the caret and its match.
 type private Marks(document: unit -> TextDocument) =
@@ -409,7 +411,8 @@ type private Classes() =
 /// Problems are underlined and their messages shown on hover, the symbol at the caret is marked
 /// where it is used and the bracket at it with its match, a name typed, a dot or Ctrl+Space completes, a
 /// parenthesis or a comma shows the call's overloads, the pointer resting on a name shows its
-/// tooltip, and F2 renames a binding the script makes. Enter, Tab, Shift+Tab and Backspace indent
+/// tooltip, F2 renames a binding the script makes, and Ctrl+. or the right button on a Marey call
+/// short of its unit witnesses offers the fixes for it. Enter, Tab, Shift+Tab and Backspace indent
 /// as F# is indented, and brackets and quotes are closed as they are opened.
 type ScriptEditor() as this =
     inherit UserControl()
@@ -430,6 +433,7 @@ type ScriptEditor() as this =
     let edited = Event<History.TextEdit * string>()
     let problemsChanged = Event<Diagnostic[]>()
     let caretMoved = Event<int * int>()
+    let fixedBy = Event<string * string>()
 
     let mutable language: LanguageService = Unchecked.defaultof<_>
     let mutable path: string = null
@@ -460,6 +464,13 @@ type ScriptEditor() as this =
     /// Counts hovers, so a tooltip arriving after the pointer moved on is set aside.
     let mutable hovers = 0
     let mutable tipText = ""
+
+    /// Marey's findings in the last check, and the edit the check was of: their fixes are offered
+    /// only while the text is the one checked.
+    let mutable findings: Finding[] = [||]
+    let mutable foundAt = -1
+    /// The menu of fixes, while it is open.
+    let mutable fixMenu: ContextMenu = null
 
     /// The closers the editor put in, while the caret stays on their line.
     let closers = ResizeArray<TextAnchor>()
@@ -515,6 +526,8 @@ type ScriptEditor() as this =
 
         ask (fun l -> l.CheckAsync(text, path)) (fun c ->
             marks.Problems <- c.Diagnostics
+            findings <- c.Findings
+            foundAt <- version
             classes.Runs <- classify c.Tokens
             editor.TextArea.TextView.Redraw()
             problemsChanged.Trigger c.Diagnostics)
@@ -821,7 +834,20 @@ type ScriptEditor() as this =
             let s = Segments.ofProblem doc p
             s.StartOffset <= offset && offset < s.EndOffset)
 
-    let tipView (problems: Diagnostic[]) (hovered: Hovered option) : Control =
+    /// Marey's findings whose call holds an offset, or ends at it, while the text is the one
+    /// checked.
+    let findingsAt (offset: int) =
+        if foundAt <> version then
+            [||]
+        else
+            let doc = editor.Document
+
+            findings
+            |> Array.filter (fun f ->
+                let s = Segments.ofFinding doc f
+                s.StartOffset <= offset && offset <= s.EndOffset)
+
+    let tipView (problems: Diagnostic[]) (found: Finding[]) (hovered: Hovered option) : Control =
         let panel = StackPanel(Spacing = 6.0, MaxWidth = 640.0)
         let texts = ResizeArray<string>()
 
@@ -835,6 +861,17 @@ type ScriptEditor() as this =
             let message = $"{p.Code}: {p.Message}"
             texts.Add message
             panel.Children.Add(TextBlock(Text = message, Foreground = SolidColorBrush colour, TextWrapping = TextWrapping.Wrap))
+
+        // What Marey says the call wants, and the key that offers its fixes.
+        for f in found do
+            let message = $"{f.Code}: {f.Message}"
+            texts.Add message
+            panel.Children.Add(TextBlock(Text = message, Foreground = SolidColorBrush look.Info, TextWrapping = TextWrapping.Wrap))
+
+            for fix in f.Fixes do
+                let offer = $"Ctrl+. to fix: {fix.Title}"
+                texts.Add offer
+                panel.Children.Add(TextBlock(Text = offer, Foreground = SolidColorBrush look.Info, FontStyle = FontStyle.Italic, TextWrapping = TextWrapping.Wrap))
 
         match hovered with
         | Some h when not (String.IsNullOrWhiteSpace h.Text) ->
@@ -884,17 +921,70 @@ type ScriptEditor() as this =
         hovers <- hovers + 1
         let hover = hovers
         let problems = problemsAt offset
+        let found = findingsAt offset
         let location = editor.Document.GetLocation offset
         let text = editor.Text
         tipText <- ""
         hovered <- wordBox offset
 
-        if problems.Length > 0 then
-            showTip (tipView problems None)
+        if problems.Length > 0 || found.Length > 0 then
+            showTip (tipView problems found None)
 
         ask (fun l -> l.HoverAsync(text, path, location.Line, location.Column - 1)) (fun h ->
-            if hover = hovers && (problems.Length > 0 || not (String.IsNullOrWhiteSpace h.Text)) then
-                showTip (tipView problems (Some h)))
+            if hover = hovers && (problems.Length > 0 || found.Length > 0 || not (String.IsNullOrWhiteSpace h.Text)) then
+                showTip (tipView problems found (Some h)))
+
+    // ---- Fixes -----------------------------------------------------------------------------------
+
+    /// Replaces only what differs from `value`, as one edit, not reported as typed.
+    let replaceText (value: string) =
+        let current = editor.Text
+
+        if value <> current then
+            let edit = History.TextEdit.between current value
+            settingText <- true
+
+            try
+                editor.Document.Replace(edit.Offset, edit.Removed.Length, edit.Inserted)
+            finally
+                settingText <- false
+
+    /// Makes a fix's edits as one change, which the app's history takes as one entry.
+    let applyFix (fix: Fix) =
+        let before = editor.Text
+        let after = Analysis.applyFix before fix
+
+        if after <> before then
+            replaceText after
+            fixedBy.Trigger(fix.Title, after)
+
+    /// The fixes for the findings at an offset, as a menu: at the pointer, or under the word at
+    /// the offset. False where there are none.
+    let openFixes (offset: int) (atPointer: bool) =
+        let fixes = findingsAt offset |> Array.collect (fun f -> f.Fixes)
+
+        if fixes.Length = 0 then
+            false
+        else
+            let items =
+                [ for fix in fixes do
+                      let item = MenuItem(Header = fix.Title)
+                      item.Click.Add(fun _ -> applyFix fix)
+                      item ]
+
+            let menu = ContextMenu(ItemsSource = items, PlacementTarget = editor)
+
+            if not atPointer then
+                menu.Placement <- PlacementMode.AnchorAndGravity
+                menu.PlacementRect <- Nullable(wordBox offset)
+                menu.PlacementAnchor <- Primitives.PopupPositioning.PopupAnchor.BottomLeft
+                menu.PlacementGravity <- Primitives.PopupPositioning.PopupGravity.BottomRight
+
+            menu.Closed.Add(fun _ -> if obj.ReferenceEquals(fixMenu, menu) then fixMenu <- null)
+            ToolTip.SetIsOpen(editor, false)
+            fixMenu <- menu
+            menu.Open editor
+            true
 
     // ---- The look ------------------------------------------------------------------------------
 
@@ -1005,6 +1095,24 @@ type ScriptEditor() as this =
             | Key.F2, _ ->
                 e.Handled <- true
                 rename ()
+            | Key.OemPeriod, KeyModifiers.Control -> e.Handled <- openFixes editor.CaretOffset false
+            | _ -> ())
+
+        // The right button on a call Marey has fixes for offers them; elsewhere it does nothing,
+        // as before.
+        editor.ContextRequested.Add(fun e ->
+            let view = editor.TextArea.TextView
+
+            let offset =
+                match e.TryGetPosition view with
+                | true, p ->
+                    view.GetPositionFloor(p + view.ScrollOffset)
+                    |> Option.ofNullable
+                    |> Option.map (fun p -> editor.Document.GetOffset p.Location)
+                | _ -> Some editor.CaretOffset
+
+            match offset with
+            | Some o when openFixes o true -> e.Handled <- true
             | _ -> ())
 
         editor.PointerHover.Add(fun e ->
@@ -1022,28 +1130,7 @@ type ScriptEditor() as this =
     /// where it was outside it; the edit is not reported as typed.
     member _.Text
         with get () = editor.Text
-        and set (value: string) =
-            let current = editor.Text
-
-            if value <> current then
-                let mutable prefix = 0
-
-                while prefix < current.Length && prefix < value.Length && current.[prefix] = value.[prefix] do
-                    prefix <- prefix + 1
-
-                let mutable suffix = 0
-
-                while suffix < current.Length - prefix
-                      && suffix < value.Length - prefix
-                      && current.[current.Length - 1 - suffix] = value.[value.Length - 1 - suffix] do
-                    suffix <- suffix + 1
-
-                settingText <- true
-
-                try
-                    editor.Document.Replace(prefix, current.Length - prefix - suffix, value.Substring(prefix, value.Length - prefix - suffix))
-                finally
-                    settingText <- false
+        and set (value: string) = replaceText value
 
     /// The language service the editor asks; the script is checked as soon as there is one.
     member _.Language
@@ -1060,6 +1147,16 @@ type ScriptEditor() as this =
 
     /// The problems the language service last found.
     member _.Problems = marks.Problems
+
+    /// The calls Marey's witnesses found short in the last check, with their fixes.
+    member _.Findings = findings
+
+    /// Opens the menu of fixes for the call at an offset, as Ctrl+. there does; false where it
+    /// has none, or the text has changed since the check.
+    member _.OfferFixes(offset: int) = openFixes offset false
+
+    /// The menu of fixes, while it is open; null otherwise.
+    member _.FixMenu = fixMenu
 
     /// The stretches the last check classified, moved with the edits since.
     member _.Classified = classes.Runs
@@ -1115,6 +1212,10 @@ type ScriptEditor() as this =
     /// The language service's problems, after each check.
     [<CLIEvent>]
     member _.ProblemsChanged = problemsChanged.Publish
+
+    /// A fix made, by its title, and the text after it. Its change is not one `Edited` reports.
+    [<CLIEvent>]
+    member _.Fixed = fixedBy.Publish
 
     /// Where the caret is, as a line and a column from 1, each time it moves.
     [<CLIEvent>]

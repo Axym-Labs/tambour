@@ -232,3 +232,49 @@ let ``a completion entry is described by its signature and documentation`` () =
     Assert.Contains("float", described.Text)
     Assert.Contains("Twice the number given.", described.Doc)
     Assert.Equal("", (service.Value.Describe(entry "nothingLikeThis")).Text)
+
+// ---- Marey's witness fixes -------------------------------------------------------------------------
+
+let private measured = "let t = [| 0.0<s>; 1.0<s>; 2.0<s> |]\nlet x = [| 0.0<m>; 2.0<m>; 3.0<m> |]\n"
+
+/// A call short of the right witnesses is found where the script has it, and its first fix makes
+/// the call this one; each of its fixes makes the script check clean.
+[<Theory>]
+[<InlineData("Chart.lineIn t x", "MAREY001", "Chart.lineIn U.second U.metre t x")>]
+[<InlineData("Chart.lineIn U.metre U.metre t x", "MAREY002", "Chart.lineIn U.second U.metre t x")>]
+[<InlineData("Chart.line t x", "MAREY003", "Chart.lineIn U.second U.metre t x")>]
+let ``a call short of its witnesses is found, and its fixes check clean`` (call: string, code: string, first: string) =
+    let script = measured + $"let figure = {call}\n"
+    let found = service.Value.Check { Id = 1; Text = script; Path = null }
+    let finding = found.Findings |> Array.find (fun f -> f.Code = code)
+    Assert.Equal(3, finding.StartLine)
+    Assert.Equal("let figure = ".Length, finding.StartColumn)
+    Assert.NotEmpty finding.Fixes
+    Assert.Equal(measured + $"let figure = {first}\n", Analysis.applyFix script finding.Fixes.[0])
+
+    for fix in finding.Fixes do
+        let fixedScript = Analysis.applyFix script fix
+        let after = service.Value.Check { Id = 2; Text = fixedScript; Path = null }
+        Assert.True(after.Diagnostics |> Array.forall (fun d -> d.Severity <> "error"), $"{fix.Title}: {fixedScript}\n%A{after.Diagnostics}")
+        Assert.Empty after.Findings
+
+/// A finding the prelude's lines hold is not the script's, nor a fix that would edit them.
+[<Fact>]
+let ``a finding or a fix in the prelude is dropped`` () =
+    let range (line: int) = FSharp.Compiler.Text.Range.mkRange "s.fsx" (FSharp.Compiler.Text.Position.mkPos line 4) (FSharp.Compiler.Text.Position.mkPos line 9)
+    let edit line : Marey.Witnesses.Edit = { Range = range line; Text = "U.second " }
+
+    let findings: Marey.Witnesses.Finding list =
+        [ { Code = "MAREY001"; Range = range 2; Message = "in the prelude"; Fixes = [ { Title = "a"; Edits = [ edit 2 ] } ] }
+          { Code = "MAREY001"
+            Range = range 5
+            Message = "in the script"
+            Fixes = [ { Title = "kept"; Edits = [ edit 5; edit 6 ] }; { Title = "dropped"; Edits = [ edit 5; edit 3 ] } ] } ]
+
+    let found = Analysis.findingsOf 3 findings
+    let f = Assert.Single found
+    Assert.Equal(2, f.StartLine)
+    Assert.Equal(4, f.StartColumn)
+    let fix = Assert.Single f.Fixes
+    Assert.Equal("kept", fix.Title)
+    Assert.Equal<int[]>([| 2; 3 |], fix.Edits |> Array.map (fun e -> e.StartLine))

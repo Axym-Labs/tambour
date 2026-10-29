@@ -199,3 +199,52 @@ let ``every command is in a menu with its shortcut, and its keys do what the ent
     Dispatcher.UIThread.RunJobs()
     Assert.True((bottom ()).IsVisible, "its menu entry left the bottom panel closed")
     window.Close()
+
+/// A Marey call short of its witnesses offers its fix on Ctrl+., in its tooltip and its menu; the
+/// fix is one entry of the history, undone to the byte and done again.
+[<AvaloniaFact>]
+let ``a call short of its witnesses is fixed from its menu, and undone to the byte`` () =
+    let script =
+        "let t = [| 0.0<s>; 1.0<s>; 2.0<s> |]\nlet x = [| 0.0<m>; 2.0<m>; 3.0<m> |]\nlet figure = Chart.lineIn t x // drawn\n"
+
+    let window = new Shell.MainWindow(script)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    let editor = window.GetVisualDescendants().OfType<ScriptEditor>().Single()
+    pumpUntil 30.0 "the finding" (fun () -> editor.Findings |> Array.exists (fun f -> f.Code = "MAREY001"))
+
+    let call = script.IndexOf "lineIn"
+    editor.HoverAt call
+    Dispatcher.UIThread.RunJobs()
+    Assert.Contains("MAREY001: ", editor.TipText)
+    Assert.Contains("Ctrl+. to fix: Insert U.second U.metre", editor.TipText)
+
+    editor.Editor.CaretOffset <- call
+    editor.Editor.TextArea.Focus() |> ignore
+    window.KeyPress(Key.OemPeriod, RawInputModifiers.Control, PhysicalKey.Period, null)
+    Dispatcher.UIThread.RunJobs()
+    Assert.NotNull editor.FixMenu
+    let item = editor.FixMenu.Items.OfType<MenuItem>() |> Seq.exactlyOne
+    Assert.Equal("Insert U.second U.metre", string item.Header)
+    item.RaiseEvent(Avalonia.Interactivity.RoutedEventArgs MenuItem.ClickEvent)
+    editor.FixMenu.Close()
+    Dispatcher.UIThread.RunJobs()
+    Assert.Null editor.FixMenu
+
+    let fixedScript = script.Replace("Chart.lineIn t x", "Chart.lineIn U.second U.metre t x")
+    Assert.Equal(fixedScript, editor.Text)
+    pumpUntil 5.0 "the fix's note" (fun () -> window.GetVisualDescendants().OfType<TextBlock>().Any(fun t -> t.Text = "Insert U.second U.metre"))
+
+    pumpUntil 30.0 "the check of the fixed script" (fun () ->
+        editor.Findings.Length = 0 && editor.Problems |> Array.forall (fun d -> d.Severity <> "error"))
+
+    // Not offered again once there is nothing to fix.
+    Assert.False(editor.OfferFixes call)
+
+    window.KeyPress(Key.Z, RawInputModifiers.Control, PhysicalKey.Z, "z")
+    pumpUntil 5.0 "the undo" (fun () -> editor.Text = script)
+    window.KeyPress(Key.Y, RawInputModifiers.Control, PhysicalKey.Y, "y")
+    pumpUntil 5.0 "the redo" (fun () -> editor.Text = fixedScript)
+    window.KeyPress(Key.Z, RawInputModifiers.Control, PhysicalKey.Z, "z")
+    pumpUntil 5.0 "the undo again" (fun () -> editor.Text = script)
+    window.Close()
