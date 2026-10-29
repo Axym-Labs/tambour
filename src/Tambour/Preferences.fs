@@ -55,6 +55,8 @@ type Preferences =
       EditorSize: float
       /// Whether typing an opener puts in its closer.
       AutoClose: bool
+      /// Whether code is drawn with its font's ligatures (`->` an arrow, `|>` a triangle).
+      Ligatures: bool
       /// Whether saving the script runs it.
       RunOnSave: bool
       /// The format Export writes unless another is chosen.
@@ -76,6 +78,7 @@ let defaults =
       ActionsOpen = true
       EditorSize = 14.0
       AutoClose = true
+      Ligatures = true
       RunOnSave = true
       ExportFormat = "png"
       RecentKeep = 10
@@ -159,6 +162,7 @@ let read (directory: string) : Preferences =
           ActionsOpen = flag "actions"
           EditorSize = number "editorSize" defaults.EditorSize editorSizes
           AutoClose = flag "autoClose"
+          Ligatures = flag "ligatures"
           RunOnSave = flag "runOnSave"
           ExportFormat = format
           RecentKeep = int (number "recentKeep" (float defaults.RecentKeep) (float (fst recentKeeps), float (snd recentKeeps)))
@@ -190,6 +194,7 @@ let write (directory: string) (preferences: Preferences) =
               "actions", box preferences.ActionsOpen
               "editorSize", box preferences.EditorSize
               "autoClose", box preferences.AutoClose
+              "ligatures", box preferences.Ligatures
               "runOnSave", box preferences.RunOnSave
               "exportFormat", box preferences.ExportFormat
               "recentKeep", box preferences.RecentKeep

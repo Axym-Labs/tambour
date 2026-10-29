@@ -442,7 +442,7 @@ type ScriptEditor() as this =
     inherit UserControl()
 
     let editor =
-        TextEditor(ShowLineNumbers = true, FontFamily = Shown.code, FontSize = Preferences.Live.Current.EditorSize)
+        TextEditor(ShowLineNumbers = true, FontFamily = Palette.codeFor Preferences.Live.Current.Ligatures, FontSize = Preferences.Live.Current.EditorSize)
 
     let registry = RegistryOptions ThemeName.LightPlus
     let marks = Marks(fun () -> editor.Document)
@@ -1125,9 +1125,15 @@ type ScriptEditor() as this =
     override _.OnAttachedToVisualTree(e: VisualTreeAttachmentEventArgs) =
         base.OnAttachedToVisualTree e
         install ()
-        // The type size as the preferences have it, now and as it changes while shown.
-        editor.FontSize <- Preferences.Live.Current.EditorSize
-        sized <- Preferences.Live.Changed.Subscribe(fun p -> editor.FontSize <- p.EditorSize)
+        // The type size and ligatures as the preferences have them, now and as they change while
+        // shown.
+        let follow (p: Preferences.Preferences) =
+            editor.FontSize <- p.EditorSize
+            let family = Palette.codeFor p.Ligatures
+            if editor.FontFamily <> family then editor.FontFamily <- family
+
+        follow Preferences.Live.Current
+        sized <- Preferences.Live.Changed.Subscribe follow
 
     override _.OnDetachedFromVisualTree(e: VisualTreeAttachmentEventArgs) =
         base.OnDetachedFromVisualTree e

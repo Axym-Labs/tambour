@@ -68,6 +68,7 @@ type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit) as th
                     Preferences.write dir { Preferences.read dir with
                                                 EditorSize = next.EditorSize
                                                 AutoClose = next.AutoClose
+                                                Ligatures = next.Ligatures
                                                 RunOnSave = next.RunOnSave
                                                 ExportFormat = next.ExportFormat
                                                 RecentKeep = next.RecentKeep
@@ -158,6 +159,7 @@ type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit) as th
             "Editor"
             [ "Type size", sizeRow
               "", check "auto close" "Close brackets and quotes as I type" "not < or '" p.AutoClose (fun v -> apply (fun p -> { p with AutoClose = v }))
+              "", check "ligatures" "Ligatures" "-> as an arrow, |> as a triangle" p.Ligatures (fun v -> apply (fun p -> { p with Ligatures = v }))
               "", check "run on save" "Run the script on save" "" p.RunOnSave (fun v -> apply (fun p -> { p with RunOnSave = v })) ]
 
     and export () : Control =

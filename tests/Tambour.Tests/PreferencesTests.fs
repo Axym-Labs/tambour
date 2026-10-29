@@ -80,6 +80,20 @@ let ``each preference is written to settings.json, takes effect at once, and fol
         editor.Editor.TextArea.PerformTextInput "("
         Assert.EndsWith("\n(", editor.Text)
 
+        // Ligatures off: the editor in the cut of its font without them, and back.
+        Assert.Contains("JetBrains Mono,", string editor.Editor.FontFamily)
+        (named "ligatures" :?> CheckBox).IsChecked <- Nullable false
+        Dispatcher.UIThread.RunJobs()
+        Assert.False((stored ()).Ligatures)
+        Assert.Contains("JetBrains Mono NL", string editor.Editor.FontFamily)
+        // The face itself, from the app's own fonts, not one standing in for it.
+        let face = Avalonia.Media.Typeface(Palette.codeWithoutLigatures).GlyphTypeface
+        Assert.Equal("JetBrains Mono NL", face.FamilyName)
+        (named "ligatures" :?> CheckBox).IsChecked <- Nullable true
+        Dispatcher.UIThread.RunJobs()
+        Assert.True((stored ()).Ligatures)
+        Assert.DoesNotContain("JetBrains Mono NL", string editor.Editor.FontFamily)
+
         (named "run on save" :?> CheckBox).IsChecked <- Nullable false
         Dispatcher.UIThread.RunJobs()
         Assert.False((stored ()).RunOnSave)

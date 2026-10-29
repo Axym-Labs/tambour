@@ -45,6 +45,13 @@ let private rgb (hex: string) = Color.Parse hex
 /// app so the editor looks the same on every OS.
 let code = FontFamily "avares://tambour/Fonts#JetBrains Mono, Cascadia Code, Consolas, DejaVu Sans Mono, monospace"
 
+/// The same without ligatures: JetBrains Mono NL, the font with its `calt` taken out
+/// (`tools/nl-fonts.py`).
+let codeWithoutLigatures = FontFamily "avares://tambour/Fonts#JetBrains Mono NL, Consolas, DejaVu Sans Mono, monospace"
+
+/// The code font as the preferences have it.
+let codeFor (ligatures: bool) = if ligatures then code else codeWithoutLigatures
+
 /// The editor's colours are Visual Studio Code's Light+, as its grammar theme is.
 let light =
     let roles = Tokens.light
