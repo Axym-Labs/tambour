@@ -22,6 +22,7 @@
     <Compile Include="Typing.fs" />
     <Compile Include="ScriptEditor.fs" />
     <Compile Include="App.fs" />
+    <Compile Include="PreferencesView.fs" />
     <Compile Include="Project.fs" />
     <Compile Include="Tables.fs" />
     <Compile Include="Plotting.fs" />

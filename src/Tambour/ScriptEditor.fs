@@ -442,7 +442,7 @@ type ScriptEditor() as this =
     inherit UserControl()
 
     let editor =
-        TextEditor(ShowLineNumbers = true, FontFamily = Shown.code, FontSize = 14.0)
+        TextEditor(ShowLineNumbers = true, FontFamily = Shown.code, FontSize = Preferences.Live.Current.EditorSize)
 
     let registry = RegistryOptions ThemeName.LightPlus
     let marks = Marks(fun () -> editor.Document)
@@ -451,6 +451,7 @@ type ScriptEditor() as this =
     /// The grammar's colouring, while the editor is in a window: TextMate's tokenizer holds a
     /// thread-pool thread for as long as it is installed, so a closed tab's editor gives it back.
     let mutable textMate: TextMate.Installation = null
+    let mutable sized: IDisposable = { new IDisposable with member _.Dispose() = () }
 
     /// The UI thread's dispatcher when the editor was made. A reply posted after it is gone (a
     /// headless test's application torn down) goes nowhere, rather than reading
@@ -832,7 +833,8 @@ type ScriptEditor() as this =
         | "\r\n" ->
             e.Handled <- true
             apply (Typing.enter editor.Text s t)
-        | input when not (isNull input) ->
+        // Closers put in as an opener is typed, unless the user turned that off.
+        | input when not (isNull input) && Preferences.Live.Current.AutoClose ->
             match Typing.typed editor.Text s t input isInserted with
             | Some c ->
                 e.Handled <- true
@@ -1123,10 +1125,14 @@ type ScriptEditor() as this =
     override _.OnAttachedToVisualTree(e: VisualTreeAttachmentEventArgs) =
         base.OnAttachedToVisualTree e
         install ()
+        // The type size as the preferences have it, now and as it changes while shown.
+        editor.FontSize <- Preferences.Live.Current.EditorSize
+        sized <- Preferences.Live.Changed.Subscribe(fun p -> editor.FontSize <- p.EditorSize)
 
     override _.OnDetachedFromVisualTree(e: VisualTreeAttachmentEventArgs) =
         base.OnDetachedFromVisualTree e
         uninstall ()
+        sized.Dispose()
 
     member _.Editor = editor
 

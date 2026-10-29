@@ -1148,7 +1148,10 @@ type TableGrid() as this =
             | Key.F2 -> beginEdit None; e.Handled <- true
             | Key.Delete -> clear (); e.Handled <- true
             | _ when control ->
-                match GridCommand.all |> List.tryFind (fun (_, _, keys) -> keys <> "" && (let g = KeyGesture.Parse keys in g.Key = e.Key && g.KeyModifiers = e.KeyModifiers)) with
+                // A command's keys as the preferences have them, or its own.
+                let keysOf (name: string) (keys: string) = Preferences.Live.Current.Keys.TryFind name |> Option.defaultValue keys
+
+                match GridCommand.all |> List.tryFind (fun (_, name, keys) -> let keys = keysOf name keys in keys <> "" && (try let g = KeyGesture.Parse keys in g.Key = e.Key && g.KeyModifiers = e.KeyModifiers with _ -> false)) with
                 | Some(kind, _, _) ->
                     run kind
                     e.Handled <- true

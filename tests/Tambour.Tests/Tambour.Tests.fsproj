@@ -21,6 +21,7 @@
     <Compile Include="HistoryTests.fs" />
     <Compile Include="FilesTests.fs" />
     <Compile Include="TabsTests.fs" />
+    <Compile Include="PreferencesTests.fs" />
     <Compile Include="TableTests.fs" />
     <Compile Include="TableScriptTests.fs" />
     <Compile Include="GridTests.fs" />

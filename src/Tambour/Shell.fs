@@ -222,7 +222,9 @@ type Tabs =
       /// Files deleted: a tab showing one of them closes, as there is nothing left to save.
       Deleted: string list -> unit
       /// Moves the workspace's tab into a window of its own.
-      Detach: unit -> unit }
+      Detach: unit -> unit
+      /// Opens the Preferences dialog.
+      Preferences: unit -> unit }
 
 /// What a workspace runs with: its workers, started when first asked, the language service it
 /// shares with the other workspaces, the control it is drawn in, and the window's tabs.
@@ -377,6 +379,9 @@ type Msg =
     | ShowBottom of tab: int
     | ToggleActions
     | ToggleFullView
+    | OpenPreferences
+    /// The preferences changed: drawn again with them (the menus' shortcuts).
+    | PreferencesChanged
     /// A table's grid laid its columns out anew.
     | LaidOut of table: string * GridLayout
     /// A divider dragged: where the script's side ends, as a fraction, and the bottom panel's height.
@@ -1033,7 +1038,8 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 File.WriteAllText(path, model.Script)
                 writeProject model
                 let model = saveTables model
-                { model with Saved = model.Script; Status = $"saved {Path.GetFileName path}" }, Cmd.ofMsg Run
+                { model with Saved = model.Script; Status = $"saved {Path.GetFileName path}" },
+                (if Preferences.Live.Current.RunOnSave then Cmd.ofMsg Run else Cmd.none)
             with e ->
                 { model with Status = $"not saved: {e.Message}" }, Cmd.none
         | None ->
@@ -1067,7 +1073,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 Cmd.ofMsg Run
         | _ -> model, Cmd.none
     | ChooseExport ->
-        let format = model.Inputs.TryFind "export format" |> Option.defaultValue "png"
+        let format = model.Inputs.TryFind "export format" |> Option.defaultValue Preferences.Live.Current.ExportFormat
         let name = (model.Path |> Option.map Path.GetFileNameWithoutExtension |> Option.defaultValue "figure") + "." + format
 
         let size field fallback =
@@ -1266,6 +1272,10 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         keepPanes next
         next, Cmd.none
     | ToggleFullView -> { model with FullView = not model.FullView }, Cmd.none
+    | OpenPreferences ->
+        env.Tabs.Preferences()
+        model, Cmd.none
+    | PreferencesChanged -> model, Cmd.none
     | LaidOut(table, layout) ->
         let next = { model with Layouts = model.Layouts.Add(table, layout) }
         writeProject next
@@ -2089,6 +2099,7 @@ let commands: Command list =
       c "_File" "_Quit" "Ctrl+Q" [] Quit always
       c "_Edit" "_Undo" "Ctrl+Z" [] Undo (fun m -> not m.History.Done.IsEmpty)
       c "_Edit" "_Redo" "Ctrl+Y" [ "Ctrl+Shift+Z" ] Redo (fun m -> not m.History.Undone.IsEmpty)
+      c "_Edit" "_Preferences…" "Ctrl+OemComma" [] OpenPreferences always
       c "_Run" "_Run" "F5" [ "Ctrl+Enter" ] Run always
       c "_Run" "_Cancel" "Escape" [] Cancel (fun m -> m.Running || m.FullView)
       c "_Table" "_New table" "Ctrl+T" [] NewTable always
@@ -2109,10 +2120,17 @@ let commands: Command list =
       c "_View" "Move tab to a _new window" "" [] DetachTab always
       c "_Help" "_About Tambour" "" [] About always ]
 
+/// A command's keys now: as the user changed them in the preferences, or its own.
+let gesturesOf (c: Command) =
+    match Preferences.Live.Current.Keys.TryFind c.Header with
+    | Some "" -> []
+    | Some k -> (try [ KeyGesture.Parse k ] with _ -> [])
+    | None -> Option.toList c.Gesture @ c.Also
+
 /// The command a key and its modifiers take, if one does.
 let commandFor (key: Key) (modifiers: KeyModifiers) =
     commands
-    |> List.tryFind (fun c -> (Option.toList c.Gesture @ c.Also) |> List.exists (fun g -> g.Key = key && g.KeyModifiers = modifiers))
+    |> List.tryFind (fun c -> gesturesOf c |> List.exists (fun g -> g.Key = key && g.KeyModifiers = modifiers))
 
 let private commandNamed (header: string) = commands |> List.find (fun c -> c.Header = header)
 
@@ -2177,9 +2195,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
     let menuItem (command: Command) : IView =
         MenuItem.create [
             MenuItem.header command.Header
-            match command.Gesture with
-            | Some g -> MenuItem.inputGesture g
-            | None -> ()
+            MenuItem.inputGesture (gesturesOf command |> List.tryHead |> Option.toObj)
             MenuItem.isEnabled (command.Enabled model)
             MenuItem.onClick ((fun _ -> dispatch command.Msg), SubPatchOptions.Always)
         ]
@@ -2278,7 +2294,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
             Button.verticalContentAlignment VerticalAlignment.Center
             Button.isEnabled enabled
             Button.background Brushes.Transparent
-            Button.tip (match command.Gesture with Some g -> $"{name} ({g})" | None -> name)
+            Button.tip (match gesturesOf command with g :: _ -> $"""{name} ({g.ToString("p", null)})""" | [] -> name)
             Button.onClick ((fun _ -> dispatch command.Msg), SubPatchOptions.Always)
         ]
 
@@ -2318,7 +2334,10 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                             ComboBox.dataItems exportFormats
                             ComboBox.verticalAlignment VerticalAlignment.Center
                             ComboBox.tip "the format Export writes"
-                            ComboBox.selectedIndex (exportFormats |> Array.tryFindIndex (fun f -> Some f = model.Inputs.TryFind "export format") |> Option.defaultValue 0)
+                            ComboBox.selectedIndex (
+                                let format = model.Inputs.TryFind "export format" |> Option.defaultValue Preferences.Live.Current.ExportFormat
+                                exportFormats |> Array.tryFindIndex ((=) format) |> Option.defaultValue 0
+                            )
                             ComboBox.onSelectedIndexChanged ((fun i -> if i >= 0 then dispatch (Typed("export format", exportFormats.[i]))), SubPatchOptions.Always)
                         ]
                         ComboBox.create [
@@ -2989,6 +3008,7 @@ let private subscriptions (env: Env) (host: Control) (titled: string -> unit) (e
         { new IDisposable with member _.Dispose() = () }
 
     [ [ "replies" ], replies
+      [ "preferences" ], (fun dispatch -> Preferences.Live.Changed.Subscribe(fun _ -> dispatch PreferencesChanged))
       // Made again when what can be taken changes, as the keys read it.
       [ "keys"; commands |> List.map (fun c -> if c.Enabled model then "1" else "0") |> String.concat "" ], keys
       [ "post" ], exposed
@@ -3151,7 +3171,8 @@ type Workspace(script: string, path: string option, language: LanguageService, t
           Confirm = fun question yes no -> owner.Confirm question yes no
           Renamed = fun before after -> owner.Renamed before after
           Deleted = fun files -> owner.Deleted files
-          Detach = fun () -> owner.Detach() }
+          Detach = fun () -> owner.Detach()
+          Preferences = fun () -> owner.Preferences() }
 
     let mutable dispatch: Msg -> unit = ignore
     let mutable title = "Tambour"
@@ -3533,7 +3554,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
           Open = openPath
           Close = fun () -> closeTab (self ()) |> ignore
           Cycle = fun step -> if workspaces.Count > 0 then show ((active + step + workspaces.Count) % workspaces.Count)
-          Opened = fun path -> setRecent (Preferences.opened path recent)
+          Opened = fun path -> setRecent (Preferences.opened Preferences.Live.Current.RecentKeep path recent)
           ForgetRecent =
             fun missingOnly ->
                 setRecent (if missingOnly then recent |> List.filter (fun p -> File.Exists p || Directory.Exists p) else [])
@@ -3555,7 +3576,20 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
                         match w.Path with
                         | Some p when List.contains p files -> (win :?> MainWindow).Forget w
                         | _ -> ()
-          Detach = fun () -> if workspaces.Count > 1 then detach (self ()) None |> ignore }
+          Detach = fun () -> if workspaces.Count > 1 then detach (self ()) None |> ignore
+          Preferences = fun () -> openPreferences () }
+
+    /// The Preferences dialog, over this window, with the commands' shortcuts to show and change.
+    and openPreferences () =
+        let shortcuts: PreferencesView.Shortcut list =
+            [ for c in commands ->
+                  { Menu = c.Menu
+                    Header = c.Header
+                    Keys = Option.toList c.Gesture @ c.Also |> List.map string
+                    InGrid = c.InGrid } ]
+
+        let dialog = PreferencesView.PreferencesWindow(shortcuts, openPath)
+        dialog.ShowDialog this |> ignore
 
     and add (script: string) (path: string option) =
         let self = ref Unchecked.defaultof<Workspace>
@@ -3645,7 +3679,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
 
         match workspaces |> Seq.tryFindIndex showing with
         | Some i ->
-            setRecent (Preferences.opened full recent)
+            setRecent (Preferences.opened Preferences.Live.Current.RecentKeep full recent)
             show i
         | None when active >= 0 && workspaces.[active].Untouched -> workspaces.[active].Post(OpenPath full)
         | None -> add "" (Some full)

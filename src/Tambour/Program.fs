@@ -14,7 +14,9 @@ let private usage = "usage: tambour [<script or folder> | --self-check | --check
 let private window (path: string option) =
     let settings = Paths.configDirectory ()
     App.SettingsDirectory <- settings
-    App.Theme <- (Preferences.read settings).Theme
+    let preferences = Preferences.read settings
+    App.Theme <- preferences.Theme
+    Preferences.Live.Current <- preferences
     App.MainWindow <- fun () -> Shell.MainWindow.Start path :> Window
     App.builder().StartWithClassicDesktopLifetime [||]
 
