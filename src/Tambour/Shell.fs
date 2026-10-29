@@ -375,6 +375,8 @@ type Msg =
     /// Asks for a table of another tab, to copy into this workspace.
     | ChooseCopyTable
     | CopyTable of Tambour.Data.Table option
+    /// The project's text settings changed in Preferences: kept in its project file.
+    | SetSkia of Tambour.Protocol.SkiaSettings
     | TableSelected of table: string * columns: int list
     | PlotSelected
     | Pick of Rect
@@ -1250,6 +1252,11 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         | [] -> { model with ActionNote = "no other tab has a table to copy" }, Cmd.none
         | others -> model, Cmd.OfTask.either env.Tabs.PickTable others CopyTable Failed
     | CopyTable None -> model, Cmd.none
+    | SetSkia skia ->
+        let settings = model.Settings |> Option.defaultValue (Project.defaults (model.Path |> Option.map Path.GetFileName |> Option.defaultValue ""))
+        let next = { model with Settings = Some { settings with Skia = skia } }
+        writeProject next
+        next, Cmd.none
     | CopyTable(Some t) ->
         let copy = { t with Name = freshName model t.Name }
         { model with Tab = model.Tables.Length + 1; ActionNote = $"copied {t.Name} into this workspace" }, Cmd.ofMsg (TableEdited [ Tambour.Data.AddTable copy ])
@@ -3345,6 +3352,9 @@ type Workspace(script: string, path: string option, language: LanguageService, t
     /// Its tables, as they are now.
     member _.Tables = [ for s in latest.Tables -> s.Table ]
 
+    /// The text settings its figures are exported with: its project's, or the app's.
+    member _.Skia = skiaOf latest
+
     /// What is unsaved in it, by name; empty when everything is on disk.
     member _.Unsaved = unsaved latest
 
@@ -3692,7 +3702,14 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
                     Keys = Option.toList c.Gesture @ c.Also |> List.map string
                     InGrid = c.InGrid } ]
 
-        let dialog = PreferencesView.PreferencesWindow(shortcuts, openPath)
+        // The Project page edits the shown tab's project, where it has one.
+        let project: PreferencesView.ProjectPage option =
+            if active < 0 then None
+            else
+                let w = workspaces.[active]
+                w.Project |> Option.map (fun dir -> { Name = Path.GetFileName dir; Skia = w.Skia; Set = fun s -> w.Post(SetSkia s) })
+
+        let dialog = PreferencesView.PreferencesWindow(shortcuts, openPath, project)
         dialog.ShowDialog this |> ignore
 
     and add (script: string) (path: string option) =

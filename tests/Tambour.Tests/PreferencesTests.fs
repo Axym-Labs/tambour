@@ -47,7 +47,7 @@ let ``each preference is written to settings.json, takes effect at once, and fol
         window.Show()
         pumpUntil 10.0 "the editor" (fun () -> window.Active.GetVisualDescendants().OfType<ScriptEditor>().Any())
         let editor = window.Active.GetVisualDescendants().OfType<ScriptEditor>().Single()
-        let dialog = PreferencesView.PreferencesWindow(shortcuts, ignore)
+        let dialog = PreferencesView.PreferencesWindow(shortcuts, ignore, None)
         dialog.Show()
         let named (name: string) = dialog.GetVisualDescendants().OfType<Control>() |> Seq.find (fun c -> c.Name = name)
         let stored () = Preferences.read dir
@@ -160,3 +160,50 @@ let ``each preference is written to settings.json, takes effect at once, and fol
     finally
         Preferences.Live.Set Preferences.defaults
         App.SettingsDirectory <- before
+
+/// The Project page: the shown tab's own settings, from its project file and written back to it,
+/// the export's resolution and its fonts; a tab without a project says how to give it one.
+[<AvaloniaFact>]
+let ``the project page edits the shown tab's resolution and fonts in its project file`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-project-page").FullName
+    Project.makeWorkspace dir
+    File.WriteAllText(Path.Combine(dir, "figure.fsx"), "let n = 1\n")
+    let font = Path.Combine(dir, "Some.ttf")
+    File.WriteAllBytes(font, [||])
+
+    let window = new Shell.MainWindow("", Some dir)
+    window.Show()
+    pumpUntil 10.0 "the project open" (fun () -> window.Active.Project = Some dir)
+    window.Post Shell.OpenPreferences
+    pumpUntil 5.0 "the preferences" (fun () -> window.OwnedWindows.Count = 1)
+    let dialog = window.OwnedWindows.[0] :?> PreferencesView.PreferencesWindow
+    let named (name: string) = dialog.GetVisualDescendants().OfType<Control>() |> Seq.find (fun c -> c.Name = name)
+    let stored () = (Project.read dir).Value.Skia
+
+    dialog.Page <- "Project"
+    let dpi = named "project dpi" :?> NumericUpDown
+    Assert.Equal(Nullable 96m, dpi.Value)
+    dpi.Value <- Nullable 300m
+    Dispatcher.UIThread.RunJobs()
+    pumpUntil 5.0 "the resolution written" (fun () -> abs (stored().Dpi - 300.0 / 25.4) < 1e-9)
+
+    dialog.AddFont font
+    Dispatcher.UIThread.RunJobs()
+    pumpUntil 5.0 "the font written" (fun () -> stored().FontFiles = [| font |])
+    Assert.True(dialog.GetVisualDescendants().OfType<TextBlock>().Any(fun t -> t.Text = font))
+    dialog.Close()
+
+    // A tab without a project: no settings to edit, and what would give it some.
+    window.Post Shell.NewScript
+    pumpUntil 5.0 "a new tab" (fun () -> window.Workspaces.Length = 2)
+    window.Post Shell.OpenPreferences
+    pumpUntil 5.0 "the preferences again" (fun () -> window.OwnedWindows.Count = 1)
+    let again = window.OwnedWindows.[0] :?> PreferencesView.PreferencesWindow
+    again.Page <- "Project"
+    Dispatcher.UIThread.RunJobs()
+    Assert.False(again.GetVisualDescendants().OfType<Control>().Any(fun c -> c.Name = "project dpi"))
+    Assert.True(again.GetVisualDescendants().OfType<TextBlock>().Any(fun t -> not (isNull t.Text) && t.Text.Contains "no project"))
+    again.Close()
+
+    window.Ask <- fun _ -> Threading.Tasks.Task.FromResult Discard
+    window.Close()

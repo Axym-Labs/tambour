@@ -12,6 +12,7 @@ open Avalonia.Input
 open Avalonia.Interactivity
 open Avalonia.Layout
 open Avalonia.Media
+open Avalonia.Platform.Storage
 open Avalonia.Threading
 
 /// A command whose shortcut the dialog shows and changes: its menu, its name there, its own keys
@@ -21,6 +22,13 @@ type Shortcut =
       Header: string
       Keys: string list
       InGrid: bool }
+
+/// The project of the tab shown, whose own settings the Project page edits: its name, its text
+/// settings as they are, and where a change goes (its tab, which writes its project file).
+type ProjectPage =
+    { Name: string
+      Skia: Tambour.Protocol.SkiaSettings
+      Set: Tambour.Protocol.SkiaSettings -> unit }
 
 /// A command's keys now: as the user changed them, or its own.
 let keysOf (preferences: Preferences.Preferences) (s: Shortcut) =
@@ -38,9 +46,12 @@ let shown (keys: string) =
 
 let private plain (header: string) = header.Replace("_", "")
 
-let private pages = [ "Appearance"; "Editor"; "Keyboard shortcuts"; "Export"; "Recent files" ]
+let private pages = [ "Appearance"; "Editor"; "Keyboard shortcuts"; "Export"; "Recent files"; "Project" ]
 
-type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit) as this =
+/// Millimetres to an inch: the project keeps its resolution per millimetre, the page shows dpi.
+let private inch = 25.4
+
+type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit, project: ProjectPage option) as this =
     inherit Window()
 
     let mutable page = "Appearance"
@@ -50,6 +61,8 @@ type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit) as th
     let mutable clash: (Shortcut * string * Shortcut) option = None
     let pageHost = ContentControl()
     let nav = StackPanel()
+    /// The project's text settings as last set here.
+    let mutable skia = project |> Option.map (fun p -> p.Skia)
 
     let directory () = App.SettingsDirectory
     let current () = Preferences.Live.Current
@@ -178,6 +191,71 @@ type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit) as th
         row.Children.Add(text "files and folders" (look ()).Dim)
         section "Recent files" [ "Keep", row ]
 
+    /// The shown tab's project: the resolution and fonts its figures are exported with.
+    and projectPage () : Control =
+        match project, skia with
+        | Some p, Some s ->
+            let dpi = NumericUpDown(Name = "project dpi", Minimum = 36m, Maximum = 2400m, Increment = 1m, Value = Nullable(Math.Round(decimal (s.Dpi * inch), 2)), FormatString = "0.##", Width = 120.0)
+            dpi.ValueChanged.Add(fun e -> if e.NewValue.HasValue then setSkia { skia.Value with Dpi = float e.NewValue.Value / inch })
+            let dpiRow = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2)
+            dpiRow.Children.Add dpi
+            dpiRow.Children.Add(text "dpi, for exported figures" (look ()).Dim)
+
+            let fonts = StackPanel(Spacing = Tokens.Space.s1)
+
+            if s.FontFiles.Length = 0 then
+                fonts.Children.Add(small "None: the theme's fonts as this machine has them." (look ()).Dim)
+
+            for file in s.FontFiles do
+                let row = DockPanel()
+                let remove = Button(Content = "Remove", Background = Brushes.Transparent, Padding = Thickness(Tokens.Space.s2, 0.0), MinHeight = 0.0)
+                remove.Click.Add(fun _ -> setSkia { skia.Value with FontFiles = skia.Value.FontFiles |> Array.filter ((<>) file) })
+                DockPanel.SetDock(remove, Dock.Right)
+                row.Children.Add remove
+                row.Children.Add(TextBlock(Text = file, Foreground = brush (if File.Exists file then (look ()).Text else (look ()).Roles.Faint), TextTrimming = TextTrimming.LeadingCharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 360.0))
+                ToolTip.SetTip(row, (if File.Exists file then file else $"{file}: not there"))
+                fonts.Children.Add row
+
+            let add = Button(Name = "add font", Content = "Add font…")
+            add.Click.Add(fun _ ->
+                task {
+                    let options = FilePickerOpenOptions(Title = "Add a font", AllowMultiple = true)
+                    options.FileTypeFilter <- [| FilePickerFileType("Fonts", Patterns = [| "*.ttf"; "*.otf"; "*.ttc" |]) |]
+                    let! picked = this.StorageProvider.OpenFilePickerAsync options
+
+                    for f in picked do
+                        match f.TryGetLocalPath() with
+                        | null -> ()
+                        | path -> addFont path
+                }
+                |> ignore)
+            fonts.Children.Add add
+
+            let page = StackPanel(Spacing = Tokens.Space.s3)
+            page.Children.Add(section $"Project · {p.Name}" [ "Resolution", dpiRow; "Fonts", fonts ])
+            page.Children.Add(small "Kept in the project's own file, for whoever opens it. Fonts are tried in this order." (look ()).Dim)
+            page
+        | _ ->
+            let page = StackPanel(Spacing = Tokens.Space.s3)
+            page.Children.Add(title "Project")
+            page.Children.Add(TextBlock(Text = "The tab shown has no project. Open a folder, or save the script with a table as a workspace, to give it settings of its own.", Foreground = brush (look ()).Dim, TextWrapping = TextWrapping.Wrap))
+            page
+
+    /// The project's settings changed here: to its tab, and shown.
+    and setSkia (next: Tambour.Protocol.SkiaSettings) =
+        match project with
+        | Some p when Some next <> skia ->
+            skia <- Some next
+            p.Set next
+            show ()
+        | _ -> ()
+
+    /// A font added at the end of the project's list, unless it is there already.
+    and addFont (path: string) =
+        match skia with
+        | Some s when not (Array.contains path s.FontFiles) -> setSkia { s with FontFiles = Array.append s.FontFiles [| path |] }
+        | _ -> ()
+
     /// Every command with its keys, by menu; a click on a command's keys records new ones.
     and keys () : Control =
         let p = current ()
@@ -295,6 +373,7 @@ type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit) as th
             | "Keyboard shortcuts" -> keys ()
             | "Export" -> export ()
             | "Recent files" -> recent ()
+            | "Project" -> projectPage ()
             | _ -> appearance ()
 
         let panel = StackPanel(Spacing = Tokens.Space.s4)
@@ -469,6 +548,9 @@ type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit) as th
         |> ignore
 
     /// The page shown, by its name.
+    /// Adds a font to the project's list, as Add font… does with the file picked.
+    member _.AddFont(path: string) = addFont path
+
     member _.Page
         with get () = page
         and set (name: string) =
