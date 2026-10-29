@@ -52,6 +52,19 @@ let ``each preference is written to settings.json, takes effect at once, and fol
         let named (name: string) = dialog.GetVisualDescendants().OfType<Control>() |> Seq.find (fun c -> c.Name = name)
         let stored () = Preferences.read dir
 
+        // The theme: clicked as by hand, which redraws the dialog in the new colours.
+        let themeBefore = App.Theme
+        dialog.Page <- "Appearance"
+
+        for name, theme in [ "theme dark", Preferences.Dark; "theme light", Preferences.Light; "theme system", Preferences.FollowSystem ] do
+            (named name :?> Button).RaiseEvent(Avalonia.Interactivity.RoutedEventArgs Button.ClickEvent)
+            Dispatcher.UIThread.RunJobs()
+            Assert.Equal(theme, (stored ()).Theme)
+            Assert.Equal(theme, App.Theme)
+            Assert.True(dialog.GetVisualDescendants().OfType<Button>().Any(fun b -> b.Name = "theme dark"), $"the dialog whole after {name}")
+
+        App.Choose themeBefore
+
         // The editor's size: in the file, and on the open editor at once.
         dialog.Page <- "Editor"
         (named "editor size" :?> NumericUpDown).Value <- Nullable 18m

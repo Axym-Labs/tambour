@@ -341,6 +341,13 @@ type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit) as th
     let build () =
         let look = look ()
         this.Background <- brush look.Surface
+        // The list and the page outlive a rebuild: out of the old frames before into the new.
+        match nav.Parent with
+        | :? Border as b -> b.Child <- null
+        | _ -> ()
+        match pageHost.Parent with
+        | :? ScrollViewer as s -> s.Content <- null
+        | _ -> ()
         let layout = DockPanel()
 
         let header = DockPanel(Height = Tokens.Height.toolbar, Margin = Thickness(Tokens.Space.s4, 0.0, Tokens.Space.s2, 0.0))
