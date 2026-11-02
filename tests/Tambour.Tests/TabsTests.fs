@@ -1096,3 +1096,30 @@ let ``a bundle exported as a folder opens as a folder workspace`` () =
     Assert.Equal<string list>([ "runs" ], opened.Active.Tables |> List.map (fun t -> t.Name))
     Assert.Equal(None, opened.Active.Bundle)
     closeAll opened
+
+/// Gate 17 (b), in the window: Save keeps the figure shown as the bundle's thumbnail, and a second
+/// Save with nothing changed leaves the file as it is.
+[<AvaloniaFact>]
+let ``a bundle keeps its figure as a thumbnail, and an unchanged save leaves it be`` () =
+    let file = Path.Combine((Directory.CreateTempSubdirectory "tambour-bundle-thumb").FullName, "thumb.tambour")
+    let window = new Shell.MainWindow()
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    window.Post Shell.Run
+    let pane = window.Active.GetVisualDescendants().OfType<FigurePane>().Single()
+    pumpUntil 30.0 "the figure" (fun () -> not (isNull pane.Picture))
+    window.Post(Shell.SaveAs file)
+    pumpUntil 10.0 "the save" (fun () -> window.Active.Unsaved.IsEmpty && File.Exists file)
+
+    match Bundle.thumbnail file with
+    | None -> failwith "no thumbnail"
+    | Some png ->
+        use image = SkiaSharp.SKBitmap.Decode png
+        Assert.True(image.Width > 0 && image.Width <= 512)
+
+    let written = File.GetLastWriteTimeUtc file
+    window.Post Shell.Save
+    Dispatcher.UIThread.RunJobs()
+    Assert.Equal(written, File.GetLastWriteTimeUtc file)
+    closeAll window
+    Assert.Equal(written, File.GetLastWriteTimeUtc file)

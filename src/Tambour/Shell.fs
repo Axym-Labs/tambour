@@ -732,6 +732,26 @@ let private saveTables (model: Model) =
             SavedTables = saved |> List.map (fun s -> s.Table.Name, s.Table) |> Map.ofList
             TableFiles = files }
 
+/// The figure shown, kept in a bundle as its thumbnail for the recent list and a file manager: at
+/// most 512 px wide, on white, drawn here rather than by a worker.
+let private writeThumbnail (dir: string) (picture: Picture) =
+    let extent = picture.Extent
+    let scale = min 1.0 (512.0 / float extent.Width)
+    let w = max 1 (int (Math.Round(float extent.Width * scale)))
+    let h = max 1 (int (Math.Round(float extent.Height * scale)))
+    use bitmap = new SkiaSharp.SKBitmap(SkiaSharp.SKImageInfo(w, h, SkiaSharp.SKColorType.Rgba8888, SkiaSharp.SKAlphaType.Premul))
+
+    do
+        use canvas = new SkiaSharp.SKCanvas(bitmap)
+        canvas.Clear SkiaSharp.SKColors.White
+        canvas.Scale(float32 scale)
+        use measurer = new Marey.SkiaTextMeasurer()
+        Marey.SkiaPainter(canvas, measurer, true, None, outlines = true).Draw(Marey.SkiaPainter.RootTransform extent, picture.Node)
+        canvas.Flush()
+
+    use data = bitmap.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100)
+    File.WriteAllBytes(Path.Combine(dir, Bundle.Thumbnail), data.ToArray())
+
 /// Makes changes to the project's scripts on disk, or with `back` takes them back, the last first: a
 /// move made the other way, a copy deleted while it is as it was made. Stops at the first that
 /// cannot be made, before making it. A moved script's settings and tab follow it.
@@ -1095,7 +1115,13 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 File.WriteAllText(path, model.Script)
                 writeProject model
                 let model = saveTables model
-                model.Bundle |> Option.iter (Bundle.sync >> ignore)
+
+                match model.Bundle, model.Project with
+                | Some file, Some dir ->
+                    if not (isNull model.Picture) then writeThumbnail dir model.Picture
+                    Bundle.sync file |> ignore
+                | _ -> ()
+
                 let name = model.Bundle |> Option.defaultValue path |> Path.GetFileName
                 { model with Saved = model.Script; Status = $"saved {name}" },
                 (if Preferences.Live.Current.RunOnSave then Cmd.ofMsg Run else Cmd.none)
@@ -4122,6 +4148,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
                     )
 
                 let file = "M4,1.75 H9 L12,4.75 V14.25 H4 Z M9,1.75 V4.75 H12"
+                let bundle = "M4,1.75 H9 L12,4.75 V14.25 H4 Z M9,1.75 V4.75 H12 M6,12 L7.5,9.5 L9,10.5 L10.5,8"
                 let folder = "M1.75,4.25 A1,1 0 0 1 2.75,3.25 H5.75 L7.25,4.75 H13.25 A1,1 0 0 1 14.25,5.75 V12.25 A1,1 0 0 1 13.25,13.25 H2.75 A1,1 0 0 1 1.75,12.25 Z"
 
                 /// A row: an icon, a name, and at its end a shortcut or where the file is.
@@ -4183,8 +4210,23 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
                         let there = File.Exists p || Directory.Exists p
                         let home = Environment.GetFolderPath Environment.SpecialFolder.UserProfile
                         let where = Path.GetDirectoryName p |> fun d -> if not (String.IsNullOrEmpty home) && d.StartsWith home then "~" + d.Substring home.Length else d
-                        let e = entry (if Directory.Exists p then folder else file) (Path.GetFileName p) (if there then where else $"missing · {where}") there (fun () -> if there then openPath p)
-                        ToolTip.SetTip(e, (if there then p else $"{p}: no longer there"))
+                        let icon = if Directory.Exists p then folder elif Bundle.isBundle p then bundle else file
+                        let e = entry icon (Path.GetFileName p) (if there then where else $"missing · {where}") there (fun () -> if there then openPath p)
+
+                        // A bundle's tip shows the figure it was saved with, read from the file.
+                        match (if there && Bundle.isBundle p then Bundle.thumbnail p else None) with
+                        | Some png ->
+                            let tip = StackPanel(Spacing = Tokens.Space.s2)
+
+                            try
+                                use stream = new MemoryStream(png)
+                                tip.Children.Add(Image(Source = new Avalonia.Media.Imaging.Bitmap(stream), MaxWidth = 256.0, MaxHeight = 192.0))
+                            with _ ->
+                                ()
+
+                            tip.Children.Add(TextBlock(Text = p))
+                            ToolTip.SetTip(e, tip)
+                        | None -> ToolTip.SetTip(e, (if there then p else $"{p}: no longer there"))
                         recentColumn.Children.Add e
 
                     let actions = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2, Margin = Thickness(0.0, Tokens.Space.s2, 0.0, 0.0))

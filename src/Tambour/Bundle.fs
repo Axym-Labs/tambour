@@ -76,12 +76,13 @@ let private contents (dir: string) =
     |> Array.filter (fun f -> f <> LockFile && f <> StateFile && f <> Tambour.Data.Prelude.FileName)
     |> Array.sort
 
-/// The cache's files as they stand: each one's path, length and time of writing.
+/// The cache's files as they stand: each one's path and a hash of its content, so that a save
+/// writing a file again as it was changes nothing.
 let private stamp (dir: string) =
     let parts =
         [ for f in contents dir do
-              let info = FileInfo(Path.Combine(dir, f))
-              $"{f}\t{info.Length}\t{info.LastWriteTimeUtc.Ticks}" ]
+              use stream = File.OpenRead(Path.Combine(dir, f))
+              $"{f}\t{Convert.ToHexString(SHA256.HashData stream)}" ]
 
     Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(String.Join("\n", parts))))
 
