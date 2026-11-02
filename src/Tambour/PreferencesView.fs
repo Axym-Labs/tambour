@@ -16,12 +16,13 @@ open Avalonia.Platform.Storage
 open Avalonia.Threading
 
 /// A command whose shortcut the dialog shows and changes: its menu, its name there, its own keys
-/// (the shortcut first), and whether its keys act only in a table's grid.
+/// (the shortcut first), and whether its keys act only in a table's grid or in the editor.
 type Shortcut =
     { Menu: string
       Header: string
       Keys: string list
-      InGrid: bool }
+      InGrid: bool
+      InEditor: bool }
 
 /// The project of the tab shown, whose own settings the Project page edits: its name, its text
 /// settings as they are, and where a change goes (its tab, which writes its project file).
@@ -38,9 +39,12 @@ let keysOf (preferences: Preferences.Preferences) (s: Shortcut) =
     | None -> s.Keys
 
 /// A gesture as menus show it.
+/// A key as the platform writes it: "Ctrl+." for Ctrl+OemPeriod.
+let shownGesture (gesture: KeyGesture) = gesture.ToString("p", null)
+
 let shown (keys: string) =
     try
-        (KeyGesture.Parse keys).ToString("p", null)
+        shownGesture (KeyGesture.Parse keys)
     with _ ->
         keys
 
@@ -295,7 +299,7 @@ type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit, proje
         let search = TextBox(Name = "shortcut filter", PlaceholderText = "Filter by command or key", Text = filter, Margin = Thickness(0.0, 0.0, Tokens.Space.s2, 0.0))
         top.Children.Add search
         panel.Children.Add top
-        panel.Children.Add(TextBlock(Text = "Click a shortcut to change it; Escape stops, Backspace takes the key away. Those marked grid act only while a table's grid has the focus.", FontSize = Tokens.Type.small, Foreground = brush look.Dim, TextWrapping = TextWrapping.Wrap))
+        panel.Children.Add(TextBlock(Text = "Click a shortcut to change it; Escape stops, Backspace takes the key away. Those marked grid act only while a table's grid has the focus, and those marked editor only while the script's editor has it.", FontSize = Tokens.Type.small, Foreground = brush look.Dim, TextWrapping = TextWrapping.Wrap))
         let list = StackPanel()
         panel.Children.Add list
 
@@ -320,8 +324,8 @@ type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit, proje
                     name.Margin <- Thickness(Tokens.Space.s2, 0.0)
                     row.Children.Add name
 
-                    if s.InGrid then
-                        let g = small "grid" look.Dim
+                    if s.InGrid || s.InEditor then
+                        let g = small (if s.InGrid then "grid" else "editor") look.Dim
                         g.Margin <- Thickness(Tokens.Space.s2, 0.0)
                         Grid.SetColumn(g, 1)
                         row.Children.Add g
@@ -379,7 +383,7 @@ type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit, proje
                         buttons.Children.Add anyway
                         DockPanel.SetDock(buttons, Dock.Right)
                         warning.Children.Add buttons
-                        let where = if other.InGrid then ", in the grid" else ""
+                        let where = if other.InGrid then ", in the grid" elif other.InEditor then ", in the editor" else ""
                         warning.Children.Add(small $"{shown k} is already {plain other.Header}{where}." look.Warning)
                         list.Children.Add warning
                     | _ -> ()

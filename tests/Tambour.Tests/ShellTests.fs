@@ -254,3 +254,54 @@ let ``a call short of its witnesses is fixed from its menu, and undone to the by
     window.KeyPress(Key.Z, RawInputModifiers.Control, PhysicalKey.Z, "z")
     pumpUntil 5.0 "the undo again" (fun () -> editor.Text = script)
     window.Close()
+
+/// The editor's keys are the window's commands: Show fixes takes the key the preferences give it,
+/// its tooltip names that key, and with none the tooltip names the right button.
+[<AvaloniaFact>]
+let ``the fixes' key is the one the preferences give it, and the tooltip says so`` () =
+    let script =
+        "let t = [| 0.0<s>; 1.0<s>; 2.0<s> |]\nlet x = [| 0.0<m>; 2.0<m>; 3.0<m> |]\nlet figure = Chart.lineIn t x\n"
+
+    let before = Preferences.Live.Current
+    let window = new Shell.MainWindow(script)
+
+    try
+        window.Show()
+        pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+        let editor = window.GetVisualDescendants().OfType<ScriptEditor>().Single()
+        pumpUntil 30.0 "the finding" (fun () -> editor.Findings |> Array.exists (fun f -> f.Code = "MAREY001"))
+        Preferences.Live.Set { before with Keys = before.Keys.Add("Show _fixes", "Ctrl+Alt+F") }
+        Dispatcher.UIThread.RunJobs()
+
+        let call = script.IndexOf "lineIn"
+        editor.HoverAt call
+        Dispatcher.UIThread.RunJobs()
+        Assert.Contains("Ctrl+Alt+F to fix: Insert U.second U.metre", editor.TipText)
+
+        editor.Editor.CaretOffset <- call
+        editor.Editor.TextArea.Focus() |> ignore
+        window.KeyPress(Key.OemPeriod, RawInputModifiers.Control, PhysicalKey.Period, null)
+        Dispatcher.UIThread.RunJobs()
+        Assert.Null editor.FixMenu
+        window.KeyPress(Key.F, RawInputModifiers.Control ||| RawInputModifiers.Alt, PhysicalKey.F, null)
+        Dispatcher.UIThread.RunJobs()
+        Assert.NotNull editor.FixMenu
+        editor.FixMenu.Close()
+        Dispatcher.UIThread.RunJobs()
+
+        // With no key, the right button.
+        Preferences.Live.Set { before with Keys = before.Keys.Add("Show _fixes", "") }
+        Dispatcher.UIThread.RunJobs()
+        editor.HoverAt call
+        Dispatcher.UIThread.RunJobs()
+        Assert.Contains("Right-click to fix: Insert U.second U.metre", editor.TipText)
+
+        // Ctrl+Space, a command now too, completes where the editor has the focus.
+        editor.Editor.CaretOffset <- editor.Text.Length
+        editor.Editor.TextArea.Focus() |> ignore
+        editor.Editor.TextArea.PerformTextInput "let n = t.Len"
+        window.KeyPress(Key.Space, RawInputModifiers.Control, PhysicalKey.Space, null)
+        pumpUntil 30.0 "the completion list" (fun () -> editor.Completions |> Array.contains "Length")
+    finally
+        Preferences.Live.Set before
+        window.Close()

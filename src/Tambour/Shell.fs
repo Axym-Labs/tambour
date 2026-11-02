@@ -405,6 +405,8 @@ type Msg =
     | Resized of split: float * bottom: float
     /// A grid command from the Table menu or its key, for the table shown.
     | Grid of GridCommand.Kind
+    /// An editor command from the Edit menu or its key, at the editor's caret.
+    | AtCaret of EditorCommand
     | About
     | Quit
     | NewScript
@@ -1440,6 +1442,9 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         // The grid of the table shown, the only one in the window's tree.
         env.Host.GetVisualDescendants() |> Seq.tryPick (function :? TableGrid as g -> Some g | _ -> None) |> Option.iter (fun g -> g.Run kind)
         model, Cmd.none
+    | AtCaret command ->
+        env.Host.GetVisualDescendants() |> Seq.tryPick (function :? ScriptEditor as e -> Some e | _ -> None) |> Option.iter (fun e -> e.Run command)
+        model, Cmd.none
     | Resized(split, bottom) ->
         let next = { model with Split = split; Bottom = bottom }
         writeProject next
@@ -2257,7 +2262,10 @@ type Command =
       Enabled: Model -> bool
       /// Whether its keys act only while a table's grid has the focus (Ctrl+C there copies cells,
       /// and in the editor text).
-      InGrid: bool }
+      InGrid: bool
+      /// Whether its keys act only while the script's editor has the focus (F2 there renames,
+      /// and in the grid edits a cell).
+      InEditor: bool }
 
 /// The menus, in the menu bar's order.
 let menus = [ "_File"; "_Edit"; "_Run"; "_Table"; "_View"; "_Help" ]
@@ -2272,7 +2280,8 @@ let commands: Command list =
           Also = also |> List.map KeyGesture.Parse
           Msg = msg
           Enabled = enabled
-          InGrid = false }
+          InGrid = false
+          InEditor = false }
 
     [ c "_File" "_New script" "Ctrl+N" [] NewScript always
       c "_File" "_Open…" "Ctrl+O" [] (ChooseOpen false) always
@@ -2291,6 +2300,9 @@ let commands: Command list =
       c "_File" "_Quit" "Ctrl+Q" [] Quit always
       c "_Edit" "_Undo" "Ctrl+Z" [] Undo (fun m -> not m.History.Done.IsEmpty)
       c "_Edit" "_Redo" "Ctrl+Y" [ "Ctrl+Shift+Z" ] Redo (fun m -> not m.History.Undone.IsEmpty)
+      { c "_Edit" "_Complete" "Ctrl+Space" [] (AtCaret EditorCommand.Complete) always with InEditor = true }
+      { c "_Edit" "Re_name symbol…" "F2" [] (AtCaret EditorCommand.Rename) always with InEditor = true }
+      { c "_Edit" "Show _fixes" "Ctrl+OemPeriod" [] (AtCaret EditorCommand.ShowFixes) always with InEditor = true }
       c "_Edit" "_Preferences…" "Ctrl+OemComma" [] OpenPreferences always
       c "_Run" "_Run" "F5" [ "Ctrl+Enter" ] Run always
       c "_Run" "_Cancel" "Escape" [] Cancel (fun m -> m.Running || m.Exporting.IsSome || m.FullView)
@@ -3152,9 +3164,17 @@ let private subscriptions (env: Env) (host: Control) (titled: string -> unit) (e
                         | :? Visual as v -> v :? TableGrid || v.GetVisualAncestors() |> Seq.exists (fun a -> a :? TableGrid)
                         | _ -> false
 
+                let inEditor () =
+                    match top.FocusManager with
+                    | null -> false
+                    | f ->
+                        match f.GetFocusedElement() with
+                        | :? Visual as v -> v :? ScriptEditor || v.GetVisualAncestors() |> Seq.exists (fun a -> a :? ScriptEditor)
+                        | _ -> false
+
                 if host.IsEffectivelyVisible then
                     match commandFor e.Key e.KeyModifiers with
-                    | Some c when c.Enabled model && (not c.InGrid || inGrid ()) ->
+                    | Some c when c.Enabled model && (not c.InGrid || inGrid ()) && (not c.InEditor || inEditor ()) ->
                         e.Handled <- true
                         dispatch c.Msg
                     | _ -> ())
@@ -3628,6 +3648,9 @@ type WindowGroup() =
 type MainWindow private (opening: (string * string option) list, group: WindowGroup, moved: bool) as this =
     inherit Window()
 
+    // The editors' tooltips name the key Show fixes has now, as the preferences set it.
+    do ScriptEditor.FixKey <- fun () -> gesturesOf (commandNamed "Show _fixes") |> List.tryHead |> Option.map PreferencesView.shownGesture |> Option.defaultValue ""
+
     let language = group.Language
     let workspaces = ResizeArray<Workspace>()
     let mutable active = -1
@@ -3910,7 +3933,8 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
                   { Menu = c.Menu
                     Header = c.Header
                     Keys = Option.toList c.Gesture @ c.Also |> List.map string
-                    InGrid = c.InGrid } ]
+                    InGrid = c.InGrid
+                    InEditor = c.InEditor } ]
 
         // The Project page edits the shown tab's project, where it has one.
         let project: PreferencesView.ProjectPage option =

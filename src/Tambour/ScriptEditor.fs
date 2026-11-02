@@ -450,13 +450,25 @@ type private Classes() =
 
                 i <- i + 1
 
+/// What the editor does at its caret when the window's commands ask: their menu entries and keys,
+/// which the preferences can change.
+[<RequireQualifiedAccess>]
+type EditorCommand =
+    /// The completion list, as a dot opens it.
+    | Complete
+    /// A new name for the binding at the caret, wherever it is used.
+    | Rename
+    /// The menu of Marey's fixes for the call at the caret.
+    | ShowFixes
+
 /// The script editor: AvaloniaEdit with F# highlighting, the grammar's and the compiler's, in the
 /// colours of the app's light or dark theme, and what the language service says about the script.
 /// Problems are underlined and their messages shown on hover, the symbol at the caret is marked
-/// where it is used and the bracket at it with its match, a name typed, a dot or Ctrl+Space completes, a
+/// where it is used and the bracket at it with its match, a name typed or a dot completes, a
 /// parenthesis or a comma shows the call's overloads, the pointer resting on a name shows its
-/// tooltip, F2 renames a binding the script makes, and Ctrl+. or the right button on a Marey call
-/// short of its unit witnesses offers the fixes for it. Enter, Tab, Shift+Tab and Backspace indent
+/// tooltip, and the right button on a Marey call short of its unit witnesses offers the fixes for
+/// it. Completion, renaming and the fixes are also the window's commands, with keys of their own
+/// (`Run`). Enter, Tab, Shift+Tab and Backspace indent
 /// as F# is indented, and brackets and quotes are closed as they are opened.
 type ScriptEditor() as this =
     inherit UserControl()
@@ -918,7 +930,11 @@ type ScriptEditor() as this =
             panel.Children.Add(TextBlock(Text = message, Foreground = SolidColorBrush look.Info, TextWrapping = TextWrapping.Wrap))
 
             for fix in f.Fixes do
-                let offer = $"Ctrl+. to fix: {fix.Title}"
+                let offer =
+                    match ScriptEditor.FixKey() with
+                    | "" -> $"Right-click to fix: {fix.Title}"
+                    | key -> $"{key} to fix: {fix.Title}"
+
                 texts.Add offer
                 panel.Children.Add(TextBlock(Text = offer, Foreground = SolidColorBrush look.Info, FontStyle = FontStyle.Italic, TextWrapping = TextWrapping.Wrap))
 
@@ -1162,17 +1178,6 @@ type ScriptEditor() as this =
         editor.TextArea.TextEntered.Add(fun e -> reactTo e.Text)
         editor.TextArea.AddHandler(InputElement.KeyDownEvent, EventHandler<KeyEventArgs>(fun _ e -> onKey e), RoutingStrategies.Tunnel)
 
-        editor.TextArea.KeyDown.Add(fun e ->
-            match e.Key, e.KeyModifiers with
-            | Key.Space, KeyModifiers.Control ->
-                e.Handled <- true
-                complete false
-            | Key.F2, _ ->
-                e.Handled <- true
-                rename ()
-            | Key.OemPeriod, KeyModifiers.Control -> e.Handled <- openFixes editor.CaretOffset false
-            | _ -> ())
-
         // The right button on a call Marey has fixes for offers them; elsewhere it does nothing,
         // as before.
         editor.ContextRequested.Add(fun e ->
@@ -1226,9 +1231,22 @@ type ScriptEditor() as this =
     /// The calls Marey's witnesses found short in the last check, with their fixes.
     member _.Findings = findings
 
-    /// Opens the menu of fixes for the call at an offset, as Ctrl+. there does; false where it
-    /// has none, or the text has changed since the check.
+    /// Opens the menu of fixes for the call at an offset, as Show fixes at the caret does; false
+    /// where it has none, or the text has changed since the check.
     member _.OfferFixes(offset: int) = openFixes offset false
+
+    /// Does a command of the window's at the caret.
+    member _.Run(command: EditorCommand) =
+        editor.TextArea.Focus() |> ignore
+
+        match command with
+        | EditorCommand.Complete -> complete false
+        | EditorCommand.Rename -> rename ()
+        | EditorCommand.ShowFixes -> openFixes editor.CaretOffset false |> ignore
+
+    /// The key that shows the fixes, as a tooltip names it; empty where none does. The window
+    /// sets it from its commands, whose keys the preferences change.
+    static member val FixKey: unit -> string = (fun () -> "Ctrl+.") with get, set
 
     /// The menu of fixes, while it is open; null otherwise.
     member _.FixMenu = fixMenu

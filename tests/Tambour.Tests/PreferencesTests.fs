@@ -35,7 +35,8 @@ let private shortcuts: PreferencesView.Shortcut list =
           { Menu = c.Menu
             Header = c.Header
             Keys = Option.toList c.Gesture @ c.Also |> List.map string
-            InGrid = c.InGrid } ]
+            InGrid = c.InGrid
+            InEditor = c.InEditor } ]
 
 [<AvaloniaFact>]
 let ``each preference is written to settings.json, takes effect at once, and follows the file`` () =
