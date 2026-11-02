@@ -816,6 +816,25 @@ let private aboutWindow (look: Palette.Look) =
     close.Click.Add(fun _ -> window.Close())
     window
 
+let private tableEdited (env: Env) (edits: Tambour.Data.TableEdit list) (model: Model) : Model * Cmd<Msg> =
+    let tables = edits |> List.fold Tambour.Data.TableEdit.apply (tablesOf model)
+    let schema = edits |> List.exists Tambour.Data.TableEdit.changesSchema
+
+    toState
+        env
+        { model with History = History.recordTables edits model.History; ActionNote = "" }
+        { Script = model.Script; Tables = tables }
+        schema
+
+/// A table added and shown. Its tab is chosen once the table is there: a tab asked for before it
+/// is drawn leaves the pane on the figure.
+let private addShown (env: Env) (table: Tambour.Data.Table) (model: Model) : Model * Cmd<Msg> =
+    let next, cmd = tableEdited env [ Tambour.Data.AddTable table ] model
+
+    match next.Tables |> List.tryFindIndex (fun s -> s.Table.Name = table.Name) with
+    | Some i -> { next with Tab = i + 1; Header = None }, cmd
+    | None -> next, cmd
+
 let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
     | Edited(edit, text) ->
@@ -1206,15 +1225,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | ExportTo _ -> { model with Status = "there is no figure to export" }, Cmd.none
     | Dismissed -> model, Cmd.none
     | SelectTab tab -> { model with Tab = tab; Header = None }, Cmd.none
-    | TableEdited edits ->
-        let tables = edits |> List.fold Tambour.Data.TableEdit.apply (tablesOf model)
-        let schema = edits |> List.exists Tambour.Data.TableEdit.changesSchema
-
-        toState
-            env
-            { model with History = History.recordTables edits model.History; ActionNote = "" }
-            { Script = model.Script; Tables = tables }
-            schema
+    | TableEdited edits -> tableEdited env edits model
     | EditHeader(table, column) ->
         let header =
             model.Tables
@@ -1258,7 +1269,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | NewTable ->
         let blank = Tambour.Data.Values.blank "float" 10
         let t: Tambour.Data.Table = { Name = freshName model "table"; Columns = [ { Name = "x"; Unit = null; Values = blank }; { Name = "y"; Unit = null; Values = blank } ] }
-        { model with Tab = model.Tables.Length + 1 }, Cmd.ofMsg (TableEdited [ Tambour.Data.AddTable t ])
+        addShown env t model
     | ChooseImport ->
         let pick () =
             task {
@@ -1275,7 +1286,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         | Error why -> { model with ActionNote = $"{Path.GetFileName path} did not import: {why}" }, Cmd.none
         | Ok t ->
             let named = { t with Name = freshName model (Tambour.Data.Prelude.identifier t.Name |> fun n -> n.Trim('`')) }
-            { model with Tab = model.Tables.Length + 1 }, Cmd.ofMsg (TableEdited [ Tambour.Data.AddTable named ])
+            addShown env named model
     | RemoveTable name ->
         match model.Tables |> List.tryFind (fun s -> s.Table.Name = name) with
         | Some s -> { model with Tab = 0 }, Cmd.ofMsg (TableEdited [ Tambour.Data.RemoveTable s.Table ])
@@ -1328,7 +1339,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         match model.Tables |> List.tryFind (fun s -> s.Table.Name = name) with
         | Some s ->
             let copy = { s.Table with Name = freshName model (name + "_copy") }
-            { model with Tab = model.Tables.Length + 1 }, Cmd.ofMsg (TableEdited [ Tambour.Data.AddTable copy ])
+            addShown env copy model
         | None -> model, Cmd.none
     | RenameShownTable ->
         model, (match List.tryItem (model.Tab - 1) model.Tables with Some s -> Cmd.ofMsg (RenameTable s.Table.Name) | None -> Cmd.none)
@@ -1346,7 +1357,8 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         next, Cmd.none
     | CopyTable(Some t) ->
         let copy = { t with Name = freshName model t.Name }
-        { model with Tab = model.Tables.Length + 1; ActionNote = $"copied {t.Name} into this workspace" }, Cmd.ofMsg (TableEdited [ Tambour.Data.AddTable copy ])
+        let next, cmd = addShown env copy model
+        { next with ActionNote = $"copied {t.Name} into this workspace" }, cmd
     | TableSelected(table, columns) -> { model with TableSelection = Some(table, columns) }, Cmd.none
     | PlotSelected ->
         match model.TableSelection |> Option.bind (fun (name, columns) -> model.Tables |> List.tryFind (fun s -> s.Table.Name = name) |> Option.map (fun s -> s.Table, columns)) with
@@ -3021,7 +3033,6 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                         TabControl.name "sheets"
                         TabControl.classes [ "bare" ]
                         TabControl.padding (Thickness 0.0)
-                        TabControl.selectedIndex model.Tab
                         TabControl.onSelectedIndexChanged ((fun i -> if i >= 0 && i <> model.Tab then dispatch (SelectTab i)), SubPatchOptions.Always)
                         TabControl.viewItems [
                             TabItem.create [
@@ -3064,6 +3075,8 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                             for source in model.Tables do
                                 TabItem.create [ TabItem.header source.Table.Name; TabItem.content (tableView model dispatch source.Table) ]
                         ]
+                        // After the items: a table's tab chosen as it is added is there to choose.
+                        TabControl.selectedIndex model.Tab
                         ]
                       ]
                     ]
@@ -4188,7 +4201,10 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
                 // The app's icon, as tall as the name's line.
                 try
                     use stream = Avalonia.Platform.AssetLoader.Open(Uri "avares://tambour/Assets/tambour.png")
-                    title.Children.Add(Image(Name = "app icon", Source = new Avalonia.Media.Imaging.Bitmap(stream), Width = Tokens.Type.displayLine, Height = Tokens.Type.displayLine, VerticalAlignment = VerticalAlignment.Bottom))
+                    let icon = Image(Name = "app icon", Source = new Avalonia.Media.Imaging.Bitmap(stream), Width = Tokens.Type.displayLine, Height = Tokens.Type.displayLine, VerticalAlignment = VerticalAlignment.Bottom)
+                    // Drawn a tenth of its size: sampled smoothly, not every so many pixels.
+                    RenderOptions.SetBitmapInterpolationMode(icon, Avalonia.Media.Imaging.BitmapInterpolationMode.HighQuality)
+                    title.Children.Add icon
                 with _ ->
                     ()
 

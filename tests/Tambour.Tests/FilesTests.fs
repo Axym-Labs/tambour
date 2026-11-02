@@ -134,6 +134,23 @@ let ``an export shows its progress and Cancel ends it`` () =
 let private sheets (window: #Window) =
     window.GetVisualDescendants().OfType<TabControl>().Single(fun t -> t.Name = "sheets")
 
+/// A table made, imported or copied is the one shown: the first of a workspace too, whose tab is
+/// not there before it.
+[<AvaloniaFact>]
+let ``a new table is shown at once, the first one too`` () =
+    let window = new Shell.MainWindow("let x = 1\n")
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    Assert.Equal(0, (sheets window).SelectedIndex)
+
+    for shown in [ 1; 2 ] do
+        window.Post Shell.NewTable
+        Dispatcher.UIThread.RunJobs()
+        Assert.Equal(shown, (sheets window).SelectedIndex)
+        pumpUntil 10.0 "the table's grid" (fun () -> window.GetVisualDescendants().OfType<TableGrid>().Any(fun g -> g.IsEffectivelyVisible))
+
+    window.Close()
+
 [<AvaloniaFact>]
 let ``a table's edits run the figure again, rename a column in the prelude, undo, and save`` () =
     let dir = (Directory.CreateTempSubdirectory "tambour-tables").FullName
