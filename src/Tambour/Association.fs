@@ -1,7 +1,7 @@
 /// Telling the OS that Tambour opens `.tambour` files, for this user only: on Linux at every start,
 /// on Windows when asked, from Preferences. On Linux: the MIME type (by its extension and by the
 /// `mimetype` entry a bundle begins with), a `.desktop` entry naming the app, the app's icon for
-/// both, and a thumbnailer that takes the figure a bundle keeps; all under `$XDG_DATA_HOME`. The
+/// both, and a thumbnailer that takes out the figure a bundle keeps; all under `$XDG_DATA_HOME`. The
 /// desktop entry is also how a Wayland shell finds a window's icon. On Windows: a file class under
 /// `HKCU\Software\Classes` with the app's icon. Windows draws no thumbnail of its own for one: that
 /// would take a shell extension.
@@ -57,10 +57,22 @@ Terminal=false
 StartupWMClass=tambour
 """
 
-let private thumbnailer (exe: string) =
+/// The thumbnailer: the figure a bundle keeps, taken out of it with whichever of unzip, bsdtar or
+/// Python the system has. Not by the app itself: GNOME runs a thumbnailer in a sandbox that sees
+/// only /usr, where an app in the home directory, an AppImage or /opt is not.
+let private thumbnailer =
+    let take tool = $"{tool} > \"$2\" 2>/dev/null && [ -s \"$2\" ]"
+
+    let script =
+        String.concat
+            " || "
+            [ take $"unzip -p \"$1\" {Bundle.Thumbnail}"
+              take $"bsdtar -xOf \"$1\" {Bundle.Thumbnail}"
+              take $"python3 -I -c \"import sys, zipfile; sys.stdout.buffer.write(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2]))\" \"$1\" {Bundle.Thumbnail}" ]
+
     $"""[Thumbnailer Entry]
-TryExec={exe}
-Exec={quoted exe} --thumbnail %%i %%o %%s
+TryExec=sh
+Exec=sh -c '{script}' tambour %%i %%o
 MimeType={Bundle.MimeType};
 """
 
@@ -101,7 +113,7 @@ let linux (data: string) (exe: string) (icon: byte[]) (databases: bool) =
         let types = wrote mime (utf8 mimeXml)
         let entry = wrote desktop (utf8 (desktopEntry exe))
         // Each written, whether or not the one before was.
-        let others = [ wrote thumb (utf8 (thumbnailer exe)); wrote appIcon icon; wrote typeIcon icon ]
+        let others = [ wrote thumb (utf8 thumbnailer); wrote appIcon icon; wrote typeIcon icon ]
 
         if databases && types then refresh "update-mime-database" (Path.Combine(data, "mime"))
         if databases && entry then refresh "update-desktop-database" (Path.Combine(data, "applications"))

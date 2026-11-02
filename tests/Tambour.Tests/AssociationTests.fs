@@ -28,7 +28,11 @@ let ``the association on Linux writes only under the data directory, naming the 
     let mime = read "mime/packages/tambour.xml"
     Assert.Contains($"<glob pattern=\"*{Bundle.Extension}\"/>", mime)
     Assert.Contains($"offset=\"30\" value=\"mimetype{Bundle.MimeType}\"", mime)
-    Assert.Contains("--thumbnail %i %o %s", read "thumbnailers/tambour.thumbnailer")
+    // Taken out of the bundle with what /usr has: GNOME's sandbox sees nothing else.
+    let thumbnailer = read "thumbnailers/tambour.thumbnailer"
+    Assert.Contains("Exec=sh -c '", thumbnailer)
+    Assert.Contains($"unzip -p \"$1\" {Bundle.Thumbnail}", thumbnailer)
+    Assert.DoesNotContain(exe, thumbnailer)
     Assert.Equal<byte[]>([| 137uy; 80uy |], File.ReadAllBytes(Path.Combine(data, "icons/hicolor/256x256/mimetypes/application-x-tambour.png")))
 
 /// Written at every start: each file only where it is missing or differs, the executable that
