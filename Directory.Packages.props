@@ -1,11 +1,10 @@
 <Project>
 
-  <!-- Every package at one exact version. Marey comes from the local feed (tools/marey-feed.sh)
-       until 1.0.0 is on nuget.org; moving to a newer commit of its main is a repack and these two
-       lines. -->
+  <!-- Every package at one exact version, from nuget.org. MareyCommit is the commit the Marey
+       release was built from; CI checks the GUI actions against its examples there. -->
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-    <MareyVersion>1.0.0-dev.327</MareyVersion>
+    <MareyVersion>1.0.0-rc.1</MareyVersion>
     <MareyCommit>01cf9cb2a960e5706b24cfe6350d2df61309cebb</MareyCommit>
     <AvaloniaVersion>12.1.4</AvaloniaVersion>
   </PropertyGroup>
