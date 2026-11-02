@@ -42,33 +42,59 @@ type State =
     { Script: string
       Tables: Map<string, Tambour.Data.Table> }
 
+/// A change to a project's scripts on disk, made when it is done and taken back by its opposite.
+type FileEdit =
+    /// A script moved to another name.
+    | Moved of source: string * target: string
+    /// A script copied, and the bytes the copy was made with.
+    | Copied of source: string * target: string * bytes: byte[]
+
 /// One step of the history.
 type Entry =
     /// Edits to the script, in the order they were made.
     | Script of TextEdit list
     /// Edits to the tables, in the order they were made.
     | Tables of Tambour.Data.TableEdit list
+    /// Changes to the project's scripts on disk, which the history's state does not hold: whoever
+    /// does or undoes the entry makes them.
+    | Files of FileEdit list
+    /// Entries done together and taken back together, as one.
+    | Group of Entry list
 
 module Entry =
 
     /// The state after the entry is done.
-    let redo (state: State) (entry: Entry) =
+    let rec redo (state: State) (entry: Entry) =
         match entry with
         | Script edits -> { state with Script = edits |> List.fold TextEdit.apply state.Script }
         | Tables edits -> { state with Tables = edits |> List.fold Tambour.Data.TableEdit.apply state.Tables }
+        | Files _ -> state
+        | Group entries -> entries |> List.fold redo state
 
     /// The state after the entry is taken back.
-    let undo (state: State) (entry: Entry) =
+    let rec undo (state: State) (entry: Entry) =
         match entry with
         | Script edits -> { state with Script = edits |> List.rev |> List.map TextEdit.invert |> List.fold TextEdit.apply state.Script }
         | Tables edits ->
             { state with Tables = edits |> List.rev |> List.map Tambour.Data.TableEdit.invert |> List.fold Tambour.Data.TableEdit.apply state.Tables }
+        | Files _ -> state
+        | Group entries -> entries |> List.rev |> List.fold undo state
 
     /// Whether doing or undoing the entry changes a table's columns, and so the prelude.
-    let changesSchema (entry: Entry) =
+    let rec changesSchema (entry: Entry) =
         match entry with
-        | Script _ -> false
+        | Script _
+        | Files _ -> false
         | Tables edits -> edits |> List.exists Tambour.Data.TableEdit.changesSchema
+        | Group entries -> entries |> List.exists changesSchema
+
+    /// The changes to files on disk the entry makes, in the order it makes them.
+    let rec files (entry: Entry) =
+        match entry with
+        | Files edits -> edits
+        | Group entries -> entries |> List.collect files
+        | Script _
+        | Tables _ -> []
 
 /// How long a pause in typing ends the group being typed.
 let pause = TimeSpan.FromSeconds 1.0
@@ -127,14 +153,15 @@ let record (now: DateTime) (typed: bool) (edit: TextEdit) (h: History) : History
               Undone = []
               Typing = if typed then Some now else None }
 
+/// Records an entry of its own, as a GUI action's or a change to files is.
+let recordEntry (entry: Entry) (h: History) : History =
+    { Done = entry :: h.Done
+      Undone = []
+      Typing = None }
+
 /// Records edits to the tables, as one entry of their own.
 let recordTables (edits: Tambour.Data.TableEdit list) (h: History) : History =
-    if edits.IsEmpty then
-        h
-    else
-        { Done = Tables edits :: h.Done
-          Undone = []
-          Typing = None }
+    if edits.IsEmpty then h else recordEntry (Tables edits) h
 
 /// Takes the latest entry back: the entry, to be undone, and the history after.
 let undo (h: History) : (Entry * History) option =

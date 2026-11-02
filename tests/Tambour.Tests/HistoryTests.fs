@@ -22,7 +22,7 @@ let private typeIn (start: DateTime) (gap: TimeSpan) (offset: int) (text: string
     |> Seq.fold (fun h (i, c) -> record (start + gap * float i) true { Offset = offset + i; Removed = ""; Inserted = string c } h) h
 
 let private inserted (h: History) =
-    h.Done |> List.rev |> List.map (function Script edits -> edits |> List.map (fun e -> e.Inserted) |> String.concat "" | Tables _ -> "")
+    h.Done |> List.rev |> List.map (function Script edits -> edits |> List.map (fun e -> e.Inserted) |> String.concat "" | _ -> "")
 
 [<Fact>]
 let ``typing is grouped by word, and a line break and a pause end a group`` () =

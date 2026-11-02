@@ -418,9 +418,12 @@ type ScriptEditor() as this =
         TextEditor(ShowLineNumbers = true, FontFamily = Shown.code, FontSize = 14.0)
 
     let registry = RegistryOptions ThemeName.LightPlus
-    let textMate = TextMate.InstallTextMate(editor, registry, true, null)
     let marks = Marks(fun () -> editor.Document)
     let classes = Classes()
+
+    /// The grammar's colouring, while the editor is in a window: TextMate's tokenizer holds a
+    /// thread-pool thread for as long as it is installed, so a closed tab's editor gives it back.
+    let mutable textMate: TextMate.Installation = null
 
     /// The UI thread's dispatcher when the editor was made. A reply posted after it is gone (a
     /// headless test's application torn down) goes nowhere, rather than reading
@@ -901,7 +904,7 @@ type ScriptEditor() as this =
     let applyLook () =
         dark <- this.ActualThemeVariant = ThemeVariant.Dark
         look <- Palette.forVariant this.ActualThemeVariant
-        textMate.SetTheme(Palette.grammarTheme look)
+        if not (isNull textMate) then textMate.SetTheme(Palette.grammarTheme look)
         editor.Background <- SolidColorBrush look.Background
         editor.Foreground <- SolidColorBrush look.Foreground
         editor.LineNumbersForeground <- SolidColorBrush look.LineNumbers
@@ -916,10 +919,22 @@ type ScriptEditor() as this =
         marks.Look <- look
         editor.TextArea.TextView.Redraw()
 
+    let install () =
+        if isNull textMate then
+            textMate <- TextMate.InstallTextMate(editor, registry, true, null)
+            textMate.SetGrammar(registry.GetScopeByLanguageId "fsharp")
+            textMate.SetTheme(Palette.grammarTheme look)
+            // After the grammar's colouriser, so the compiler's classes are drawn over it.
+            editor.TextArea.TextView.LineTransformers.Remove classes |> ignore
+            editor.TextArea.TextView.LineTransformers.Add classes
+
+    let uninstall () =
+        if not (isNull textMate) then
+            textMate.Dispose()
+            textMate <- null
+
     do
-        textMate.SetGrammar(registry.GetScopeByLanguageId "fsharp")
-        // After the grammar's colouriser, so the compiler's classes are drawn over it.
-        editor.TextArea.TextView.LineTransformers.Add classes
+        install ()
         editor.TextArea.TextView.BackgroundRenderers.Add marks
         editor.Options.ConvertTabsToSpaces <- true
         editor.Options.IndentationSize <- Typing.Width
@@ -1078,7 +1093,18 @@ type ScriptEditor() as this =
     member _.Checks = checks
 
     /// The editor underneath, for what this control does not wrap.
+    override _.OnAttachedToVisualTree(e: VisualTreeAttachmentEventArgs) =
+        base.OnAttachedToVisualTree e
+        install ()
+
+    override _.OnDetachedFromVisualTree(e: VisualTreeAttachmentEventArgs) =
+        base.OnDetachedFromVisualTree e
+        uninstall ()
+
     member _.Editor = editor
+
+    /// Whether the grammar's colouring is installed: while the editor is in a window.
+    member _.Coloured = not (isNull textMate)
 
     /// What the open completion list offers, or nothing when none is open.
     /// The signature and documentation shown beside the completion list; empty where none is.

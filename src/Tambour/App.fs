@@ -7,8 +7,18 @@ open Avalonia.Controls.ApplicationLifetimes
 open Avalonia.Styling
 open Avalonia.Themes.Fluent
 
+/// What to do with unsaved work before it would be dropped.
+type Unsaved =
+    | SaveIt
+    | Discard
+    | Keep
+
 type App() =
     inherit Application()
+
+    /// An answer to the question before unsaved work is dropped, given in place of asking: a test
+    /// run's, so that a window it closes with unsaved work closes. None asks.
+    static member val AnswerUnsaved: Unsaved option = None with get, set
 
     /// The window shown when the app is started without a role; set before the lifetime starts.
     static member val MainWindow: unit -> Window = (fun () -> Window()) with get, set

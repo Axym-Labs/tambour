@@ -27,23 +27,63 @@ let private themeOf =
     | "dark" -> Dark
     | _ -> FollowSystem
 
-type Preferences = { Theme: Theme }
+type Preferences =
+    { Theme: Theme
+      /// The scripts and projects opened, most recent first.
+      Recent: string list
+      /// The scripts open in the window's tabs when it was last changed, in their order, and the
+      /// one shown, opened again at the next start.
+      Tabs: string list
+      Shown: int }
 
-/// A new user's: the theme follows the system's.
-let defaults = { Theme = FollowSystem }
+/// A new user's: the theme follows the system's, and nothing opened yet.
+let defaults = { Theme = FollowSystem; Recent = []; Tabs = []; Shown = 0 }
+
+/// How many opened files the recent list keeps.
+[<Literal>]
+let RecentLength = 10
+
+/// The recent list with a path opened: at its head, once, the oldest past the length dropped.
+let opened (path: string) (recent: string list) =
+    path :: (recent |> List.filter (fun p -> p <> path)) |> List.truncate RecentLength
 
 /// The preferences in a directory; the defaults where there is no file or it cannot be read.
 let read (directory: string) : Preferences =
     try
         use document = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, FileName)))
 
-        match document.RootElement.TryGetProperty "theme" with
-        | true, theme when theme.ValueKind = JsonValueKind.String -> { Theme = themeOf (theme.GetString()) }
-        | _ -> defaults
+        let root = document.RootElement
+
+        let theme =
+            match root.TryGetProperty "theme" with
+            | true, theme when theme.ValueKind = JsonValueKind.String -> themeOf (theme.GetString())
+            | _ -> FollowSystem
+
+        let paths (name: string) =
+            match root.TryGetProperty name with
+            | true, list when list.ValueKind = JsonValueKind.Array ->
+                [ for p in list.EnumerateArray() do
+                      if p.ValueKind = JsonValueKind.String then p.GetString() ]
+            | _ -> []
+
+        let shown =
+            match root.TryGetProperty "shown" with
+            | true, n when n.ValueKind = JsonValueKind.Number -> n.GetInt32()
+            | _ -> 0
+
+        { Theme = theme
+          Recent = paths "recent"
+          Tabs = paths "tabs"
+          Shown = shown }
     with _ ->
         defaults
 
 let write (directory: string) (preferences: Preferences) =
     Directory.CreateDirectory directory |> ignore
-    let stored = dict [ "theme", themeName preferences.Theme ]
+    let stored =
+        dict
+            [ "theme", box (themeName preferences.Theme)
+              "recent", box (Array.ofList preferences.Recent)
+              "tabs", box (Array.ofList preferences.Tabs)
+              "shown", box preferences.Shown ]
     File.WriteAllText(Path.Combine(directory, FileName), JsonSerializer.Serialize(stored, JsonSerializerOptions(WriteIndented = true)))
