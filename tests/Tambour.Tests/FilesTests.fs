@@ -32,7 +32,7 @@ let private pumpUntil (seconds: float) (what: string) (ready: unit -> bool) =
         Thread.Sleep 10
 
 let private decay =
-    "let t = Array.init 50 (fun i -> float i * 0.1<s>)\nlet fig = Chart.lineIn U.second U.metre t (t |> Array.map (fun t -> 1.0<m> * exp (-t / 2.0<s>)))\n"
+    "open Marey.UnitsOfMeasure\nlet t = Array.init 50 (fun i -> float i * 0.1<s>)\nlet fig = Chart.lineIn U.second U.metre t (t |> Array.map (fun t -> 1.0<m> * exp (-t / 2.0<s>)))\n"
 
 /// The same figure, built here, for the export to be compared with.
 let private decayFigure () =

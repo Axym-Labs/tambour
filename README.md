@@ -54,7 +54,10 @@ tambour figure.fsx             # a script
 tambour analysis/              # a folder, as a workspace
 ```
 
-A script may take `open Marey`, `open Marey.UnitsOfMeasure` and the SI unit symbols for granted.
+A script may take `open Marey` and the SI unit symbols for granted. An axis has a unit where the
+script gives one (`x U.second (fun r -> r.Time)`) and none where it does not
+(`x (fun r -> r.Index)`). A script that wants every axis to have one opens `Marey.UnitsOfMeasure`,
+as does one that passes arrays in units to `Chart.lineIn` and its kin, which only that mode has.
 A workspace's tables reach its scripts as typed records through a generated `prelude.fsx`: inside
 Tambour it binds the columns in the grid, and outside it reads the table files, so with
 `#load "prelude.fsx"` and Marey referenced a script runs as it is in `dotnet fsi`.

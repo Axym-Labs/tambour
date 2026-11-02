@@ -47,7 +47,7 @@ let private until (workers: Workers) (pick: Reply -> 'a option) : Task<'a> =
     }
 
 [<Fact>]
-let ``the plot block for two columns compiles under their witnesses, and an untyped column plots as a plain float under U.one`` () =
+let ``the plot block for two columns compiles under their witnesses, and an untyped column plots as a plain float with no unit`` () =
     Assert.Equal(Some "U.second", Prelude.witness "s")
     Assert.Equal(Some "U.metre", Prelude.witness "km")
     Assert.Equal(Some "(U.div U.volt U.metre)", Prelude.witness "V/m")
@@ -59,7 +59,7 @@ let ``the plot block for two columns compiles under their witnesses, and an unty
     match Plotting.plotColumns "let fig = 1\n" table [ 0; 1; 2 ] with
     | Ok(text, name) ->
         Assert.Equal("fig2", name)
-        Assert.StartsWith("let fig = 1\n\nlet fig2 =\n    plot trials {\n        x U.second (fun r -> r.Time)\n        y U.one (fun r -> float r.conc)\n        color (fun r -> r.Run)\n", text)
+        Assert.StartsWith("let fig = 1\n\nlet fig2 =\n    plot trials {\n        x U.second (fun r -> r.Time)\n        y (fun r -> float r.conc)\n        color (fun r -> r.Run)\n", text)
     | Error e -> failwith e
 
     Assert.True(Plotting.plotColumns "" table [ 2; 0 ] |> Result.isError)

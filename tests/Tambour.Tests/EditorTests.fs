@@ -192,7 +192,7 @@ let ``a call's fixes are offered while the text is the one checked, and on the r
     window.Show()
 
     let script =
-        "let t = [| 0.0<s>; 1.0<s> |]\nlet x = [| 0.0<m>; 2.0<m> |]\nlet figure = Chart.lineIn t x\n"
+        "open Marey.UnitsOfMeasure\nlet t = [| 0.0<s>; 1.0<s> |]\nlet x = [| 0.0<m>; 2.0<m> |]\nlet figure = Chart.lineIn t x\n"
 
     editor.Text <- script
     pumpUntil 30.0 "the finding" (fun () -> editor.Findings.Length > 0)
