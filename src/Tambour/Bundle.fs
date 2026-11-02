@@ -222,6 +222,37 @@ let openBundle (file: string) : Result<Opened, string> =
                 lock.Dispose()
                 Error e.Message
 
+/// Opens a bundle to be written anew, by Save as: an empty cache, whatever the file held, which its
+/// first `sync` writes over it. Not one this process has open already.
+let create (file: string) : Result<string, string> =
+    let file = Path.GetFullPath file
+
+    if held.ContainsKey file then
+        Error $"{Path.GetFileName file} is open in another tab"
+    else
+        let dir = cacheOf file
+        Directory.CreateDirectory dir |> ignore
+
+        try
+            let lock = new FileStream(Path.Combine(dir, LockFile), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None)
+
+            try
+                for f in Directory.GetFiles dir do
+                    if Path.GetFileName f <> LockFile then File.Delete f
+
+                for d in Directory.GetDirectories dir do
+                    Directory.Delete(d, true)
+
+                // Nothing there yet that the file holds: the first sync writes it whatever it holds.
+                File.WriteAllText(Path.Combine(dir, StateFile), "{}")
+                held.[file] <- (dir, lock)
+                Ok dir
+            with e ->
+                lock.Dispose()
+                Error e.Message
+        with :? IOException ->
+            Error $"{Path.GetFileName file} is open in another Tambour"
+
 /// Writes a bundle back from its cache if what is saved there changed since; whether it did.
 let sync (file: string) : bool =
     let file = Path.GetFullPath file

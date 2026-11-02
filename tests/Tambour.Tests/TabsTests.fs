@@ -1010,3 +1010,89 @@ let ``a kept window larger than its screen comes back fitted to it`` () =
         window.Close()
     finally
         App.SettingsDirectory <- before
+
+/// The entries of a `.tambour`, read from the file.
+let private entries (file: string) =
+    use zip = System.IO.Compression.ZipFile.OpenRead file
+    [ for e in zip.Entries -> e.FullName ] |> List.sort
+
+/// Gate 17 (a), in the window: a new workspace saves as one `.tambour`, its tab named as it, and
+/// opens again from it with its script and table; closing it removes its cache.
+[<AvaloniaFact>]
+let ``a new workspace saves as one file and opens again from it`` () =
+    let parent = (Directory.CreateTempSubdirectory "tambour-bundle").FullName
+    let file = Path.Combine(parent, "paper.tambour")
+    let window = new Shell.MainWindow("")
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    window.Post Shell.NewTable
+    pumpUntil 10.0 "the table" (fun () -> not window.Active.Unsaved.IsEmpty)
+    typeInto window "let x = 1\n"
+    window.Post(Shell.SaveAs file)
+    pumpUntil 10.0 "the save" (fun () -> window.Active.Unsaved.IsEmpty && File.Exists file)
+
+    Assert.Equal(Some file, window.Active.Bundle)
+    Assert.Equal<string list>([ file ], window.Paths)
+    Assert.Equal("paper", window.Active.TabName)
+    Assert.Contains("paper.fsx in paper.tambour", window.Title)
+    Assert.Equal<string list>([ "mimetype"; "paper.fsx"; "tables/table.csv"; Project.WorkspaceFile ] |> List.sort, entries file)
+    let cache = Bundle.cacheOf file
+    Assert.True(Directory.Exists cache)
+    closeAll window
+    Assert.False(Directory.Exists cache)
+
+    let again = new Shell.MainWindow("", Some file)
+    again.Show()
+    pumpUntil 10.0 "the bundle" (fun () -> again.Active.Bundle = Some file && (editorOf again).Text = "let x = 1\n")
+    Assert.Equal<string list>([ "table" ], again.Active.Tables |> List.map (fun t -> t.Name))
+    Assert.Equal(Some cache, again.Active.Project)
+
+    // Opened again, it is found in its tab.
+    again.Post(Shell.OpenTab file)
+    Dispatcher.UIThread.RunJobs()
+    Assert.Equal(1, again.Workspaces.Length)
+    closeAll again
+
+/// Gate 17 (b), in the window: a file action in a bundle is written back at once, without a Save.
+[<AvaloniaFact>]
+let ``a file action in a bundle is written back to it`` () =
+    let source = (Directory.CreateTempSubdirectory "tambour-bundle-files").FullName
+    Project.makeWorkspace source
+    File.WriteAllText(Path.Combine(source, "two.fsx"), "let two = 2\n")
+    Project.write source (Project.defaults "two.fsx")
+    let file = Path.Combine((Directory.CreateTempSubdirectory "tambour-bundle-files-out").FullName, "files.tambour")
+    Bundle.pack source file
+    let window = new Shell.MainWindow("", Some file)
+    window.Show()
+    pumpUntil 10.0 "the bundle" (fun () -> (editorOf window).Text = "let two = 2\n")
+
+    let dir = Bundle.cacheOf file
+    window.Post(Shell.DuplicateFile(Path.Combine(dir, "two.fsx")))
+    pumpUntil 10.0 "the copy in the bundle" (fun () -> entries file |> List.contains "two copy.fsx")
+    closeAll window
+
+/// Gate 17 (c): Export as folder writes the saved workspace as a folder that opens with its script
+/// and tables.
+[<AvaloniaFact>]
+let ``a bundle exported as a folder opens as a folder workspace`` () =
+    let source = (Directory.CreateTempSubdirectory "tambour-bundle-export").FullName
+    Project.makeWorkspace source
+    Tambour.Data.Csv.writeFile (Path.Combine(source, "tables", "runs.csv")) (trial "runs" "auc")
+    File.WriteAllText(Path.Combine(source, "figure.fsx"), "let x = 1\n")
+    let file = Path.Combine((Directory.CreateTempSubdirectory "tambour-bundle-export-out").FullName, "exported.tambour")
+    Bundle.pack source file
+    let parent = (Directory.CreateTempSubdirectory "tambour-bundle-export-to").FullName
+    let window = new Shell.MainWindow("", Some file)
+    window.Show()
+    pumpUntil 10.0 "the bundle" (fun () -> (editorOf window).Text = "let x = 1\n")
+    window.Post(Shell.ExportFolder parent)
+    let folder = Path.Combine(parent, "exported")
+    pumpUntil 10.0 "the folder" (fun () -> File.Exists(Path.Combine(folder, "figure.fsx")))
+    closeAll window
+
+    let opened = new Shell.MainWindow("", Some folder)
+    opened.Show()
+    pumpUntil 10.0 "the folder workspace" (fun () -> (editorOf opened).Text = "let x = 1\n")
+    Assert.Equal<string list>([ "runs" ], opened.Active.Tables |> List.map (fun t -> t.Name))
+    Assert.Equal(None, opened.Active.Bundle)
+    closeAll opened
