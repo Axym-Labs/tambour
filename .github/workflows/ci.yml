@@ -18,41 +18,7 @@ permissions:
   contents: read
 
 jobs:
-  # Marey is packed from the commit Directory.Packages.props pins, so CI never depends on a feed on
-  # someone's disk. Packed once, on Linux; both OSes restore from the same packages.
-  marey-feed:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Read the pinned commit
-        id: pin
-        run: echo "commit=$(sed -n 's:.*<MareyCommit>\(.*\)</MareyCommit>.*:\1:p' Directory.Packages.props)" >> "$GITHUB_OUTPUT"
-
-      # The whole history, since the package version counts the commits the pinned one reaches.
-      - uses: actions/checkout@v4
-        with:
-          repository: Axym-Labs/marey
-          ref: ${{ steps.pin.outputs.commit }}
-          path: marey
-          fetch-depth: 0
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          global-json-file: marey/global.json
-
-      - name: Pack Marey into the local feed
-        run: tools/marey-feed.sh marey
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: marey-feed
-          path: artifacts/marey-feed/*.nupkg
-          if-no-files-found: error
-
   build:
-    needs: marey-feed
     strategy:
       fail-fast: false
       matrix:
@@ -75,11 +41,6 @@ jobs:
           ref: ${{ steps.pin.outputs.commit }}
           path: marey
           sparse-checkout: examples
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: marey-feed
-          path: artifacts/marey-feed
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -158,16 +119,10 @@ jobs:
   # sandbox that hides every .NET installation and the network, reports a script's unit error
   # within 3 s of starting cold (9 s on a shared runner, as the other timed checks).
   no-dotnet:
-    needs: marey-feed
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: marey-feed
-          path: artifacts/marey-feed
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -194,18 +149,12 @@ jobs:
   # The Windows zip is checked by hand on a clean machine.
   package:
     if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
-    needs: marey-feed
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: marey-feed
-          path: artifacts/marey-feed
 
       - uses: actions/setup-dotnet@v4
         with:

@@ -12,8 +12,8 @@ source, and the source runs unchanged in plain `dotnet fsi`.
 
 ## Status
 
-Not released yet. The first release comes out together with Marey 1.0.0 and runs on Linux and
-Windows, with no .NET installed.
+Not released yet. The first release runs on Marey 1.0.0-rc.1, on Linux and Windows, with no .NET
+installed.
 
 ## What it does
 
@@ -123,19 +123,19 @@ The package is not code-signed yet, so Windows treats it as coming from an unkno
 
 ## Building
 
-The .NET 10 SDK (`global.json`), and a checkout of [Marey](https://github.com/Axym-Labs/marey)
-beside this one. Until Marey 1.0.0 is on nuget.org, Tambour builds against a commit of Marey's
-`main`, packed into a local feed; `Directory.Packages.props` pins which.
+The .NET 10 SDK (`global.json`). Marey comes from nuget.org, at the exact version
+`Directory.Packages.props` pins.
 
 ```bash
-tools/marey-feed.sh            # or tools/marey-feed.ps1; packs the pinned commit of ../marey
 dotnet build Tambour.slnx
 dotnet test Tambour.slnx
 dotnet run --project src/Tambour -- --self-check
 ```
 
-`--self-check` opens a window, paints a figure in it and exits, with 0 if it painted. To move to a
-newer Marey, `tools/marey-feed.sh ../marey main` packs it and prints the two lines to pin.
+`--self-check` opens a window, paints a figure in it and exits, with 0 if it painted. The tests
+that check every GUI action against Marey's examples look for them in a checkout of Marey beside
+this one, or in `MAREY_EXAMPLES`, at the commit `Directory.Packages.props` names, and skip without
+one.
 
 Three more checks run the app end to end, each exiting 0 when it holds:
 
