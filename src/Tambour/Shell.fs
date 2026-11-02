@@ -732,25 +732,22 @@ let private saveTables (model: Model) =
             SavedTables = saved |> List.map (fun s -> s.Table.Name, s.Table) |> Map.ofList
             TableFiles = files }
 
-/// The figure shown, kept in a bundle as its thumbnail for the recent list and a file manager: at
-/// most 512 px wide, on white, drawn here rather than by a worker.
+/// The figure shown, kept in a bundle as its thumbnail for the recent list and a file manager: as
+/// the export draws it, on its own background, at most 512 px wide, drawn here rather than by a
+/// worker.
 let private writeThumbnail (dir: string) (picture: Picture) =
-    let extent = picture.Extent
-    let scale = min 1.0 (512.0 / float extent.Width)
-    let w = max 1 (int (Math.Round(float extent.Width * scale)))
-    let h = max 1 (int (Math.Round(float extent.Height * scale)))
-    use bitmap = new SkiaSharp.SKBitmap(SkiaSharp.SKImageInfo(w, h, SkiaSharp.SKColorType.Rgba8888, SkiaSharp.SKAlphaType.Premul))
+    let png = Marey.SkiaBackend.renderPng picture.Extent picture.Node
+    let path = Path.Combine(dir, Bundle.Thumbnail)
 
-    do
-        use canvas = new SkiaSharp.SKCanvas(bitmap)
-        canvas.Clear SkiaSharp.SKColors.White
-        canvas.Scale(float32 scale)
-        use measurer = new Marey.SkiaTextMeasurer()
-        Marey.SkiaPainter(canvas, measurer, true, None, outlines = true).Draw(Marey.SkiaPainter.RootTransform extent, picture.Node)
-        canvas.Flush()
-
-    use data = bitmap.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100)
-    File.WriteAllBytes(Path.Combine(dir, Bundle.Thumbnail), data.ToArray())
+    if float picture.Extent.Width <= 512.0 then
+        File.WriteAllBytes(path, png)
+    else
+        use image = SkiaSharp.SKBitmap.Decode png
+        let scale = 512.0 / float image.Width
+        let info = SkiaSharp.SKImageInfo(512, max 1 (int (Math.Round(float image.Height * scale))))
+        use smaller = image.Resize(info, SkiaSharp.SKSamplingOptions(SkiaSharp.SKCubicResampler.Mitchell))
+        use data = smaller.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100)
+        File.WriteAllBytes(path, data.ToArray())
 
 /// Makes changes to the project's scripts on disk, or with `back` takes them back, the last first: a
 /// move made the other way, a copy deleted while it is as it was made. Stops at the first that
@@ -4187,6 +4184,14 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
 
                 let panel = StackPanel(Spacing = Tokens.Space.s6, Width = 800.0, Margin = Thickness(Tokens.Space.s4, Tokens.Space.s7, Tokens.Space.s4, Tokens.Space.s5), HorizontalAlignment = HorizontalAlignment.Center)
                 let title = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s3)
+
+                // The app's icon, as tall as the name's line.
+                try
+                    use stream = Avalonia.Platform.AssetLoader.Open(Uri "avares://tambour/Assets/tambour.png")
+                    title.Children.Add(Image(Name = "app icon", Source = new Avalonia.Media.Imaging.Bitmap(stream), Width = Tokens.Type.displayLine, Height = Tokens.Type.displayLine, VerticalAlignment = VerticalAlignment.Bottom))
+                with _ ->
+                    ()
+
                 title.Children.Add(TextBlock(Text = "Tambour", FontSize = Tokens.Type.display, FontWeight = FontWeight.SemiBold, Foreground = brush look.Text, VerticalAlignment = VerticalAlignment.Bottom))
                 title.Children.Add(TextBlock(Text = "Measured data, figures and F# scripting", Foreground = brush look.Dim, VerticalAlignment = VerticalAlignment.Bottom, Margin = Thickness(0.0, 0.0, 0.0, Tokens.Space.s1)))
                 panel.Children.Add title
