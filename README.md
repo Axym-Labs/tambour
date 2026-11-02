@@ -34,7 +34,8 @@ edit the script rather than the figure. An action, a fix and typed text share on
 Ctrl+Z takes back each in turn.
 
 **Tables.** A table is a grid of typed columns, each with a name and a unit, imported from CSV or
-Arrow or typed in. Selecting two columns and pressing Ctrl+Shift+P writes a `plot { }` block for
+Arrow or typed in. A drag selects a block of cells and Ctrl+drag adds more, which Delete empties
+at once; on whole rows already empty, Delete removes them. Selecting two columns and pressing Ctrl+Shift+P writes a `plot { }` block for
 them into the script; a point picked in the figure marks its row in the grid. Edits to a table
 run the figure again and are undone like the script's.
 
