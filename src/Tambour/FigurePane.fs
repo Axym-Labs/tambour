@@ -244,6 +244,16 @@ type FigurePane() as this =
     /// Why the GPU path drew vectors instead, if it did.
     member _.GpuFailure = imageFailure |> Option.map (fun e -> e.Message)
 
+    /// What the GPU path's driver says it is, once it has drawn: "llvmpipe (LLVM …)" under
+    /// Mesa's software driver.
+    member _.GpuRenderer =
+        if gpu.IsValueCreated then
+            match gpu.Value with
+            | Ok r -> Some r.Description
+            | Error _ -> None
+        else
+            None
+
     /// How the picture on screen is painted, if there is one.
     member _.PaintPath = if isNull picture then None else Some picture.Path
 

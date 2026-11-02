@@ -1,5 +1,6 @@
 /// A library's documentation in a tooltip: its Markdown drawn as such, and a signature's names in
 /// their kinds' colours.
+[<Xunit.Collection("workers")>]
 module Tambour.Tests.MarkdownTests
 
 open Avalonia.Controls.Documents

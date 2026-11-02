@@ -63,6 +63,8 @@ let private s (text: string) =
 
 [<Fact>]
 let ``the outputs are read from a compositor's wl_output and xdg_output`` () =
+    // The app asks a compositor only on Linux; elsewhere the protocol is no one's.
+    Assert.SkipUnless(OperatingSystem.IsLinux(), "Wayland is Linux's")
     let path = Path.Combine(Path.GetTempPath(), $"tambour-wl-{Guid.NewGuid():N}")
     use listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified)
     listener.Bind(UnixDomainSocketEndPoint path)

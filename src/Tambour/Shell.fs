@@ -277,6 +277,11 @@ type Model =
       /// The project directory the script belongs to, if any, and its settings.
       Project: string option
       Settings: Project.Settings option
+      /// The `.tambour` the project directory was unpacked from, if it was: written back from there.
+      Bundle: string option
+      /// Where a workspace not saved yet keeps the prelude of its tables, for the language
+      /// service and the worker to find beside its script as they would in a saved one.
+      Draft: string
       /// The script as last read or written, to tell what is unsaved, and our own writes from
       /// someone else's.
       Saved: string
@@ -425,6 +430,9 @@ type Msg =
     | DuplicateScript
     | DeleteScript
     | RevealScript
+    /// The workspace written out as a plain folder, into a new one under the folder chosen.
+    | ChooseExportFolder
+    | ExportFolder of parent: string
     /// This workspace's script was moved to a new path.
     | Renamed of string
     | CloseTab
@@ -479,6 +487,8 @@ let init (script: string) () : Model * Cmd<Msg> =
       History = History.empty
       Path = None
       Project = None
+      Bundle = None
+      Draft = Bundle.draft ()
       Settings = None
       Saved = script
       Exporting = None
@@ -544,8 +554,12 @@ let private pickOpen (window: TopLevel) (folder: bool) : Task<string option> =
             let! picked = window.StorageProvider.OpenFolderPickerAsync(FolderPickerOpenOptions(Title = "Open a project folder"))
             return picked |> Seq.tryHead |> Option.bind (fun f -> Option.ofObj (f.TryGetLocalPath()))
         else
+            let both = FilePickerFileType("Workspaces and scripts", Patterns = [| "*" + Bundle.Extension; "*.fsx" |])
+            let bundles = FilePickerFileType("Tambour workspaces", Patterns = [| "*" + Bundle.Extension |])
             let scripts = FilePickerFileType("F# scripts", Patterns = [| "*.fsx" |])
-            let! picked = window.StorageProvider.OpenFilePickerAsync(FilePickerOpenOptions(Title = "Open a script", FileTypeFilter = [| scripts |]))
+
+            let! picked =
+                window.StorageProvider.OpenFilePickerAsync(FilePickerOpenOptions(Title = "Open a workspace or a script", FileTypeFilter = [| both; bundles; scripts |]))
             return picked |> Seq.tryHead |> Option.bind (fun f -> Option.ofObj (f.TryGetLocalPath()))
     }
 
@@ -632,6 +646,14 @@ let private withTables (model: Model) (tables: Map<string, Tambour.Data.Table>) 
 /// The model and what follows once the script and the tables are `state`: a table that changed
 /// is sent to the worker, the prelude is written again when the columns changed, and the figure
 /// runs again.
+/// Where the script is for the language service and the worker: on disk, or in the draft
+/// directory of a workspace not saved yet, beside its tables' prelude.
+let private scriptPath (model: Model) =
+    match model.Path, model.Project with
+    | Some path, _ -> path
+    | None, Some dir -> Path.Combine(dir, "untitled.fsx")
+    | None, None -> Path.Combine(model.Draft, "untitled.fsx")
+
 let private toState (env: Env) (model: Model) (state: History.State) (schema: bool) : Model * Cmd<Msg> =
     let before = tablesOf model
     let next = withTables { model with Script = state.Script } state.Tables
@@ -646,7 +668,9 @@ let private toState (env: Env) (model: Model) (state: History.State) (schema: bo
     if schema then
         match next.Project with
         | Some dir -> Tables.writePrelude dir next.Tables |> ignore
-        | None -> ()
+        | None ->
+            Directory.CreateDirectory next.Draft |> ignore
+            Tables.writePrelude next.Draft next.Tables |> ignore
 
     if not (obj.ReferenceEquals(next.Layouts, model.Layouts)) then writeProject next
 
@@ -725,6 +749,23 @@ let private saveTables (model: Model) =
             SavedTables = saved |> List.map (fun s -> s.Table.Name, s.Table) |> Map.ofList
             TableFiles = files }
 
+/// The figure shown, kept in a bundle as its thumbnail for the recent list and a file manager: as
+/// the export draws it, on its own background, at most 512 px wide, drawn here rather than by a
+/// worker.
+let private writeThumbnail (dir: string) (picture: Picture) =
+    let png = Marey.SkiaBackend.renderPng picture.Extent picture.Node
+    let path = Path.Combine(dir, Bundle.Thumbnail)
+
+    if float picture.Extent.Width <= 512.0 then
+        File.WriteAllBytes(path, png)
+    else
+        use image = SkiaSharp.SKBitmap.Decode png
+        let scale = 512.0 / float image.Width
+        let info = SkiaSharp.SKImageInfo(512, max 1 (int (Math.Round(float image.Height * scale))))
+        use smaller = image.Resize(info, SkiaSharp.SKSamplingOptions(SkiaSharp.SKCubicResampler.Mitchell))
+        use data = smaller.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100)
+        File.WriteAllBytes(path, data.ToArray())
+
 /// Makes changes to the project's scripts on disk, or with `back` takes them back, the last first: a
 /// move made the other way, a copy deleted while it is as it was made. Stops at the first that
 /// cannot be made, before making it. A moved script's settings and tab follow it.
@@ -792,6 +833,25 @@ let private aboutWindow (look: Palette.Look) =
     close.Click.Add(fun _ -> window.Close())
     window
 
+let private tableEdited (env: Env) (edits: Tambour.Data.TableEdit list) (model: Model) : Model * Cmd<Msg> =
+    let tables = edits |> List.fold Tambour.Data.TableEdit.apply (tablesOf model)
+    let schema = edits |> List.exists Tambour.Data.TableEdit.changesSchema
+
+    toState
+        env
+        { model with History = History.recordTables edits model.History; ActionNote = "" }
+        { Script = model.Script; Tables = tables }
+        schema
+
+/// A table added and shown. Its tab is chosen once the table is there: a tab asked for before it
+/// is drawn leaves the pane on the figure.
+let private addShown (env: Env) (table: Tambour.Data.Table) (model: Model) : Model * Cmd<Msg> =
+    let next, cmd = tableEdited env [ Tambour.Data.AddTable table ] model
+
+    match next.Tables |> List.tryFindIndex (fun s -> s.Table.Name = table.Name) with
+    | Some i -> { next with Tab = i + 1; Header = None }, cmd
+    | None -> next, cmd
+
 let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
     | Edited(edit, text) ->
@@ -826,7 +886,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         | None -> model, Cmd.none
     | Run ->
         { model with Running = true; Status = "running…"; Playing = Set.empty },
-        send env (Request.Evaluate { Text = model.Script; Path = Option.toObj model.Path })
+        send env (Request.Evaluate { Text = model.Script; Path = scriptPath model })
     // An export ends as a run does, with the worker doing it; its reply, if one comes, is let go.
     | Cancel when model.Exporting.IsSome ->
         { model with Exporting = None; Status = "export cancelled" }, Cmd.OfTask.attempt env.Workers.CancelAsync () Failed
@@ -988,8 +1048,26 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         Cmd.ofMsg Run
     | OpenPath path ->
         try
+            // A `.tambour` opens from its cache, a workspace directory like any other; a script there
+            // stays in its bundle.
+            let path = Path.GetFullPath path
+
+            let bundle, path, writtenBack =
+                if Bundle.isBundle path then
+                    match Bundle.openBundle path with
+                    | Ok o ->
+                        Project.makeWorkspace o.Directory
+                        Some path, o.Directory, o.WrittenBack
+                    | Error why -> failwith why
+                else
+                    Bundle.ofDirectory (if Directory.Exists path then path else Path.GetDirectoryName path), path, false
+
+            match model.Bundle with
+            | Some before when Some before <> bundle -> Bundle.close before
+            | _ -> ()
+
             let opened = Project.resolve path
-            env.Tabs.Opened(Path.GetFullPath path)
+            env.Tabs.Opened(bundle |> Option.defaultValue path)
 
             // The project's tables, their prelude written if it changed, and their columns sent.
             let tables, unread =
@@ -1006,6 +1084,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             let note =
                 match opened.Settings, unread with
                 | _, why :: _ -> $"a table did not read: {why}"
+                | _ when writtenBack -> "what was saved here last time is written back"
                 | Some s, [] when s.Marey <> Project.mareyVersion -> $"last run on Marey {s.Marey}; this is {Project.mareyVersion}"
                 | _ -> ""
 
@@ -1015,6 +1094,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 Path = Some opened.Script
                 Project = opened.Project
                 Settings = opened.Settings
+                Bundle = bundle
                 Files = (match opened.Project with Some dir -> Project.scripts dir |> Array.map (fun n -> Path.Combine(dir, n)) |> List.ofArray | None -> [])
                 Split = (match opened.Settings with Some s when s.Split > 0.05 && s.Split < 0.95 -> s.Split | _ -> model.Split)
                 Bottom = (match opened.Settings with Some s when s.Bottom > 0.0 -> s.Bottom | _ -> model.Bottom)
@@ -1074,15 +1154,49 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 File.WriteAllText(path, model.Script)
                 writeProject model
                 let model = saveTables model
-                { model with Saved = model.Script; Status = $"saved {Path.GetFileName path}" },
+
+                match model.Bundle, model.Project with
+                | Some file, Some dir ->
+                    if not (isNull model.Picture) then writeThumbnail dir model.Picture
+                    Bundle.sync file |> ignore
+                | _ -> ()
+
+                let name = model.Bundle |> Option.defaultValue path |> Path.GetFileName
+                { model with Saved = model.Script; Status = $"saved {name}" },
                 (if Preferences.Live.Current.RunOnSave then Cmd.ofMsg Run else Cmd.none)
             with e ->
                 { model with Status = $"not saved: {e.Message}" }, Cmd.none
         | None ->
-            model, Cmd.OfTask.either (fun () -> pickSave (topOf env) "Save the workspace: a folder named as its script" "figure.fsx" "fsx") () (Option.map SaveAs >> Option.defaultValue Dismissed) Failed
+            model, Cmd.OfTask.either (fun () -> pickSave (topOf env) "Save the workspace" ("figure" + Bundle.Extension) "tambour") () (Option.map SaveAs >> Option.defaultValue Dismissed) Failed
+    | SaveAs path when Bundle.isBundle path ->
+        // A new workspace is one file, its script named as it: unpacked into an empty cache, which
+        // the save then fills and writes out.
+        try
+            let path = Path.GetFullPath path
+
+            if model.Bundle = Some path then model, Cmd.ofMsg Save else
+
+            match Bundle.create path with
+            | Error why -> { model with Status = $"not saved: {why}" }, Cmd.none
+            | Ok dir ->
+                Project.makeWorkspace dir
+
+                match model.Bundle with
+                | Some before when before <> path -> Bundle.close before
+                | _ -> ()
+
+                env.Tabs.Opened path
+
+                { model with
+                    Path = Some(Path.Combine(dir, Path.GetFileNameWithoutExtension path + ".fsx"))
+                    Project = Some dir
+                    Bundle = Some path },
+                Cmd.batch [ Cmd.ofMsg Save; Cmd.ofMsg FilesChanged ]
+        with e ->
+            { model with Status = $"not saved: {e.Message}" }, Cmd.none
     | SaveAs path ->
-        // A new workspace is a directory of its own, named as its script: the script, its tables
-        // in `tables/`, and `workspace.json`.
+        // Saved as a script: a workspace directory of its own, named as it, with the script, its
+        // tables in `tables/`, and `workspace.json`.
         try
             let name = Path.GetFileNameWithoutExtension path
             let dir = Path.Combine(Path.GetDirectoryName path, name)
@@ -1134,15 +1248,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | ExportTo _ -> { model with Status = "there is no figure to export" }, Cmd.none
     | Dismissed -> model, Cmd.none
     | SelectTab tab -> { model with Tab = tab; Header = None }, Cmd.none
-    | TableEdited edits ->
-        let tables = edits |> List.fold Tambour.Data.TableEdit.apply (tablesOf model)
-        let schema = edits |> List.exists Tambour.Data.TableEdit.changesSchema
-
-        toState
-            env
-            { model with History = History.recordTables edits model.History; ActionNote = "" }
-            { Script = model.Script; Tables = tables }
-            schema
+    | TableEdited edits -> tableEdited env edits model
     | EditHeader(table, column) ->
         let header =
             model.Tables
@@ -1186,7 +1292,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | NewTable ->
         let blank = Tambour.Data.Values.blank "float" 10
         let t: Tambour.Data.Table = { Name = freshName model "table"; Columns = [ { Name = "x"; Unit = null; Values = blank }; { Name = "y"; Unit = null; Values = blank } ] }
-        { model with Tab = model.Tables.Length + 1 }, Cmd.ofMsg (TableEdited [ Tambour.Data.AddTable t ])
+        addShown env t model
     | ChooseImport ->
         let pick () =
             task {
@@ -1203,7 +1309,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         | Error why -> { model with ActionNote = $"{Path.GetFileName path} did not import: {why}" }, Cmd.none
         | Ok t ->
             let named = { t with Name = freshName model (Tambour.Data.Prelude.identifier t.Name |> fun n -> n.Trim('`')) }
-            { model with Tab = model.Tables.Length + 1 }, Cmd.ofMsg (TableEdited [ Tambour.Data.AddTable named ])
+            addShown env named model
     | RemoveTable name ->
         match model.Tables |> List.tryFind (fun s -> s.Table.Name = name) with
         | Some s -> { model with Tab = 0 }, Cmd.ofMsg (TableEdited [ Tambour.Data.RemoveTable s.Table ])
@@ -1256,7 +1362,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         match model.Tables |> List.tryFind (fun s -> s.Table.Name = name) with
         | Some s ->
             let copy = { s.Table with Name = freshName model (name + "_copy") }
-            { model with Tab = model.Tables.Length + 1 }, Cmd.ofMsg (TableEdited [ Tambour.Data.AddTable copy ])
+            addShown env copy model
         | None -> model, Cmd.none
     | RenameShownTable ->
         model, (match List.tryItem (model.Tab - 1) model.Tables with Some s -> Cmd.ofMsg (RenameTable s.Table.Name) | None -> Cmd.none)
@@ -1274,7 +1380,8 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         next, Cmd.none
     | CopyTable(Some t) ->
         let copy = { t with Name = freshName model t.Name }
-        { model with Tab = model.Tables.Length + 1; ActionNote = $"copied {t.Name} into this workspace" }, Cmd.ofMsg (TableEdited [ Tambour.Data.AddTable copy ])
+        let next, cmd = addShown env copy model
+        { next with ActionNote = $"copied {t.Name} into this workspace" }, cmd
     | TableSelected(table, columns) -> { model with TableSelection = Some(table, columns) }, Cmd.none
     | PlotSelected ->
         match model.TableSelection |> Option.bind (fun (name, columns) -> model.Tables |> List.tryFind (fun s -> s.Table.Name = name) |> Option.map (fun s -> s.Table, columns)) with
@@ -1294,7 +1401,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         match editable model with
         | None -> { model with ActionNote = "picking reads a plot { } block of a table; this figure is not one" }, Cmd.none
         | Some name ->
-            let script, path = model.Script, Option.toObj model.Path
+            let script, path = model.Script, scriptPath model
             model, Cmd.OfTask.either (fun () -> env.Language.PlottedAsync(script, path, name)) () (fun p -> PickFor(p, area)) Failed
     | PickFor(plotted, _) when plotted.Rows = "" -> { model with ActionNote = "picking reads a plot { } block of a table; this figure is not one" }, Cmd.none
     | PickFor(plotted, area) ->
@@ -1351,8 +1458,8 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         env.Tabs.New()
         model, Cmd.none
     | ChooseSaveAs ->
-        let name = model.Path |> Option.map Path.GetFileName |> Option.defaultValue "figure.fsx"
-        model, Cmd.OfTask.either (fun () -> pickSave (topOf env) "Save the workspace as: a folder named as its script" name "fsx") () (Option.map SaveAs >> Option.defaultValue Dismissed) Failed
+        let name = (model.Bundle |> Option.orElse model.Path |> Option.map Path.GetFileNameWithoutExtension |> Option.defaultValue "figure") + Bundle.Extension
+        model, Cmd.OfTask.either (fun () -> pickSave (topOf env) "Save the workspace as" name "tambour") () (Option.map SaveAs >> Option.defaultValue Dismissed) Failed
     | SaveAll ->
         env.Tabs.SaveAll()
         model, Cmd.none
@@ -1372,7 +1479,12 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             | Some dir when Directory.Exists dir -> Project.scripts dir |> Array.map (fun n -> Path.Combine(dir, n)) |> List.ofArray
             | _ -> []
 
-        { model with Files = files }, Cmd.none
+        // Every file action reads the list again after it: a bundle takes what it changed.
+        try
+            model.Bundle |> Option.iter (Bundle.sync >> ignore)
+            { model with Files = files }, Cmd.none
+        with e ->
+            { model with Files = files; Status = $"not written back: {e.Message}" }, Cmd.none
     | ToggleFiles ->
         let next = { model with FilesOpen = not model.FilesOpen }
         keepPanes next
@@ -1466,7 +1578,38 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | RenameScript -> model, (match model.Path with Some p -> Cmd.ofMsg (RenameFile p) | None -> Cmd.none)
     | DuplicateScript -> model, (match model.Path with Some p -> Cmd.ofMsg (DuplicateFile p) | None -> Cmd.none)
     | DeleteScript -> model, (match model.Path with Some p -> Cmd.ofMsg (DeleteFile p) | None -> Cmd.none)
-    | RevealScript -> model, (match model.Path with Some p -> Cmd.ofMsg (RevealFile p) | None -> Cmd.none)
+    // A script in a bundle is shown as the bundle, not as its place in the cache.
+    | RevealScript -> model, (match model.Bundle |> Option.orElse model.Path with Some p -> Cmd.ofMsg (RevealFile p) | None -> Cmd.none)
+    | ChooseExportFolder ->
+        model,
+        Cmd.OfTask.either
+            (fun () ->
+                task {
+                    let! picked = (topOf env).StorageProvider.OpenFolderPickerAsync(FolderPickerOpenOptions(Title = "Export the workspace into a folder"))
+                    return picked |> Seq.tryHead |> Option.bind (fun f -> Option.ofObj (f.TryGetLocalPath()))
+                })
+            ()
+            (Option.map ExportFolder >> Option.defaultValue Dismissed)
+            Failed
+    | ExportFolder parent ->
+        // Into a new folder named as the workspace, of what is saved: plain scripts and tables.
+        match model.Project with
+        | None -> model, Cmd.none
+        | Some dir ->
+            let name = model.Bundle |> Option.map Path.GetFileNameWithoutExtension |> Option.defaultValue (Path.GetFileName dir)
+            let target = Path.Combine(parent, name)
+
+            try
+                if Directory.Exists target || File.Exists target then failwith $"{name} is there already"
+                Bundle.export dir target
+                let changed =
+                    model.Script <> model.Saved
+                    || model.Tables |> List.exists (fun t -> not (model.SavedTables.TryFind t.Table.Name |> Option.exists (fun s -> obj.ReferenceEquals(s, t.Table))))
+
+                let left = if changed then "; what is not saved is not in it" else ""
+                { model with ActionNote = $"exported to {target}{left}" }, Cmd.none
+            with e ->
+                { model with ActionNote = $"not exported: {e.Message}" }, Cmd.none
     | OpenTab path ->
         env.Tabs.Open path
         model, Cmd.none
@@ -2144,6 +2287,7 @@ let commands: Command list =
       c "_File" "Dele_te script…" "" [] DeleteScript (fun m -> m.Path.IsSome)
       c "_File" "Reveal in file _manager" "" [] RevealScript (fun m -> m.Path.IsSome)
       c "_File" "_Export figure…" "Ctrl+E" [] ChooseExport (fun m -> not (isNull m.Picture))
+      c "_File" "Export as fo_lder…" "" [] ChooseExportFolder (fun m -> m.Project.IsSome)
       c "_File" "_Quit" "Ctrl+Q" [] Quit always
       c "_Edit" "_Undo" "Ctrl+Z" [] Undo (fun m -> not m.History.Done.IsEmpty)
       c "_Edit" "_Redo" "Ctrl+Y" [ "Ctrl+Shift+Z" ] Redo (fun m -> not m.History.Undone.IsEmpty)
@@ -2227,10 +2371,26 @@ let unsaved (model: Model) : string list =
           if not (model.Tables |> List.exists (fun s -> s.Table.Name = name)) then
               $"the removal of the table {name}" ]
 
-/// The window's title: the script's name, marked while anything is unsaved.
+/// What its tab is called: the bundle's name where it is one, the script's otherwise.
+let workspaceName (model: Model) =
+    match model.Bundle with
+    | Some file -> Path.GetFileNameWithoutExtension file
+    | None -> scriptName model
+
+/// What a workspace's directory is called where it is shown: the bundle's file it was unpacked
+/// from, not its cache's name, or the directory's own.
+let folderName (bundle: string option) (dir: string) =
+    match bundle with
+    | Some file -> Path.GetFileName file
+    | None -> Path.GetFileName dir
+
+/// The window's title: the script's name, and its bundle's, marked while anything is unsaved.
 let title (model: Model) =
     let mark = if (unsaved model).IsEmpty then "" else " •"
-    $"{scriptName model}{mark} — Tambour"
+
+    match model.Bundle with
+    | Some file -> $"{scriptName model} in {Path.GetFileName file}{mark} — Tambour"
+    | None -> $"{scriptName model}{mark} — Tambour"
 
 let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
     let look = model.Look
@@ -2754,7 +2914,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                             Border.child (paneAction "M8,3.5 V12.5 M3.5,8 H12.5" "New script (Ctrl+N)" false (fun () -> dispatch NewScript))
                                         ]
                                         TextBlock.create [
-                                            TextBlock.text (Path.GetFileName dir)
+                                            TextBlock.text (folderName model.Bundle dir)
                                             TextBlock.fontSize Tokens.Type.title
                                             TextBlock.fontWeight FontWeight.SemiBold
                                             TextBlock.verticalAlignment VerticalAlignment.Center
@@ -2861,7 +3021,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                             Editor.create [
                                 Grid.row 0
                                 Editor.text model.Script
-                                Editor.path (Option.toObj model.Path)
+                                Editor.path (scriptPath model)
                                 Editor.language env.Language
                                 Editor.goTo model.GoTo
                                 Editor.onEdited (Edited >> dispatch)
@@ -2904,7 +3064,6 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                         TabControl.name "sheets"
                         TabControl.classes [ "bare" ]
                         TabControl.padding (Thickness 0.0)
-                        TabControl.selectedIndex model.Tab
                         TabControl.onSelectedIndexChanged ((fun i -> if i >= 0 && i <> model.Tab then dispatch (SelectTab i)), SubPatchOptions.Always)
                         TabControl.viewItems [
                             TabItem.create [
@@ -2947,6 +3106,8 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                             for source in model.Tables do
                                 TabItem.create [ TabItem.header source.Table.Name; TabItem.content (tableView model dispatch source.Table) ]
                         ]
+                        // After the items: a table's tab chosen as it is added is there to choose.
+                        TabControl.selectedIndex model.Tab
                         ]
                       ]
                     ]
@@ -3377,8 +3538,11 @@ type Workspace(script: string, path: string option, language: LanguageService, t
     /// Each message the workspace has taken, once its model is updated.
     member _.Updated = updated.Publish
 
-    /// The script's name, as its tab shows it.
+    /// The script's name.
     member _.ScriptName = scriptName latest
+
+    /// What its tab shows: the bundle's name where it is one, the script's otherwise.
+    member _.TabName = workspaceName latest
 
     /// Its tables, as they are now.
     member _.Tables = [ for s in latest.Tables -> s.Table ]
@@ -3392,6 +3556,12 @@ type Workspace(script: string, path: string option, language: LanguageService, t
     /// Where its script is, and its project directory, if it has them.
     member _.Path = latest.Path
     member _.Project = latest.Project
+
+    /// The `.tambour` it was opened from, if it was.
+    member _.Bundle = latest.Bundle
+
+    /// Where it is kept, as the recent list and the next start name it: its bundle, or its script.
+    member _.Location = latest.Bundle |> Option.orElse latest.Path
 
     /// Whether nothing has been done in it: no file, nothing typed, nothing in its history. Opening
     /// a file into such a tab takes it rather than leaving it empty beside a new one.
@@ -3426,6 +3596,14 @@ type Workspace(script: string, path: string option, language: LanguageService, t
             dispatch Ended
             idle.Dispose()
             (workers :> IDisposable).Dispose()
+            // Written back if its settings changed since, and its cache removed.
+            latest.Bundle |> Option.iter (fun file -> try Bundle.close file with _ -> ())
+
+            if Directory.Exists latest.Draft then
+                try
+                    Directory.Delete(latest.Draft, true)
+                with _ ->
+                    ()
 
 /// The windows a tab has been moved between, from one first window: the language service they
 /// share, ended once the last of them closes, and the tabs they keep for the next start.
@@ -3498,7 +3676,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
 
     let look () = Palette.forVariant this.ActualThemeVariant
 
-    let labelOf (w: Workspace) = w.ScriptName + (if w.Unsaved.IsEmpty then "" else " •")
+    let labelOf (w: Workspace) = w.TabName + (if w.Unsaved.IsEmpty then "" else " •")
 
     let rec refresh (force: bool) =
         let now = [ for w in workspaces -> labelOf w ] @ [ string active ]
@@ -3508,7 +3686,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
         let tabs = [ for win in group.Windows do yield! (win :?> MainWindow).Paths ]
 
         let shown =
-            match (if active >= 0 then workspaces.[active].Path else None) with
+            match (if active >= 0 then workspaces.[active].Location else None) with
             | Some p -> List.findIndex ((=) p) tabs
             | None -> 0
 
@@ -3597,7 +3775,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
                         BorderThickness = Thickness(Tokens.border, Tokens.border, Tokens.border, 0.0)
                     )
 
-                ToolTip.SetTip(tab, (match w.Path with Some p -> p | None -> "not saved yet"))
+                ToolTip.SetTip(tab, (match w.Location with Some p -> p | None -> "not saved yet"))
                 tab.Click.Add(fun _ -> show i)
 
                 // Dragged and let go outside the window: into the group's window there, or a new one.
@@ -3739,7 +3917,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
             if active < 0 then None
             else
                 let w = workspaces.[active]
-                w.Project |> Option.map (fun dir -> { Name = Path.GetFileName dir; Skia = w.Skia; Set = fun s -> w.Post(SetSkia s) })
+                w.Project |> Option.map (fun dir -> { Name = folderName w.Bundle dir; Skia = w.Skia; Set = fun s -> w.Post(SetSkia s) })
 
         let dialog = PreferencesView.PreferencesWindow(shortcuts, openPath, project)
         dialog.ShowDialog this |> ignore
@@ -3828,7 +4006,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
 
     and openPath (path: string) =
         let full = Path.GetFullPath path
-        let showing (w: Workspace) = w.Path = Some full || w.Project = Some full
+        let showing (w: Workspace) = w.Path = Some full || w.Project = Some full || w.Bundle = Some full
 
         match workspaces |> Seq.tryFindIndex showing with
         | Some i ->
@@ -4017,6 +4195,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
                     )
 
                 let file = "M4,1.75 H9 L12,4.75 V14.25 H4 Z M9,1.75 V4.75 H12"
+                let bundle = "M4,1.75 H9 L12,4.75 V14.25 H4 Z M9,1.75 V4.75 H12 M6,12 L7.5,9.5 L9,10.5 L10.5,8"
                 let folder = "M1.75,4.25 A1,1 0 0 1 2.75,3.25 H5.75 L7.25,4.75 H13.25 A1,1 0 0 1 14.25,5.75 V12.25 A1,1 0 0 1 13.25,13.25 H2.75 A1,1 0 0 1 1.75,12.25 Z"
 
                 /// A row: an icon, a name, and at its end a shortcut or where the file is.
@@ -4055,6 +4234,17 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
 
                 let panel = StackPanel(Spacing = Tokens.Space.s6, Width = 800.0, Margin = Thickness(Tokens.Space.s4, Tokens.Space.s7, Tokens.Space.s4, Tokens.Space.s5), HorizontalAlignment = HorizontalAlignment.Center)
                 let title = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s3)
+
+                // The app's icon, as tall as the name's line.
+                try
+                    use stream = Avalonia.Platform.AssetLoader.Open(Uri "avares://tambour/Assets/tambour.png")
+                    let icon = Image(Name = "app icon", Source = new Avalonia.Media.Imaging.Bitmap(stream), Width = Tokens.Type.displayLine, Height = Tokens.Type.displayLine, VerticalAlignment = VerticalAlignment.Bottom)
+                    // Drawn a tenth of its size: sampled smoothly, not every so many pixels.
+                    RenderOptions.SetBitmapInterpolationMode(icon, Avalonia.Media.Imaging.BitmapInterpolationMode.HighQuality)
+                    title.Children.Add icon
+                with _ ->
+                    ()
+
                 title.Children.Add(TextBlock(Text = "Tambour", FontSize = Tokens.Type.display, FontWeight = FontWeight.SemiBold, Foreground = brush look.Text, VerticalAlignment = VerticalAlignment.Bottom))
                 title.Children.Add(TextBlock(Text = "Measured data, figures and F# scripting", Foreground = brush look.Dim, VerticalAlignment = VerticalAlignment.Bottom, Margin = Thickness(0.0, 0.0, 0.0, Tokens.Space.s1)))
                 panel.Children.Add title
@@ -4078,8 +4268,23 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
                         let there = File.Exists p || Directory.Exists p
                         let home = Environment.GetFolderPath Environment.SpecialFolder.UserProfile
                         let where = Path.GetDirectoryName p |> fun d -> if not (String.IsNullOrEmpty home) && d.StartsWith home then "~" + d.Substring home.Length else d
-                        let e = entry (if Directory.Exists p then folder else file) (Path.GetFileName p) (if there then where else $"missing · {where}") there (fun () -> if there then openPath p)
-                        ToolTip.SetTip(e, (if there then p else $"{p}: no longer there"))
+                        let icon = if Directory.Exists p then folder elif Bundle.isBundle p then bundle else file
+                        let e = entry icon (Path.GetFileName p) (if there then where else $"missing · {where}") there (fun () -> if there then openPath p)
+
+                        // A bundle's tip shows the figure it was saved with, read from the file.
+                        match (if there && Bundle.isBundle p then Bundle.thumbnail p else None) with
+                        | Some png ->
+                            let tip = StackPanel(Spacing = Tokens.Space.s2)
+
+                            try
+                                use stream = new MemoryStream(png)
+                                tip.Children.Add(Image(Source = new Avalonia.Media.Imaging.Bitmap(stream), MaxWidth = 256.0, MaxHeight = 192.0))
+                            with _ ->
+                                ()
+
+                            tip.Children.Add(TextBlock(Text = p))
+                            ToolTip.SetTip(e, tip)
+                        | None -> ToolTip.SetTip(e, (if there then p else $"{p}: no longer there"))
                         recentColumn.Children.Add e
 
                     let actions = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2, Margin = Thickness(0.0, Tokens.Space.s2, 0.0, 0.0))
@@ -4226,7 +4431,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
     member _.Starting = workspaces.Count = 0
 
     /// The scripts of its tabs that have one, in their order.
-    member _.Paths = [ for w in workspaces do match w.Path with Some p -> p | None -> () ]
+    member _.Paths = [ for w in workspaces do match w.Location with Some p -> p | None -> () ]
 
     /// Whether a place on the screen is inside it.
     member this.Covers(screen: PixelPoint) =

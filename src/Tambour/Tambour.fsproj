@@ -4,10 +4,13 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>tambour</AssemblyName>
     <RootNamespace>Tambour</RootNamespace>
+    <ApplicationIcon>../../assets/tambour.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Include="Paths.fs" />
+    <Compile Include="Bundle.fs" />
+    <Compile Include="Association.fs" />
     <Compile Include="Scaling.fs" />
     <Compile Include="Preferences.fs" />
     <Compile Include="Tokens.fs" />
@@ -39,6 +42,7 @@
     <EmbeddedResource Include="Themes/light.json" LogicalName="Tambour.Themes.light.json" />
     <EmbeddedResource Include="Themes/dark.json" LogicalName="Tambour.Themes.dark.json" />
     <AvaloniaResource Include="Fonts/*.ttf" />
+    <AvaloniaResource Include="../../assets/tambour.png" Link="Assets/tambour.png" />
   </ItemGroup>
 
   <ItemGroup>
