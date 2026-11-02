@@ -86,8 +86,27 @@ let private checkAnalysis (script: string) = AnalysisCheck.run script
 [<MethodImpl(MethodImplOptions.NoInlining)>]
 let private analysis (socket: string) (app: int) = Analysis.run socket app
 
+[<System.Runtime.InteropServices.DllImport("kernel32.dll")>]
+extern bool AttachConsole(int processId)
+
+[<System.Runtime.InteropServices.DllImport("kernel32.dll")>]
+extern nativeint GetStdHandle(int which)
+
+/// On Windows tambour.exe is a windowed program, so Explorer opens no console beside the app, and
+/// one started from a terminal has none either. A flag's output goes to the terminal it was started
+/// from; output already sent elsewhere stays there, which also keeps a worker's pipes its own.
+let private console () =
+    if System.OperatingSystem.IsWindows() then
+        let missing which =
+            let handle = GetStdHandle which
+            handle = 0n || handle = -1n
+
+        if missing -11 || missing -12 then AttachConsole -1 |> ignore
+
 [<EntryPoint>]
 let main argv =
+    if argv.Length > 0 && argv[0].StartsWith "-" then console ()
+
     match argv with
     | [||] -> window None
     | [| path |] when not (path.StartsWith "-") -> window (Some path)
