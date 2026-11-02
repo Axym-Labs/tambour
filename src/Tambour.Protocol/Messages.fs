@@ -294,10 +294,35 @@ type Token =
       Kind: string
       Mutable: bool }
 
-/// What one check of a script found: its problems, and its tokens in order.
+/// A stretch of the script, counted as `At` is, and what takes its place.
+type FixEdit =
+    { StartLine: int
+      StartColumn: int
+      EndLine: int
+      EndColumn: int
+      Text: string }
+
+/// A code fix: what it is called, and its edits, made together as one.
+type Fix = { Title: string; Edits: FixEdit[] }
+
+/// A Marey call that does not compile for want of the right unit witness (`MAREY001`, missing;
+/// `MAREY002`, another unit's; `MAREY003`, raw measured arrays where a `Q` is taken), where it is,
+/// and the fixes that make it compile.
+type Finding =
+    { Code: string
+      Message: string
+      StartLine: int
+      StartColumn: int
+      EndLine: int
+      EndColumn: int
+      Fixes: Fix[] }
+
+/// What one check of a script found: its problems, the fixes Marey's witnesses offer, and its
+/// tokens in order.
 type Checked =
     { Id: int
       Diagnostics: Diagnostic[]
+      Findings: Finding[]
       Tokens: Token[] }
 
 type Completions = { Id: int; Items: Completion[] }

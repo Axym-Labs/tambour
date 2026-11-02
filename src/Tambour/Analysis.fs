@@ -323,6 +323,59 @@ let ownsModule (script: string) =
     | Some l -> Text.RegularExpressions.Regex.IsMatch(l, @"^module\s+(rec\s+)?[A-Za-z_][\w.`]*$")
     | None -> false
 
+/// Marey's findings in the script's own lines, from the text the checker saw, `offset` lines of
+/// prelude before the script. A finding in the prelude is dropped, and so is a fix with an edit
+/// there, since the script cannot make it.
+let findingsOf (offset: int) (findings: Marey.Witnesses.Finding list) : Finding[] =
+    let inScript (r: range) = r.StartLine > offset
+
+    findings
+    |> List.filter (fun f -> inScript f.Range)
+    |> List.map (fun f ->
+        { Code = f.Code
+          Message = shorten f.Message
+          StartLine = f.Range.StartLine - offset
+          StartColumn = f.Range.StartColumn
+          EndLine = f.Range.EndLine - offset
+          EndColumn = f.Range.EndColumn
+          Fixes =
+            f.Fixes
+            |> List.filter (fun fix -> fix.Edits |> List.forall (fun e -> inScript e.Range))
+            |> List.map (fun fix ->
+                { Title = fix.Title
+                  Edits =
+                    fix.Edits
+                    |> List.map (fun e ->
+                        { StartLine = e.Range.StartLine - offset
+                          StartColumn = e.Range.StartColumn
+                          EndLine = e.Range.EndLine - offset
+                          EndColumn = e.Range.EndColumn
+                          Text = e.Text })
+                    |> Array.ofList })
+            |> Array.ofList })
+    |> Array.ofList
+
+/// The script after a fix: its edits made together, each where it was in the script before, from
+/// the last so that the earlier ones stay where they are. Two at one place go in in their order.
+let applyFix (script: string) (fix: Fix) =
+    let starts =
+        let lines = script.Split('\n')
+        Array.scan (fun s (l: string) -> s + l.Length + 1) 0 lines
+
+    let offsetOf line column =
+        let line = max 1 (min (starts.Length - 1) line)
+        min script.Length (starts.[line - 1] + max 0 column)
+
+    fix.Edits
+    |> Array.indexed
+    |> Array.sortByDescending (fun (i, e) -> e.StartLine, e.StartColumn, i)
+    |> Array.fold
+        (fun (text: string) (_, e) ->
+            let s = offsetOf e.StartLine e.StartColumn
+            let t = max s (offsetOf e.EndLine e.EndColumn)
+            text.Substring(0, s) + e.Text + text.Substring t)
+        script
+
 /// Whether a script is given its directory's table prelude without loading it: there is one beside
 /// it, and the script has no `#load` of it of its own.
 let loadsTables (path: string) (script: string) =
@@ -411,7 +464,7 @@ type Service(init: AnalysisInit) =
     member _.Offset = offset
 
     member _.Check(source: Source) : Checked =
-        let path, _, _, results = check source.Path source.Text
+        let path, _, parse, results = check source.Path source.Text
 
         let diagnostics =
             results.Diagnostics
@@ -433,6 +486,7 @@ type Service(init: AnalysisInit) =
 
         { Id = source.Id
           Diagnostics = diagnostics
+          Findings = findingsOf offset (Marey.Witnesses.Findings.ofFile parse results)
           Tokens = tokensOf offset (results.GetSemanticClassification None) }
 
     member _.Complete(at: At) : Completions =

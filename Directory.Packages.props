@@ -5,8 +5,8 @@
        lines. -->
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-    <MareyVersion>1.0.0-dev.323</MareyVersion>
-    <MareyCommit>af120adbd491fa508e406ce5ee28c3f8f838be1f</MareyCommit>
+    <MareyVersion>1.0.0-dev.327</MareyVersion>
+    <MareyCommit>01cf9cb2a960e5706b24cfe6350d2df61309cebb</MareyCommit>
     <AvaloniaVersion>12.1.4</AvaloniaVersion>
   </PropertyGroup>
 
@@ -15,6 +15,8 @@
     <PackageVersion Include="Marey.Backend.Skia" Version="[$(MareyVersion)]" />
     <PackageVersion Include="Marey.Backend.Gpu" Version="[$(MareyVersion)]" />
     <PackageVersion Include="Marey.Units" Version="[$(MareyVersion)]" />
+    <!-- The code fixes for unit witnesses the language service offers; plain FCS, at the pin below. -->
+    <PackageVersion Include="Marey.Witnesses" Version="[$(MareyVersion)]" />
 
     <!-- A table above the size a CSV handles well is kept as Arrow IPC. -->
     <PackageVersion Include="Apache.Arrow" Version="[23.0.0]" />

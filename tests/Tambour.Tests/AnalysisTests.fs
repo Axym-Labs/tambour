@@ -235,3 +235,100 @@ let ``a completion entry is described by its signature and documentation`` () =
     Assert.Contains("float", described.Text)
     Assert.Contains("Twice the number given.", described.Doc)
     Assert.Equal("", (service.Value.Describe(entry "nothingLikeThis")).Text)
+
+// ---- Marey's witness fixes -------------------------------------------------------------------------
+
+let private measured = "let t = [| 0.0<s>; 1.0<s>; 2.0<s> |]\nlet x = [| 0.0<m>; 2.0<m>; 3.0<m> |]\n"
+
+/// A call short of the right witnesses is found where the script has it, and its first fix makes
+/// the call this one; each of its fixes makes the script check clean.
+[<Theory>]
+[<InlineData("Chart.lineIn t x", "MAREY001", "Chart.lineIn U.second U.metre t x")>]
+[<InlineData("Chart.lineIn U.metre U.metre t x", "MAREY002", "Chart.lineIn U.second U.metre t x")>]
+[<InlineData("Chart.line t x", "MAREY003", "Chart.lineIn U.second U.metre t x")>]
+let ``a call short of its witnesses is found, and its fixes check clean`` (call: string, code: string, first: string) =
+    let script = measured + $"let figure = {call}\n"
+    let found = service.Value.Check { Id = 1; Text = script; Path = null }
+    let finding = found.Findings |> Array.find (fun f -> f.Code = code)
+    Assert.Equal(3, finding.StartLine)
+    Assert.Equal("let figure = ".Length, finding.StartColumn)
+    Assert.NotEmpty finding.Fixes
+    Assert.Equal(measured + $"let figure = {first}\n", Analysis.applyFix script finding.Fixes.[0])
+
+    for fix in finding.Fixes do
+        let fixedScript = Analysis.applyFix script fix
+        let after = service.Value.Check { Id = 2; Text = fixedScript; Path = null }
+        Assert.True(after.Diagnostics |> Array.forall (fun d -> d.Severity <> "error"), $"{fix.Title}: {fixedScript}\n%A{after.Diagnostics}")
+        Assert.Empty after.Findings
+
+/// A finding the prelude's lines hold is not the script's, nor a fix that would edit them.
+[<Fact>]
+let ``a finding or a fix in the prelude is dropped`` () =
+    let range (line: int) = FSharp.Compiler.Text.Range.mkRange "s.fsx" (FSharp.Compiler.Text.Position.mkPos line 4) (FSharp.Compiler.Text.Position.mkPos line 9)
+    let edit line : Marey.Witnesses.Edit = { Range = range line; Text = "U.second " }
+
+    let findings: Marey.Witnesses.Finding list =
+        [ { Code = "MAREY001"; Range = range 2; Message = "in the prelude"; Fixes = [ { Title = "a"; Edits = [ edit 2 ] } ] }
+          { Code = "MAREY001"
+            Range = range 5
+            Message = "in the script"
+            Fixes = [ { Title = "kept"; Edits = [ edit 5; edit 6 ] }; { Title = "dropped"; Edits = [ edit 5; edit 3 ] } ] } ]
+
+    let found = Analysis.findingsOf 3 findings
+    let f = Assert.Single found
+    Assert.Equal(2, f.StartLine)
+    Assert.Equal(4, f.StartColumn)
+    let fix = Assert.Single f.Fixes
+    Assert.Equal("kept", fix.Title)
+    Assert.Equal<int[]>([| 2; 3 |], fix.Edits |> Array.map (fun e -> e.StartLine))
+
+/// A fix's edits are made each where it was before any of them, whatever their order; two at one
+/// place go in in the fix's order, and an edit across lines takes them out.
+[<Fact>]
+let ``a fix's edits are made where they were, two at one place in their order`` () =
+    let edit line column endLine endColumn text : FixEdit =
+        { StartLine = line
+          StartColumn = column
+          EndLine = endLine
+          EndColumn = endColumn
+          Text = text }
+
+    let script = "let a = f t x\nlet b =\n    g t\n"
+
+    let fix: Fix =
+        { Title = "both"
+          Edits = [| edit 1 10 1 10 "U.second "; edit 2 7 3 4 " "; edit 1 10 1 10 "U.metre " |] }
+
+    Assert.Equal("let a = f U.second U.metre t x\nlet b = g t\n", Analysis.applyFix script fix)
+
+/// A script beside a table's prelude is checked with the tables before it, whether it is given
+/// them or loads them itself; its finding is still on its own line, and the fix checks clean.
+[<Theory>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``a call on a table's columns is found on the script's line, and fixed`` (loads: bool) =
+    let dir = (Directory.CreateTempSubdirectory "tambour-witness").FullName
+
+    let table: Tambour.Data.Table =
+        { Name = "runs"
+          Columns =
+            [ { Name = "time"; Unit = "s"; Values = Tambour.Data.Floats [| 0.0; 1.0 |] }
+              { Name = "height"; Unit = "m"; Values = Tambour.Data.Floats [| 2.0; 3.0 |] } ] }
+
+    File.WriteAllText(Path.Combine(dir, "prelude.fsx"), Tambour.Data.Prelude.generate [ { Tambour.Data.Prelude.Table = table; Tambour.Data.Prelude.File = "runs.csv" } ])
+    let path = Path.Combine(dir, "figure.fsx")
+
+    let script =
+        (if loads then "#load \"prelude.fsx\"\nopen Prelude\n" else "")
+        + "let t = runs |> Array.map (fun r -> r.time)\nlet x = runs |> Array.map (fun r -> r.height)\nlet figure = Chart.lineIn t x\n"
+
+    let line = script.Split('\n') |> Array.findIndex (fun l -> l.StartsWith "let figure") |> (+) 1
+    let found = service.Value.Check { Id = 1; Text = script; Path = path }
+    let finding = found.Findings |> Array.find (fun f -> f.Code = "MAREY001")
+    Assert.Equal(line, finding.StartLine)
+    Assert.Equal("let figure = ".Length, finding.StartColumn)
+    let fixedScript = Analysis.applyFix script finding.Fixes.[0]
+    Assert.EndsWith("let figure = Chart.lineIn U.second U.metre t x\n", fixedScript)
+    let after = service.Value.Check { Id = 2; Text = fixedScript; Path = path }
+    Assert.True(after.Diagnostics |> Array.forall (fun d -> d.Severity <> "error"), $"%A{after.Diagnostics}")
+    Assert.Empty after.Findings
