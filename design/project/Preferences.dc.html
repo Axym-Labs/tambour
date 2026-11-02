@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tambour preferences</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="components.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div class="tb {{mode}}" style="width: 1280px; height: 800px; position: relative; overflow: hidden">
+  <dc-import name="Main" dark="{{dark}}" hint-size="1280px,800px"></dc-import>
+  <div class="scrim"></div>
+
+  <div class="popup" role="dialog" aria-label="Preferences" style="position: absolute; left: 280px; top: 132px; width: 720px; height: 536px; display: grid; grid-template-rows: var(--h-toolbar) minmax(0, 1fr) auto; overflow: hidden; background: var(--surface)">
+    <div style="display: flex; align-items: center; padding: 0 var(--space-2) 0 var(--space-4); border-bottom: var(--border) solid var(--line)">
+      <span class="title">Preferences</span>
+      <span class="spacer"></span>
+      <button class="icon-btn" aria-label="Close (Escape)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></button>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 176px minmax(0, 1fr); min-height: 0">
+      <div style="padding: var(--space-2); border-right: var(--border) solid var(--line); display: flex; flex-direction: column">
+        <div class="list-row {{navAppearance}}">Appearance</div>
+        <div class="list-row">Editor</div>
+        <div class="list-row {{navKeys}}">Keyboard shortcuts</div>
+        <div class="list-row">Export</div>
+        <div class="list-row">Recent files</div>
+        <div class="section-label" style="margin-top: var(--space-2)">This project</div>
+        <div class="list-row">Figures</div>
+      </div>
+
+      <div style="background: var(--page); padding: var(--space-5); display: flex; flex-direction: column; gap: var(--space-5); overflow: hidden; min-height: 0">
+        <sc-if value="{{appearance}}" hint-placeholder-val="{{true}}">
+          <div style="display: flex; flex-direction: column; gap: var(--space-3)">
+            <div class="title">Appearance</div>
+            <div style="display: grid; grid-template-columns: 136px minmax(0, 1fr); gap: var(--space-3) var(--space-4); align-items: center">
+              <label class="label">Theme</label>
+              <div class="segmented" role="group" aria-label="Theme" style="justify-self: start">
+                <button class="on">System</button><button>Light</button><button>Dark</button>
+              </div>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: var(--space-3); border-top: var(--border) solid var(--line); padding-top: var(--space-5)">
+            <div class="title">Editor</div>
+            <div style="display: grid; grid-template-columns: 136px minmax(0, 1fr); gap: var(--space-3) var(--space-4); align-items: center">
+              <label class="label">Font</label>
+              <div style="display: flex; gap: var(--space-2)">
+                <button class="select" style="width: 200px" aria-label="Editor font">JetBrains Mono<svg class="chev" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
+                <input class="field" style="width: 64px; text-align: right" value="14" aria-label="Font size">
+                <span class="muted" style="align-self: center">px</span>
+              </div>
+              <span></span>
+              <label class="check"><span class="box on"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg></span>Ligatures</label>
+              <span></span>
+              <label class="check"><span class="box on"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg></span>Close brackets and quotes as I type<span class="muted small">not &lt; or &#39;</span></label>
+              <span></span>
+              <label class="check"><span class="box"></span>Run the script on save</label>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: var(--space-3); border-top: var(--border) solid var(--line); padding-top: var(--space-5)">
+            <div class="title">Recent files</div>
+            <div style="display: grid; grid-template-columns: 136px minmax(0, 1fr); gap: var(--space-3) var(--space-4); align-items: center">
+              <label class="label">Keep</label>
+              <div style="display: flex; align-items: center; gap: var(--space-2)">
+                <input class="field" style="width: 64px; text-align: right" value="10" aria-label="Recent files to keep">
+                <span class="muted">files and folders</span>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{keys}}" hint-placeholder-val="{{false}}">
+          <div style="display: flex; flex-direction: column; gap: var(--space-2); min-height: 0">
+            <div style="display: flex; align-items: center; gap: var(--space-2)">
+              <div class="field" style="flex: 1 1 0; display: flex; align-items: center; gap: var(--space-2)">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.25"/><path d="M10.25 10.25L13.5 13.5"/></svg>
+                <input style="border: 0; background: none; outline: none; flex: 1 1 0; min-width: 0; padding: 0" placeholder="Filter by command or key" aria-label="Filter shortcuts">
+              </div>
+              <button class="btn quiet">Reset all</button>
+            </div>
+            <div class="small muted">Click a shortcut to change it. Those marked grid act only while a table’s grid has the focus.</div>
+            <div style="display: flex; flex-direction: column">
+              <sc-for list="{{shortcuts}}" as="r" hint-placeholder-count="12">
+                <sc-if value="{{r.section}}" hint-placeholder-val="{{false}}">
+                  <div class="section-label">{{r.name}}</div>
+                </sc-if>
+                <sc-if value="{{r.plain}}" hint-placeholder-val="{{true}}">
+                  <div class="list-row {{r.rowClass}}">
+                    <span class="name" style="flex: 1 1 0">{{r.name}}</span>
+                    <span class="muted small">{{r.where}}</span>
+                    <span class="muted small">{{r.changed}}</span>
+                    <span style="display: flex; gap: var(--space-1); justify-content: flex-end; width: 180px">
+                      <sc-for list="{{r.keys}}" as="k" hint-placeholder-count="1"><span class="kbd">{{k}}</span></sc-for>
+                    </span>
+                  </div>
+                </sc-if>
+                <sc-if value="{{r.editing}}" hint-placeholder-val="{{false}}">
+                  <div style="display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-1) 0">
+                    <div class="list-row active">
+                      <span class="name" style="flex: 1 1 0">{{r.name}}</span>
+                      <span class="field focus" style="width: 180px; display: flex; align-items: center; justify-content: flex-end; gap: var(--space-1)"><span class="kbd">Ctrl+Shift+D</span></span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-2)">
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--warning)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5l6 11H2z"/><path d="M8 6.75v3M8 11.75v.01"/></svg>
+                      <span class="small" style="flex: 1 1 0">Already Duplicate rows, in the grid.</span>
+                      <button class="btn quiet" style="height: var(--h-control-sm)">Cancel</button>
+                      <button class="btn" style="height: var(--h-control-sm)">Assign anyway</button>
+                    </div>
+                  </div>
+                </sc-if>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4); border-top: var(--border) solid var(--line)">
+      <button class="btn quiet icon-left"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.75h5l3 3v9.5H4zM9 1.75v3h3"/></svg>Open settings.json</button>
+      <span class="spacer"></span>
+      <span class="muted small">Changes apply at once.</span>
+      <button class="btn primary">Close</button>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"page":{"editor":"enum","options":["appearance","keys"],"default":"appearance"},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = !!this.props.dark;
+    const page = this.props.page ?? 'appearance';
+    const section = (name) => ({ name, section: true, plain: false, editing: false });
+    const row = (name, keys, extra) => Object.assign({ name, keys, section: false, plain: true, editing: false, where: '', changed: '', rowClass: '' }, extra || {});
+    const shortcuts = [
+      section('File'),
+      row('New script', ['Ctrl+N']),
+      row('Save', ['Ctrl+S']),
+      row('Save as…', ['Ctrl+Shift+S']),
+      row('Close project', ['Ctrl+Shift+W'], { changed: 'changed · reset' }),
+      section('Run'),
+      row('Run', ['F5', 'Ctrl+Enter']),
+      row('Cancel', ['Escape']),
+      section('Table'),
+      row('New table', ['Ctrl+T']),
+      { name: 'Plot selected columns', section: false, plain: false, editing: true },
+      row('Fill down', ['Ctrl+D'], { where: 'grid' }),
+      row('Duplicate rows', ['Ctrl+Shift+D'], { where: 'grid' })
+    ];
+    return {
+      dark, mode: dark ? 'dark' : '',
+      appearance: page !== 'keys', keys: page === 'keys',
+      navAppearance: page !== 'keys' ? 'active' : '', navKeys: page === 'keys' ? 'active' : '',
+      shortcuts
+    };
+  }
+}
+</script>
+</body>
+</html>

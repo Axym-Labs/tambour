@@ -147,7 +147,7 @@ let private inlines (look: Palette.Look) (text: string) =
 
 /// A text's blocks as controls, one under another, in a look's colours.
 let view (look: Palette.Look) (text: string) : Control =
-    let panel = StackPanel(Spacing = 6.0)
+    let panel = StackPanel(Spacing = Tokens.Space.s2)
     let ink = SolidColorBrush look.Foreground
 
     for block in parse text do
@@ -158,15 +158,15 @@ let view (look: Palette.Look) (text: string) : Control =
                     Inlines = inlines look t,
                     Foreground = ink,
                     FontWeight = FontWeight.SemiBold,
-                    FontSize = (if level <= 2 then 15.0 else 14.0),
+                    FontSize = (if level <= 2 then Tokens.Type.title else Tokens.Type.ui),
                     TextWrapping = TextWrapping.Wrap,
-                    Margin = Thickness(0.0, 4.0, 0.0, 0.0)
+                    Margin = Thickness(0.0, Tokens.Space.s1, 0.0, 0.0)
                 )
                 :> Control
             | Paragraph t -> TextBlock(Inlines = inlines look t, Foreground = ink, TextWrapping = TextWrapping.Wrap)
             | Item t ->
                 let row = DockPanel()
-                let bullet = TextBlock(Text = "•", Foreground = ink, Margin = Thickness(4.0, 0.0, 8.0, 0.0))
+                let bullet = TextBlock(Text = "•", Foreground = ink, Margin = Thickness(Tokens.Space.s1, 0.0, Tokens.Space.s2, 0.0))
                 DockPanel.SetDock(bullet, Dock.Left)
                 row.Children.Add bullet
                 row.Children.Add(TextBlock(Inlines = inlines look t, Foreground = ink, TextWrapping = TextWrapping.Wrap))
@@ -174,8 +174,8 @@ let view (look: Palette.Look) (text: string) : Control =
             | Code t ->
                 Border(
                     Background = SolidColorBrush look.Raised,
-                    CornerRadius = CornerRadius 3.0,
-                    Padding = Thickness(8.0, 6.0),
+                    CornerRadius = CornerRadius Tokens.Radius.sm,
+                    Padding = Thickness(Tokens.Space.s2, Tokens.Space.s1),
                     Child = TextBlock(Text = t, FontFamily = Palette.code, Foreground = ink, TextWrapping = TextWrapping.NoWrap)
                 )
         )

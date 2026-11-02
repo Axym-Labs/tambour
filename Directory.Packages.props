@@ -5,8 +5,8 @@
        lines. -->
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-    <MareyVersion>1.0.0-dev.324</MareyVersion>
-    <MareyCommit>51037d0cc530907bfbc9154986f6bbb508c83069</MareyCommit>
+    <MareyVersion>1.0.0-dev.327</MareyVersion>
+    <MareyCommit>01cf9cb2a960e5706b24cfe6350d2df61309cebb</MareyCommit>
     <AvaloniaVersion>12.1.4</AvaloniaVersion>
   </PropertyGroup>
 

@@ -152,8 +152,8 @@ let ``the grid draws a frame over a million rows within 16 ms wherever it is scr
 [<AvaloniaFact>]
 let ``a row header selects its row, and the grid's commands are on its context menu`` () =
     let grid, window, edits, _ = shown trials
-    // Row 1's header: left of the cells, below the column headers (40 px) and row 0 (22 px).
-    let header row = Avalonia.Point(6.0, 40.0 + 22.0 * float row + 11.0)
+    // A row's header: left of the cells, below the column headers and the rows above it.
+    let header row = Avalonia.Point(6.0, 40.0 + Tokens.Height.gridRow * (float row + 0.5))
     window.MouseDown(header 1, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
     window.MouseUp(header 1, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
     Assert.Equal(({ Column = 0; Row = 1 }, { Column = 2; Row = 1 }), grid.Selection)
@@ -166,9 +166,102 @@ let ``a row header selects its row, and the grid's commands are on its context m
         |> Seq.choose (function :? MenuItem as m -> Some(string m.Header) | _ -> None)
         |> List.ofSeq
 
-    Assert.Equal<string list>(GridCommand.all |> List.map (fun (_, name, _) -> name), names)
+    // The grid's commands, then how the column is shown.
+    let layout = [ "_Hide column"; "Colla_pse column"; "Fit column _width"; "Show all colum_ns" ]
+    Assert.Equal<string list>((GridCommand.all |> List.map (fun (_, name, _) -> name)) @ layout, names)
 
     grid.Run GridCommand.DuplicateRows
     let expected = AddRows("trials", 3, trials.Columns |> List.map (fun c -> Values.slice 1 2 c.Values))
     Assert.Equal<TableEdit list>([ expected ], Seq.exactlyOne edits)
+    window.Close()
+
+/// Gate 16 (b), the columns: each is as wide as its content asks, within the tokens' bounds; a drag
+/// on a column's edge in the header resizes that column alone, and a double-click there fits it to
+/// its content again.
+[<AvaloniaFact>]
+let ``columns fit their content, and an edge dragged or double-clicked changes that column alone`` () =
+    let wide =
+        { Name = "wide"
+          Columns =
+            [ { Name = "n"; Unit = null; Values = Ints [| 1; 2; 3 |] }
+              { Name = "a header far longer than any column may be wide, so cut with an ellipsis"; Unit = "m"; Values = Floats [| 1.0; 2.0; 3.0 |] }
+              { Name = "note"; Unit = null; Values = Texts [| "short"; "a somewhat longer note than the others"; "" |] } ] }
+
+    let grid, window, _, _ = shown wide
+    let widths () = [ for j in 0..2 -> grid.ColumnWidth j ]
+    let before = widths ()
+    Assert.Equal(Tokens.Width.columnMax, before.[1])
+    Assert.True(before.[0] < before.[2], $"the narrow column is not narrower than the notes: {before}")
+    Assert.True(before |> List.forall (fun w -> w >= Tokens.Width.columnMin && w <= Tokens.Width.columnMax), $"a width out of bounds: {before}")
+
+    // A drag on the first column's edge, 50 px to the right.
+    let edge = grid.ColumnEdge 0
+    let y = 10.0
+    window.MouseMove(Avalonia.Point(edge, y))
+    window.MouseDown(Avalonia.Point(edge, y), Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    window.MouseMove(Avalonia.Point(edge + 50.0, y), Avalonia.Input.RawInputModifiers.LeftMouseButton)
+    window.MouseUp(Avalonia.Point(edge + 50.0, y), Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    Dispatcher.UIThread.RunJobs()
+    let dragged = widths ()
+    Assert.Equal(before.[0] + 50.0, dragged.[0], 3)
+    Assert.Equal<float list>(before.Tail, dragged.Tail)
+
+    // An edit makes the column anew: its width stays.
+    grid.Table <- Some { wide with Columns = { wide.Columns.[0] with Values = Ints [| 1; 2; 4 |] } :: wide.Columns.Tail }
+    Assert.Equal(dragged.[0], grid.ColumnWidth 0, 3)
+
+    // A double-click on the edge fits it again.
+    grid.AutoFit 0
+    Assert.Equal(before.[0], grid.ColumnWidth 0, 3)
+    Assert.Equal<float list>(before.Tail, (widths ()).Tail)
+    window.Close()
+
+/// Gate 16 (b), hiding and collapsing: a hidden column is nowhere on screen, a collapsed one keeps
+/// its place as a strip that a click opens again, the last column shown cannot be hidden, and the
+/// first column shown stays at the left however far the grid scrolls.
+[<AvaloniaFact>]
+let ``hidden columns go, collapsed ones keep their place, and the first stays while the rest scroll`` () =
+    // Twice what the window holds, so the grid scrolls in any font: twelve fitted in 900 px under
+    // Windows' Segoe UI, as they do in Inter.
+    let many =
+        { Name = "many"
+          Columns = [ for j in 0..23 ->{ Name = $"column {j}"; Unit = "m"; Values = Floats [| float j; 2.0 * float j |] } ] }
+
+    let grid, window, _, _ = shown many
+    let told = ResizeArray<GridLayout>()
+    grid.LayoutChanged.Add told.Add
+    let header (x: float) = grid.ColumnAt(Avalonia.Point(x, 10.0))
+    let across () = [ for x in 0.0 .. 4.0 .. 880.0 -> header x ] |> List.choose id |> List.distinct
+
+    grid.Hide 2
+    Assert.DoesNotContain(2, across ())
+    Assert.Equal<Set<string>>(set [ "column 2" ], (Seq.last told).Hidden)
+
+    grid.ToggleCollapsed 3
+    Assert.Equal(Tokens.Space.s3, grid.ColumnWidth 3)
+    Assert.Contains(3, across ())
+    let strip = grid.ColumnEdge 3 - grid.ColumnWidth 3 / 2.0
+    window.MouseDown(Avalonia.Point(strip, 10.0), Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    window.MouseUp(Avalonia.Point(strip, 10.0), Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    Dispatcher.UIThread.RunJobs()
+    Assert.True(grid.ColumnWidth 3 > Tokens.Space.s3, "a click on the strip did not open the column")
+
+    // Scrolled to the end: the first column still where it was, the scrolled ones after it.
+    let firstEdge = grid.ColumnEdge 0
+    grid.Left <- 11
+    Dispatcher.UIThread.RunJobs()
+    Assert.Equal(firstEdge, grid.ColumnEdge 0, 3)
+    Assert.Equal(Some 0, header (firstEdge - 5.0))
+    Assert.True(grid.Left > 1, $"the grid did not scroll: {grid.Left}")
+    Assert.Equal(Some(grid.Left + 1), header (firstEdge + 5.0)) // one hidden column before it
+
+    grid.ShowAll()
+    Assert.True((Seq.last told).Hidden.IsEmpty && (Seq.last told).Collapsed.IsEmpty)
+
+    // The last column shown stays.
+    let two = { Name = "two"; Columns = many.Columns |> List.truncate 2 }
+    grid.Table <- Some two
+    grid.Hide 0
+    grid.Hide 1
+    Assert.Equal<int list>([ 1 ], across ())
     window.Close()

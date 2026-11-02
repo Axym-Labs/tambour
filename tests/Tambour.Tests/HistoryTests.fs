@@ -22,7 +22,7 @@ let private typeIn (start: DateTime) (gap: TimeSpan) (offset: int) (text: string
     |> Seq.fold (fun h (i, c) -> record (start + gap * float i) true { Offset = offset + i; Removed = ""; Inserted = string c } h) h
 
 let private inserted (h: History) =
-    h.Done |> List.rev |> List.map (function Script edits -> edits |> List.map (fun e -> e.Inserted) |> String.concat "" | Tables _ -> "")
+    h.Done |> List.rev |> List.map (function Script edits -> edits |> List.map (fun e -> e.Inserted) |> String.concat "" | _ -> "")
 
 [<Fact>]
 let ``typing is grouped by word, and a line break and a pause end a group`` () =
@@ -316,7 +316,7 @@ let private replayTables (session: TableStep list) =
             edit (Tambour.Data.TableEdit.removeRows t row (min n (t.Rows - row)))
         | GridCommand(k, a, b, c, d) when width > 0 && t.Rows > 0 ->
             let c0, c1, r0, r1 = pick a width, pick b width, pick c t.Rows, pick d t.Rows
-            let s: Tambour.GridCommand.Selection = { C0 = min c0 c1; C1 = max c0 c1; R0 = min r0 r1; R1 = max r0 r1 }
+            let s: Tambour.GridCommand.Selection = { C0 = min c0 c1; C1 = max c0 c1; R0 = min r0 r1; R1 = max r0 r1; Hidden = Set.empty }
 
             match Tambour.GridCommand.edits gridKinds.[k] t s with
             | [] -> ()

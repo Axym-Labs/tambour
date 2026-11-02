@@ -238,8 +238,11 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
     let mutable stale = false
     let mutable recycleDue = false
 
+    /// Starts a worker, on the thread pool: not on the thread that asked, whose dispatcher may be
+    /// gone before the worker is ready (a window closed at once, a test over), leaving it running
+    /// with no one to end it.
     let start () : Task<WorkerProcess * Ready> =
-        task {
+        Task.Run<WorkerProcess * Ready>(fun () -> task {
             let! w = WorkerProcess.StartAsync(Role.worker, command)
             do! w.SendAsync(Request.Init init)
             let! first = w.Replies.ReadAsync().AsTask()
@@ -252,7 +255,7 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
             | other ->
                 w.Kill()
                 return failwith $"the worker answered Init with {other}"
-        }
+        })
 
     /// Sends requests to one worker in order.
     let sendAll (w: WorkerProcess) (requests: Request list) =
@@ -357,13 +360,20 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
 
     /// Starts the worker on duty and its spare, and returns once the one on duty is ready.
     member _.StartAsync() : Task =
-        task {
+        Task.Run<unit>(fun () -> task {
             let first = start ()
             spare <- start ()
             let! w, ready = first
-            lock gate (fun () -> current <- Some(w, ready))
-            forward w |> ignore
-        }
+
+            // Disposed while it started (a tab closed at once): the worker goes with it rather
+            // than going on duty for no one.
+            let kept =
+                lock gate (fun () ->
+                    if not disposed then current <- Some(w, ready)
+                    not disposed)
+
+            if kept then forward w |> ignore else w.Kill()
+        })
 
     /// What the worker on duty says.
     member _.Replies: ChannelReader<Reply> = replies.Reader
@@ -446,6 +456,127 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
                 )
                 |> ignore
 
+/// A workspace's workers, started when it first runs a script and ended when it drops them, so
+/// that a tab left in the background holds no process. Each time they start they are given what
+/// the workspace has (its tables, from `replay`, and the figure's size) and, after a drop, the
+/// last script run, before the request that started them. A request about the figure starts them
+/// only where a script has run; before any has, there is nothing for it to act on, and it is
+/// set aside. Their replies come through one reader however many times they were started. Their replies come through
+/// one reader however many times they were started.
+type LazyWorkers(command: Command, init: Init, replay: unit -> Request list) =
+    let gate = obj ()
+    let replies = Channel.CreateUnbounded<Reply>()
+    let mutable current: (Workers * Task * CancellationTokenSource) option = None
+    let mutable lastRun: Request option = None
+    /// The figure's size, as last sent, given to workers as they start.
+    let mutable lastSize: Request option = None
+    let mutable disposed = false
+    /// When they were last asked something or last answered.
+    let mutable used = DateTime.UtcNow
+
+    /// The workers, started if there are none: with the start's task, and whether they are new.
+    let ensure () =
+        lock gate (fun () ->
+            match current with
+            | Some(w, started, _) -> w, started, false
+            | None ->
+                let w = new Workers(command, init)
+                let started = w.StartAsync()
+                let stop = new CancellationTokenSource()
+
+                // Their replies on to the workspace's reader, until they are dropped.
+                task {
+                    try
+                        do! started
+
+                        while true do
+                            let! reply = w.Replies.ReadAsync(stop.Token).AsTask()
+                            used <- DateTime.UtcNow
+                            replies.Writer.TryWrite reply |> ignore
+                    with _ ->
+                        ()
+                }
+                |> ignore
+
+                current <- Some(w, started, stop)
+                w, started, true)
+
+    /// Sends one request, once the one before it has gone: a start's tables and figure size reach
+    /// the workers before any request made while they were starting.
+    let sendOne (request: Request) : Task =
+        task {
+            used <- DateTime.UtcNow
+
+            match request with
+            | Request.Live l when l.Kind = "size" -> lastSize <- Some request
+            | _ -> ()
+
+            let starts =
+                match request with
+                | Request.Evaluate _ -> true
+                | _ -> lastRun.IsSome || lock gate (fun () -> current.IsSome)
+
+            if not disposed && starts then
+                let w, started, fresh = ensure ()
+                do! started
+
+                if fresh then
+                    for r in replay () @ Option.toList lastSize do
+                        if not (obj.ReferenceEquals(r, request)) then do! w.SendAsync r
+
+                    match request, lastRun with
+                    | Request.Evaluate _, _
+                    | _, None -> ()
+                    | _, Some run -> do! w.SendAsync run
+
+                match request with
+                | Request.Evaluate _ -> lastRun <- Some request
+                | _ -> ()
+
+                do! w.SendAsync request
+        }
+
+    let mutable sending: Task = Task.CompletedTask
+
+    /// The start of the workers there are, or nothing to wait for while there are none.
+    member _.Started: Task =
+        lock gate (fun () ->
+            match current with
+            | Some(_, started, _) -> started
+            | None -> Task.CompletedTask)
+
+    /// Whether there are workers now.
+    member _.Live = lock gate (fun () -> current.IsSome)
+
+    member _.Replies: ChannelReader<Reply> = replies.Reader
+
+    /// How long since they were last asked something or last answered.
+    member _.Idle = DateTime.UtcNow - used
+
+    member _.SendAsync(request: Request) : Task =
+        lock gate (fun () ->
+            let next = sending.ContinueWith((fun (_: Task) -> sendOne request), TaskScheduler.Default).Unwrap()
+            sending <- next
+            next)
+
+    member _.CancelAsync() : Task =
+        match lock gate (fun () -> current) with
+        | Some(w, _, _) -> w.CancelAsync()
+        | None -> Task.CompletedTask
+
+    /// Ends the workers, if there are any; the next request starts them again.
+    member _.Drop() =
+        match lock gate (fun () -> let c = current in current <- None; c) with
+        | Some(w, _, stop) ->
+            stop.Cancel()
+            (w :> IDisposable).Dispose()
+        | None -> ()
+
+    interface IDisposable with
+        member this.Dispose() =
+            disposed <- true
+            this.Drop()
+
 /// The language service, as the editor asks it: one `tambour --analysis` process, started at once
 /// and again if it dies, each request answered by the reply with its id.
 type LanguageService(command: Command, init: AnalysisInit) =
@@ -462,8 +593,10 @@ type LanguageService(command: Command, init: AnalysisInit) =
 
             pending.Clear())
 
+    /// Starts the process, on the thread pool, as a worker is: its replies are read there rather
+    /// than on the dispatcher of whoever made the service, which may not be the one running.
     let start () : Task<ChildProcess<AnalysisRequest, AnalysisReply>> =
-        task {
+        Task.Run<ChildProcess<AnalysisRequest, AnalysisReply>>(fun () -> task {
             let! p = ChildProcess<AnalysisRequest, AnalysisReply>.StartAsync(Role.analysis, command)
             do! p.SendAsync(AnalysisRequest.Start init)
 
@@ -520,7 +653,7 @@ type LanguageService(command: Command, init: AnalysisInit) =
 
             pump () |> ignore
             return p
-        }
+        })
 
     let mutable child = start ()
 

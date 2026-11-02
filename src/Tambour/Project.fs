@@ -1,6 +1,10 @@
-/// A project is a directory: its `*.fsx` scripts and a `project.json` holding what the window
-/// needs to open it again, which script was open, the Skia settings the figures are measured and
-/// exported with, and the Marey the scripts were last run on. A single `.fsx` opens without one.
+/// A project is a directory: its `*.fsx` scripts, its tables, and a settings file holding what the
+/// window needs to open it again, which script was open, the Skia settings the figures are measured
+/// and exported with, and the Marey the scripts were last run on. A single `.fsx` opens without one.
+///
+/// A workspace's directory has its tables in `tables/` and its settings in `workspace.json`, laid
+/// out as a single file of Tambour's own would hold them. A project folder from before, its tables
+/// beside its scripts and its settings in `project.json`, opens and saves as it is.
 module Tambour.Project
 
 open System
@@ -10,6 +14,43 @@ open Tambour.Protocol
 
 [<Literal>]
 let FileName = "project.json"
+
+[<Literal>]
+let WorkspaceFile = "workspace.json"
+
+[<Literal>]
+let TablesDirectory = "tables"
+
+/// Whether a directory is laid out as a workspace rather than as a project folder from before.
+let isWorkspace (directory: string) =
+    File.Exists(Path.Combine(directory, WorkspaceFile)) || Directory.Exists(Path.Combine(directory, TablesDirectory))
+
+/// Lays a directory out as a workspace: its tables' directory made.
+let makeWorkspace (directory: string) =
+    Directory.CreateDirectory(Path.Combine(directory, TablesDirectory)) |> ignore
+
+/// Where the directory's tables are.
+let tablesIn (directory: string) =
+    if isWorkspace directory then Path.Combine(directory, TablesDirectory) else directory
+
+/// A table's file, from the directory and with `/` between, as the prelude names it: in `tables/`
+/// in a workspace, beside the scripts in a project folder.
+let tableFile (directory: string) (file: string) =
+    if isWorkspace directory then $"{TablesDirectory}/{file}" else file
+
+let private settingsPath (directory: string) =
+    Path.Combine(directory, (if isWorkspace directory then WorkspaceFile else FileName))
+
+/// A column's width, as dragged in the grid.
+type ColumnWidth = { Column: string; Width: float }
+
+/// How a table's columns were shown: the widths dragged, the columns hidden and those collapsed,
+/// by name.
+type TableColumns =
+    { Table: string
+      Widths: ColumnWidth[]
+      Hidden: string[]
+      Collapsed: string[] }
 
 /// What `project.json` holds.
 type Settings =
@@ -21,7 +62,9 @@ type Settings =
       /// Where the divider between the script and the figure is, as a fraction of the width.
       Split: float
       /// The height of the panel under the script, in px; 0 for the app's own.
-      Bottom: float }
+      Bottom: float
+      /// How each table's columns are shown; none in a file from before.
+      Columns: TableColumns[] }
 
 /// The Marey this app runs scripts on.
 let mareyVersion =
@@ -36,26 +79,31 @@ let defaults (script: string) =
       Marey = mareyVersion
       Skia = { Dpi = float Marey.Space.screenDpi; FontFiles = [||] }
       Split = 0.5
-      Bottom = 0.0 }
+      Bottom = 0.0
+      Columns = [||] }
 
 let private json = JsonSerializerOptions(WriteIndented = true)
 
 /// The project's settings, if it has a readable `project.json`.
 let read (directory: string) : Settings option =
-    let path = Path.Combine(directory, FileName)
+    let path = settingsPath directory
 
     if File.Exists path then
         try
             match JsonSerializer.Deserialize<Settings>(File.ReadAllText path, json) with
             | s when isNull (box s) -> None
-            | s -> Some { s with Skia = (if isNull (box s.Skia) then (defaults s.Script).Skia else s.Skia) }
+            | s ->
+                Some
+                    { s with
+                        Skia = (if isNull (box s.Skia) then (defaults s.Script).Skia else s.Skia)
+                        Columns = (if isNull s.Columns then [||] else s.Columns) }
         with _ ->
             None
     else
         None
 
 let write (directory: string) (settings: Settings) =
-    File.WriteAllText(Path.Combine(directory, FileName), JsonSerializer.Serialize(settings, json))
+    File.WriteAllText(settingsPath directory, JsonSerializer.Serialize(settings, json))
 
 /// The project's scripts, by name: not the prelude Tambour writes for its tables, which a script
 /// loads but no one writes.
@@ -71,8 +119,12 @@ type Opened =
       Project: string option
       Settings: Settings option }
 
+/// Whether a directory is a project's or a workspace's: it has their settings or tables there.
+let isProject (directory: string) =
+    isWorkspace directory || File.Exists(Path.Combine(directory, FileName))
+
 /// Opens a script, or a directory as a project: the script it last had open, or its first, or a
-/// new `figure.fsx`.
+/// new `figure.fsx`. A script in a project's directory opens in its project, with its tables.
 let resolve (path: string) : Opened =
     let path = Path.GetFullPath path
 
@@ -90,6 +142,13 @@ let resolve (path: string) : Opened =
           Project = Some path
           Settings = settings }
     else
-        { Script = path
-          Project = None
-          Settings = None }
+        let directory = Path.GetDirectoryName path
+
+        if isProject directory then
+            { Script = path
+              Project = Some directory
+              Settings = read directory }
+        else
+            { Script = path
+              Project = None
+              Settings = None }

@@ -376,6 +376,15 @@ let applyFix (script: string) (fix: Fix) =
             text.Substring(0, s) + e.Text + text.Substring t)
         script
 
+/// Whether a script is given its directory's table prelude without loading it: there is one beside
+/// it, and the script has no `#load` of it of its own.
+let loadsTables (path: string) (script: string) =
+    let directory = Path.GetDirectoryName(Path.GetFullPath path)
+
+    File.Exists(Path.Combine(directory, Tambour.Data.Prelude.FileName))
+    && Path.GetFileName path <> Tambour.Data.Prelude.FileName
+    && not (Tambour.Data.Prelude.loaded script)
+
 /// The language service for one prelude.
 type Service(init: AnalysisInit) =
     let checker = FSharpChecker.Create()
@@ -386,8 +395,8 @@ type Service(init: AnalysisInit) =
         | p when p.EndsWith "\n" -> p
         | p -> p + "\n"
 
-    /// The lines the prelude puts before the script.
-    let offset = prelude.Split('\n').Length - 1
+    /// The lines put before the script: the prelude's, and one each side for a workspace's tables.
+    let offset = prelude.Split('\n').Length + 1
     let references = referencesFor init.References |> Array.map (fun r -> "-r:" + r)
     let own = ownReferences ()
 
@@ -417,14 +426,23 @@ type Service(init: AnalysisInit) =
 
     let pathOf (path: string) = if String.IsNullOrEmpty path then Path.Combine(Environment.CurrentDirectory, "script.fsx") else path
 
-    /// What goes before a script: the prelude, or as many blank lines where the script opens with a
-    /// module of its own (the project's prelude.fsx), which must come first and is compiled, under
-    /// `#load`, without the prelude's opens.
-    let before (script: string) = if ownsModule script then String.replicate offset "\n" else prelude
+    /// What goes before a script: the prelude, and where the script's directory has the prelude of
+    /// its tables and the script does not load it itself, that loaded before and opened after, so
+    /// every script there has its tables without saying so; blank lines in their place otherwise,
+    /// the same number always. Only blank lines where the script opens with a module of its own
+    /// (the project's prelude.fsx), which must come first and is compiled, under `#load`, without
+    /// the prelude's opens.
+    let before (path: string) (script: string) =
+        if ownsModule script then
+            String.replicate offset "\n"
+        elif not (String.IsNullOrEmpty path) && loadsTables path script then
+            $"#load \"{Tambour.Data.Prelude.FileName}\"\n" + prelude + "open Prelude\n"
+        else
+            "\n" + prelude + "\n"
 
     let check (path: string) (script: string) =
+        let full = before path script + script
         let path = pathOf path
-        let full = before script + script
         let parse, answer =
             checker.ParseAndCheckFileInProject(path, full.GetHashCode(), SourceText.ofString full, optionsFor path full)
             |> Async.RunSynchronously

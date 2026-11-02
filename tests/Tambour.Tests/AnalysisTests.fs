@@ -199,10 +199,10 @@ let ``the project's prelude is checked as its own module, without problems`` () 
     Assert.Equal(4, error.StartLine)
     Assert.False(Analysis.ownsModule "module Nested =\n    let x = 1\n")
 
-/// A script that loads the project's prelude completes its tables by name; one that does not
-/// cannot see them.
+/// A script beside the project's prelude completes its tables by name, whether it loads the
+/// prelude itself or is given it; a script elsewhere cannot see them.
 [<Fact>]
-let ``a script that loads the prelude completes a table's name`` () =
+let ``a script beside the prelude completes a table's name, whether it loads it or not`` () =
     let dir = (Directory.CreateTempSubdirectory "tambour-complete").FullName
 
     let table: Tambour.Data.Table =
@@ -217,8 +217,11 @@ let ``a script that loads the prelude completes a table's name`` () =
         (service.Value.Complete { Id = 1; Text = text; Path = path; Line = lines.Length; Column = lines.[lines.Length - 1].Length }).Items
         |> Array.map (fun i -> i.Name)
 
-    Assert.Contains("pretrained", namesAt (Shell.newScriptWithTables + "let a = pre"))
-    Assert.DoesNotContain("pretrained", namesAt "let a = pre")
+    Assert.Contains("pretrained", namesAt "#load \"prelude.fsx\"\nopen Prelude\n\nlet a = pre")
+    Assert.Contains("pretrained", namesAt "let a = pre")
+    let elsewhere = Path.Combine((Directory.CreateTempSubdirectory "tambour-alone").FullName, "figure.fsx")
+    let lines = "let a = pre"
+    Assert.DoesNotContain("pretrained", (service.Value.Complete { Id = 2; Text = lines; Path = elsewhere; Line = 1; Column = lines.Length }).Items |> Array.map (fun i -> i.Name))
 
 /// A completion list's entry is described as its hover would be: its signature and its
 /// documentation; a name the list does not hold has nothing.

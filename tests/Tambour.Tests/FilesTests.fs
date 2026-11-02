@@ -93,6 +93,43 @@ let ``a project opens, saves, takes a change from disk back, and exports what re
     Assert.Equal(0, worst)
     window.Close()
 
+/// An export shows that it is under way and is cancelled like a run: Cancel ends it, nothing is
+/// written, and the next export is.
+[<AvaloniaFact>]
+let ``an export shows its progress and Cancel ends it`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-export-cancel").FullName
+    let script = Path.Combine(dir, "decay.fsx")
+    File.WriteAllText(script, decay)
+
+    let window = new Shell.MainWindow("", Some dir)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    let pane = window.GetVisualDescendants().OfType<FigurePane>().Single()
+    pumpUntil 30.0 "the figure" (fun () -> not (isNull pane.Picture))
+    let status (text: string) = window.GetVisualDescendants().OfType<TextBlock>().Any(fun t -> not (isNull t.Text) && t.Text = text)
+    let busy () = window.GetVisualDescendants().OfType<ProgressBar>().Any(fun b -> b.IsVisible && b.IsIndeterminate)
+
+    // Cancel straight after: no reply can have been taken yet, as they come on this thread.
+    let cancelled = Path.Combine(dir, "cancelled.png")
+    window.Post(Shell.ExportTo(cancelled, "png", 640.0, 400.0))
+    Assert.True(status "exporting cancelled.png…", "no word of the export under way")
+    Assert.True(busy (), "no sign of the export under way")
+    window.Post Shell.Cancel
+    Assert.True(status "export cancelled")
+    Assert.False(busy ())
+    // Its reply, if it was already on the way, is let go.
+    pumpUntil 30.0 "the figure again" (fun () -> not (isNull pane.Picture))
+    Thread.Sleep 500
+    Dispatcher.UIThread.RunJobs()
+    Assert.False(File.Exists cancelled)
+
+    // The worker is back for the next one, which is written.
+    let after = Path.Combine(dir, "after.png")
+    window.Post(Shell.ExportTo(after, "png", 640.0, 400.0))
+    pumpUntil 30.0 "the next export" (fun () -> File.Exists after && (try File.ReadAllBytes(after).Length > 0 with _ -> false))
+    pumpUntil 5.0 "the status" (fun () -> status "exported after.png" && not (busy ()))
+    window.Close()
+
 /// The tabs on the right: the figure's, then one per table.
 let private sheets (window: #Window) =
     window.GetVisualDescendants().OfType<TabControl>().Single(fun t -> t.Name = "sheets")
@@ -253,6 +290,46 @@ let ``two columns selected are plotted, and a row picked in the figure is marked
     window.Post(Shell.SelectTab 1)
     pumpUntil 10.0 "the grid shown again" (fun () -> window.GetVisualDescendants().OfType<TableGrid>().Any())
     Assert.Equal<Set<int>>(set [ 7 ], window.GetVisualDescendants().OfType<TableGrid>().Single().Marked)
+    window.Close()
+
+/// Columns with no unit, as a CSV from elsewhere has them, plotted: the block written for a float
+/// and for an int column compiles and draws, as it does for columns with units.
+[<AvaloniaFact>]
+let ``columns without units are plotted, and the block compiles`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-unitless").FullName
+
+    let runs: Tambour.Data.Table =
+        { Name = "runs"
+          Columns =
+            [ { Name = "step"; Unit = null; Values = Tambour.Data.Ints(Array.init 20 id) }
+              { Name = "auc"; Unit = null; Values = Tambour.Data.Floats(Array.init 20 (fun i -> 0.5 + 0.02 * float i)) }
+              { Name = "loss"; Unit = null; Values = Tambour.Data.Floats(Array.init 20 (fun i -> 1.0 / float (i + 1))) } ] }
+
+    Tambour.Data.Csv.writeFile (Path.Combine(dir, "runs.csv")) runs
+    File.WriteAllText(Path.Combine(dir, "figure.fsx"), "// Figures of the runs.\n")
+    Project.write dir (Project.defaults "figure.fsx")
+    let window = new Shell.MainWindow("", Some dir)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    let editor () = window.GetVisualDescendants().OfType<ScriptEditor>().Single()
+    pumpUntil 30.0 "the project's script" (fun () -> (editor ()).Text.StartsWith "// Figures")
+    let status () = window.GetVisualDescendants().OfType<TextBlock>() |> Seq.map (fun b -> b.Text) |> Seq.filter (fun t -> not (isNull t) && (t.StartsWith "ran in" || t.Contains "compile")) |> String.concat " | "
+    let pane () = window.GetVisualDescendants().OfType<FigurePane>().Single()
+
+    for columns, figure in [ [ 1; 2 ], "fig"; [ 0; 1 ], "fig2" ] do
+        window.Post(Shell.SelectTab 1)
+        pumpUntil 10.0 "the table's tab" (fun () -> window.GetVisualDescendants().OfType<TableGrid>().Any())
+        let grid = window.GetVisualDescendants().OfType<TableGrid>().Single()
+        grid.Select({ Column = List.head columns; Row = 0 }, { Column = List.last columns; Row = 0 })
+        window.Post Shell.PlotSelected
+        pumpUntil 10.0 "the block written" (fun () -> (editor ()).Text.Contains $"let {figure} =")
+
+        (try
+            pumpUntil 30.0 "a clean run" (fun () -> status().StartsWith "ran in")
+         with e -> failwith $"{e.Message}: {status ()}; {(editor ()).Text}")
+
+        pumpUntil 30.0 "the figure" (fun () -> not (isNull (pane ()).Picture))
+
     window.Close()
 
 /// A project with tables but no script yet opens a new script, not the prelude Tambour wrote for

@@ -283,10 +283,10 @@ type FigurePane() as this =
 
             match band with
             | Some r ->
-                dc.DrawRectangle(SolidColorBrush(Color.FromArgb(40uy, 30uy, 90uy, 200uy)), Pen(SolidColorBrush(Color.FromArgb(160uy, 30uy, 90uy, 200uy)), 1.0), r)
+                dc.DrawRectangle(SolidColorBrush look.Roles.Selected, Pen(SolidColorBrush look.Accent, Tokens.border), r)
             | None -> ()
 
-            let ring = Pen(SolidColorBrush(Color.FromRgb(230uy, 120uy, 0uy)), 2.0)
+            let ring = Pen(SolidColorBrush look.Roles.Pick, 2.0 * Tokens.border)
 
             for m in marks do
                 if Double.IsFinite m.X && Double.IsFinite m.Y then
@@ -295,7 +295,7 @@ type FigurePane() as this =
             match readout with
             | Some r when r.Visible && r.Figure = p.Figure && r.Lines.Length > 0 ->
                 let text =
-                    FormattedText(String.Join("\n", r.Lines), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Typeface.Default, 12.0, SolidColorBrush look.Text)
+                    FormattedText(String.Join("\n", r.Lines), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Typeface.Default, Tokens.Type.small, SolidColorBrush look.Text)
 
                 let x = if r.Right then r.X1 - 4.0 - text.Width - 8.0 else r.X0 + 4.0
                 let box = Rect(x, r.Y0 + 4.0, text.Width + 8.0, text.Height + 4.0)

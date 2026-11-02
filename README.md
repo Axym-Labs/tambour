@@ -84,6 +84,13 @@ Three more checks run the app as a user meets it, each exiting 0 when it holds:
 - `tambour --check-package`: a script opened, drawn, its unit error shown and taken back, an
   action applied and taken back, and a PNG exported that `renderPng` draws pixel for pixel.
 
+On a Wayland desktop the app draws through XWayland, which tells it no scaling per screen; at start
+it asks the compositor and X11 for each screen and sets `AVALONIA_SCREEN_SCALE_FACTORS` from them,
+unless a scaling of the user's own is set (`AVALONIA_SCREEN_SCALE_FACTORS`,
+`AVALONIA_GLOBAL_SCALE_FACTOR`, `QT_SCREEN_SCALE_FACTORS`, `QT_SCALE_FACTOR`). `tambour
+--check-scaling` prints what both said and the factors. A scale changed while the app runs takes
+effect at its next start.
+
 ## Packages
 
 `tools/package.sh [version]` writes to `artifacts/package` a self-contained Linux tarball (and an

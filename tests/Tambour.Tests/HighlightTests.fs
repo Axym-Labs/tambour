@@ -341,3 +341,18 @@ let ``the editor follows the app's theme`` () =
     Assert.Equal(Palette.light.Background, (editor.Editor.Background :?> ISolidColorBrush).Color)
     window.Close()
 
+
+/// A hover's tip goes above the word where it fits, below it where only that fits, and where
+/// neither does to the side with more room: never off the window on the side it had no room.
+[<Fact>]
+let ``a tip goes to the side of the word with room for it`` () =
+    let window = Avalonia.Rect(0.0, 0.0, 1000.0, 500.0)
+    let word top = Avalonia.Rect(100.0, top, 40.0, 20.0)
+    let tip height = Avalonia.Size(400.0, height)
+    Assert.Equal(Tip.Above, Tip.side (word 300.0) (tip 200.0) window)
+    // Near the top: no room above, room below.
+    Assert.Equal(Tip.Below, Tip.side (word 40.0) (tip 200.0) window)
+    // Taller than either side: the larger one, below for a word near the top (the reported case)…
+    Assert.Equal(Tip.Below, Tip.side (word 40.0) (tip 470.0) window)
+    // …and above for one near the bottom.
+    Assert.Equal(Tip.Above, Tip.side (word 440.0) (tip 470.0) window)
