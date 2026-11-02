@@ -2368,6 +2368,13 @@ let workspaceName (model: Model) =
     | Some file -> Path.GetFileNameWithoutExtension file
     | None -> scriptName model
 
+/// What a workspace's directory is called where it is shown: the bundle's file it was unpacked
+/// from, not its cache's name, or the directory's own.
+let folderName (bundle: string option) (dir: string) =
+    match bundle with
+    | Some file -> Path.GetFileName file
+    | None -> Path.GetFileName dir
+
 /// The window's title: the script's name, and its bundle's, marked while anything is unsaved.
 let title (model: Model) =
     let mark = if (unsaved model).IsEmpty then "" else " •"
@@ -2898,7 +2905,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                             Border.child (paneAction "M8,3.5 V12.5 M3.5,8 H12.5" "New script (Ctrl+N)" false (fun () -> dispatch NewScript))
                                         ]
                                         TextBlock.create [
-                                            TextBlock.text (Path.GetFileName dir)
+                                            TextBlock.text (folderName model.Bundle dir)
                                             TextBlock.fontSize Tokens.Type.title
                                             TextBlock.fontWeight FontWeight.SemiBold
                                             TextBlock.verticalAlignment VerticalAlignment.Center
@@ -3900,7 +3907,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
             if active < 0 then None
             else
                 let w = workspaces.[active]
-                w.Project |> Option.map (fun dir -> { Name = Path.GetFileName dir; Skia = w.Skia; Set = fun s -> w.Post(SetSkia s) })
+                w.Project |> Option.map (fun dir -> { Name = folderName w.Bundle dir; Skia = w.Skia; Set = fun s -> w.Post(SetSkia s) })
 
         let dialog = PreferencesView.PreferencesWindow(shortcuts, openPath, project)
         dialog.ShowDialog this |> ignore

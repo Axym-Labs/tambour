@@ -1073,6 +1073,10 @@ let ``a new workspace saves as one file and opens again from it`` () =
     Assert.Equal<string list>([ file ], window.Paths)
     Assert.Equal("paper", window.Active.TabName)
     Assert.Contains("paper.fsx in paper.tambour", window.Title)
+    // The files pane is headed by the file, not by the cache it is unpacked into.
+    let shown = window.GetVisualDescendants().OfType<TextBlock>() |> Seq.map (fun t -> t.Text) |> List.ofSeq
+    Assert.Contains("paper.tambour", shown)
+    Assert.DoesNotContain(shown, fun t -> not (isNull t) && t.StartsWith "paper-")
     Assert.Equal<string list>([ "mimetype"; "paper.fsx"; "tables/table.csv"; Project.WorkspaceFile ] |> List.sort, entries file)
     let cache = Bundle.cacheOf file
     Assert.True(Directory.Exists cache)
