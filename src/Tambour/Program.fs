@@ -18,8 +18,9 @@ let private window (path: string option) =
     App.Theme <- preferences.Theme
     Preferences.Live.Current <- preferences
 
-    // The app's desktop entry and icon, by which a Wayland shell shows its windows: written as the
-    // window is made, once the app's assets can be read.
+    // The app's desktop entry, icon and file type: a Wayland shell shows its windows by them, and a
+    // file manager opens a .tambour with it. Written as the window is made, once the app's assets
+    // can be read.
     let entry () =
         if System.OperatingSystem.IsLinux() then
             use stream = Platform.AssetLoader.Open(System.Uri "avares://tambour/Assets/tambour.png")
@@ -29,7 +30,7 @@ let private window (path: string option) =
 
             System.Threading.Tasks.Task.Run(fun () ->
                 try
-                    Association.entry (Association.dataDirectory ()) (Association.executable ()) icon |> ignore
+                    Association.linux (Association.dataDirectory ()) (Association.executable ()) icon true |> ignore
                 with _ ->
                     ())
             |> ignore
