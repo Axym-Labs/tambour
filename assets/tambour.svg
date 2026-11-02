@@ -18,7 +18,6 @@
   </defs>
   <!-- the paper on a smoked drum; the rest is drawn 56 lower, and the tile's clip with it -->
   <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#soot)"/>
-  <rect x="36" y="36" width="952" height="952" rx="212" fill="none" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="8"/>
   <g transform="translate(0 56)">
     <g clip-path="url(#tile)">
       <!-- the chronograph's time marks under the trace -->

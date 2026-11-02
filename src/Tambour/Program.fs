@@ -18,6 +18,19 @@ let private window (path: string option) =
     App.Theme <- preferences.Theme
     Preferences.Live.Current <- preferences
     App.MainWindow <- fun () -> Shell.MainWindow.Start path :> Window
+
+    // The app's desktop entry and icon, by which a Wayland shell shows its windows.
+    if System.OperatingSystem.IsLinux() then
+        System.Threading.Tasks.Task.Run(fun () ->
+            try
+                use stream = Platform.AssetLoader.Open(System.Uri "avares://tambour/Assets/tambour.png")
+                use bytes = new System.IO.MemoryStream()
+                stream.CopyTo bytes
+                Association.entry (Association.dataDirectory ()) (Association.executable ()) (bytes.ToArray()) |> ignore
+            with _ ->
+                ())
+        |> ignore
+
     // Each screen's scaling, which Avalonia under XWayland cannot find out for itself.
     Scaling.apply () |> ignore
     App.builder().StartWithClassicDesktopLifetime [||]
