@@ -221,9 +221,11 @@ let ``columns fit their content, and an edge dragged or double-clicked changes t
 /// first column shown stays at the left however far the grid scrolls.
 [<AvaloniaFact>]
 let ``hidden columns go, collapsed ones keep their place, and the first stays while the rest scroll`` () =
+    // Twice what the window holds, so the grid scrolls in any font: twelve fitted in 900 px under
+    // Windows' Segoe UI, as they do in Inter.
     let many =
         { Name = "many"
-          Columns = [ for j in 0..11 -> { Name = $"column {j}"; Unit = "m"; Values = Floats [| float j; 2.0 * float j |] } ] }
+          Columns = [ for j in 0..23 ->{ Name = $"column {j}"; Unit = "m"; Values = Floats [| float j; 2.0 * float j |] } ] }
 
     let grid, window, _, _ = shown many
     let told = ResizeArray<GridLayout>()
