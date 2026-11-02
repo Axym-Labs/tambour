@@ -97,6 +97,10 @@ from the folder; nothing is installed, and deleting the folder removes it apart 
 The first start is slower while Windows scans the newly unpacked files. Preferences → Recent files
 → *Open .tambour files with Tambour* registers the file type for the current user.
 
+`tambour.exe` is a windowed program. A check started from a terminal writes to that terminal, but
+the prompt comes back before the check ends; in `cmd`, `start /wait tambour.exe --check-package`
+waits for it and leaves its exit code in `%errorlevel%`.
+
 The package is not code-signed yet, so Windows treats it as coming from an unknown publisher:
 
 - **SmartScreen** says "Windows protected your PC" on the first start. *More info* → *Run anyway*
