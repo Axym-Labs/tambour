@@ -5,6 +5,7 @@ module Tambour.Tests.EditorTests
 open System
 open System.Diagnostics
 open System.IO
+open System.Linq
 open System.Threading
 open Avalonia.Controls
 open Avalonia.Headless
@@ -177,3 +178,56 @@ let ``an editor gives its colouring back when its window closes, and takes it ag
     Assert.Equal("Classes", (Seq.last transformers).GetType().Name)
     Assert.Equal(1, transformers |> Seq.filter (fun t -> t.GetType().Name = "Classes") |> Seq.length)
     second.Close()
+
+/// A call's fixes are offered only while the text is the one checked: an edit anywhere takes them
+/// away until the next check. The right button on the call offers them; on a line without one it
+/// opens nothing.
+[<AvaloniaFact>]
+let ``a call's fixes are offered while the text is the one checked, and on the right button`` () =
+    use language = new LanguageService(command, { References = [||]; Prelude = Shell.prelude })
+    let editor = ScriptEditor(Language = language)
+    let window = Window(Width = 800.0, Height = 500.0, Content = editor)
+    window.Show()
+
+    let script =
+        "let t = [| 0.0<s>; 1.0<s> |]\nlet x = [| 0.0<m>; 2.0<m> |]\nlet figure = Chart.lineIn t x\n"
+
+    editor.Text <- script
+    pumpUntil 30.0 "the finding" (fun () -> editor.Findings.Length > 0)
+    let call = script.IndexOf "lineIn"
+
+    // Typed at the end: the call is where it was, but the check is not of this text.
+    editor.Editor.CaretOffset <- editor.Text.Length
+    editor.Editor.TextArea.PerformTextInput "// "
+    Assert.False(editor.OfferFixes call)
+    Assert.Null editor.FixMenu
+    pumpUntil 30.0 "the check of the edited text" (fun () -> editor.OfferFixes call)
+    Assert.NotNull editor.FixMenu
+    editor.FixMenu.Close()
+    Dispatcher.UIThread.RunJobs()
+    Assert.Null editor.FixMenu
+
+    let pointAt (offset: int) =
+        let view = editor.Editor.TextArea.TextView
+        let location = editor.Editor.Document.GetLocation offset
+
+        let p =
+            view.GetVisualPosition(AvaloniaEdit.TextViewPosition(location), AvaloniaEdit.Rendering.VisualYPosition.LineMiddle)
+            - view.ScrollOffset
+
+        (Avalonia.VisualExtensions.TranslatePoint(view, p + Avalonia.Point(2.0, 0.0), window)).Value
+
+    let rightClick (offset: int) =
+        let at = pointAt offset
+        window.MouseDown(at, Avalonia.Input.MouseButton.Right, Avalonia.Input.RawInputModifiers.None)
+        window.MouseUp(at, Avalonia.Input.MouseButton.Right, Avalonia.Input.RawInputModifiers.None)
+        Dispatcher.UIThread.RunJobs()
+
+    rightClick (script.IndexOf "[|")
+    Assert.Null editor.FixMenu
+    rightClick call
+    Assert.NotNull editor.FixMenu
+    let item = editor.FixMenu.Items.OfType<MenuItem>() |> Seq.exactlyOne
+    Assert.Equal("Insert U.second U.metre", string item.Header)
+    editor.FixMenu.Close()
+    window.Close()
