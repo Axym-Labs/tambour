@@ -129,10 +129,11 @@ type ChildProcess<'request, 'reply> private
     member _.Exited: Task = exited
 
     /// Starts this app in the role and waits for it to connect. It ends when the process `app`
-    /// does, this one unless stated.
-    static member StartAsync(role: Role<'request, 'reply>, command: Command, ?app: int) : Task<ChildProcess<'request, 'reply>> =
+    /// does, this one unless stated, and is killed at once if `cancel` is cancelled first.
+    static member StartAsync(role: Role<'request, 'reply>, command: Command, ?app: int, ?cancel: CancellationToken) : Task<ChildProcess<'request, 'reply>> =
         task {
             let app = defaultArg app Environment.ProcessId
+            let cancel = defaultArg cancel CancellationToken.None
             let path = Paths.socketPath $"{role.Flag.TrimStart('-')}-{Environment.ProcessId}-{Guid.NewGuid().ToString().Substring(0, 8)}"
 
             if File.Exists path then
@@ -163,7 +164,8 @@ type ChildProcess<'request, 'reply> private
             proc.BeginOutputReadLine()
             proc.BeginErrorReadLine()
 
-            use timeout = new CancellationTokenSource(ChildProcess<'request, 'reply>.ConnectTimeout)
+            use timeout = CancellationTokenSource.CreateLinkedTokenSource cancel
+            timeout.CancelAfter ChildProcess<'request, 'reply>.ConnectTimeout
             let accept = listener.AcceptAsync(timeout.Token).AsTask()
             let! first = Task.WhenAny(accept, proc.WaitForExitAsync(timeout.Token))
 
@@ -176,7 +178,11 @@ type ChildProcess<'request, 'reply> private
                 ProcessTree.kill proc
 
                 let said = lock log (fun () -> log.ToString().Trim())
-                return failwith $"the {role.Flag.TrimStart('-')} did not connect: {said}"
+
+                if cancel.IsCancellationRequested then
+                    return failwith $"the {role.Flag.TrimStart('-')} was no longer wanted when it connected"
+                else
+                    return failwith $"the {role.Flag.TrimStart('-')} did not connect: {said}"
             else
                 let connection = new Connection(new NetworkStream(accept.Result, true))
                 let channel = Channel.CreateUnbounded<'reply>(UnboundedChannelOptions(SingleWriter = true))
@@ -221,6 +227,10 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
     let mutable current: (WorkerProcess * Ready) option = None
     let mutable spare: Task<WorkerProcess * Ready> = null
     let mutable disposed = false
+    /// Cancelled on Dispose: a worker still connecting then is killed at once.
+    let closing = new CancellationTokenSource()
+    /// Workers connected and not yet ready, which Dispose kills too.
+    let booting = Collections.Generic.HashSet<WorkerProcess>(HashIdentity.Reference)
     /// The spare being put on duty, which a request sent meanwhile waits for.
     let mutable promoting: Task = Task.CompletedTask
 
@@ -243,18 +253,33 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
     /// with no one to end it.
     let start () : Task<WorkerProcess * Ready> =
         Task.Run<WorkerProcess * Ready>(fun () -> task {
-            let! w = WorkerProcess.StartAsync(Role.worker, command)
-            do! w.SendAsync(Request.Init init)
-            let! first = w.Replies.ReadAsync().AsTask()
+            let! w = WorkerProcess.StartAsync(Role.worker, command, cancel = closing.Token)
 
-            match first with
-            | Reply.Ready r -> return w, r
-            | Reply.Failed message ->
+            // Until it is ready, Dispose ends it at once: its Init is the costly part of a start,
+            // and a spare no one will use should not take the CPU from whatever runs next.
+            let wanted =
+                lock gate (fun () ->
+                    if not disposed then booting.Add w |> ignore
+                    not disposed)
+
+            if not wanted then
                 w.Kill()
-                return failwith message
-            | other ->
-                w.Kill()
-                return failwith $"the worker answered Init with {other}"
+                return failwith "the workers were closed while this one started"
+            else
+                try
+                    do! w.SendAsync(Request.Init init)
+                    let! first = w.Replies.ReadAsync().AsTask()
+
+                    match first with
+                    | Reply.Ready r -> return w, r
+                    | Reply.Failed message ->
+                        w.Kill()
+                        return failwith message
+                    | other ->
+                        w.Kill()
+                        return failwith $"the worker answered Init with {other}"
+                finally
+                    lock gate (fun () -> booting.Remove w |> ignore)
         })
 
     /// Sends requests to one worker in order.
@@ -363,16 +388,21 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
         Task.Run<unit>(fun () -> task {
             let first = start ()
             spare <- start ()
-            let! w, ready = first
 
-            // Disposed while it started (a tab closed at once): the worker goes with it rather
-            // than going on duty for no one.
-            let kept =
-                lock gate (fun () ->
-                    if not disposed then current <- Some(w, ready)
-                    not disposed)
+            try
+                let! w, ready = first
 
-            if kept then forward w |> ignore else w.Kill()
+                // Disposed while it started (a tab closed at once): the worker goes with it rather
+                // than going on duty for no one.
+                let kept =
+                    lock gate (fun () ->
+                        if not disposed then current <- Some(w, ready)
+                        not disposed)
+
+                if kept then forward w |> ignore else w.Kill()
+            with _ when lock gate (fun () -> disposed) ->
+                // Ended by Dispose while it started: nothing failed that anyone waits on.
+                ()
         })
 
     /// What the worker on duty says.
@@ -437,10 +467,20 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
     /// once the spare is on duty.
     member _.CancelAsync() : Task = lock gate (fun () -> promote false)
 
+    /// Completes when the spare is ready to go on duty, or has failed to start.
+    member _.SpareReady: Task =
+        lock gate (fun () -> if isNull spare then Task.CompletedTask else spare.ContinueWith(fun (_: Task) -> ()))
+
     interface IDisposable with
         member _.Dispose() =
             lock gate (fun () ->
                 disposed <- true
+                closing.Cancel()
+
+                for w in booting do
+                    w.Kill()
+
+                booting.Clear()
 
                 match current with
                 | Some(w, _) -> w.Kill()
@@ -451,7 +491,7 @@ type Workers(command: Command, init: Init, heapLimit: int64) =
             // A spare already started is killed here, before the app can exit, not on another thread.
             if not (isNull spare) then
                 spare.ContinueWith(
-                    (fun (t: Task<WorkerProcess * Ready>) -> if t.IsCompletedSuccessfully then (fst t.Result).Kill()),
+                    (fun (t: Task<WorkerProcess * Ready>) -> if t.IsCompletedSuccessfully then (fst t.Result).Kill() else t.Exception |> ignore),
                     TaskContinuationOptions.ExecuteSynchronously
                 )
                 |> ignore
@@ -582,6 +622,8 @@ type LazyWorkers(command: Command, init: Init, replay: unit -> Request list) =
 type LanguageService(command: Command, init: AnalysisInit) =
 
     let gate = obj ()
+    /// Cancelled on Dispose: a process still connecting then is killed at once.
+    let closing = new CancellationTokenSource()
     let pending = Collections.Generic.Dictionary<int, TaskCompletionSource<AnalysisReply>>()
     let mutable next = 0
     let mutable disposed = false
@@ -597,7 +639,13 @@ type LanguageService(command: Command, init: AnalysisInit) =
     /// than on the dispatcher of whoever made the service, which may not be the one running.
     let start () : Task<ChildProcess<AnalysisRequest, AnalysisReply>> =
         Task.Run<ChildProcess<AnalysisRequest, AnalysisReply>>(fun () -> task {
-            let! p = ChildProcess<AnalysisRequest, AnalysisReply>.StartAsync(Role.analysis, command)
+            let! p = ChildProcess<AnalysisRequest, AnalysisReply>.StartAsync(Role.analysis, command, cancel = closing.Token)
+
+            // Closed while it connected: ended before its Start, as a worker's spare is.
+            if disposed then
+                p.Kill()
+                failwith "the language service was closed while it started"
+
             do! p.SendAsync(AnalysisRequest.Start init)
 
             match! p.Replies.ReadAsync().AsTask() with
@@ -745,11 +793,12 @@ type LanguageService(command: Command, init: AnalysisInit) =
     interface IDisposable with
         member _.Dispose() =
             disposed <- true
+            closing.Cancel()
             failAll "the language service was closed"
 
             // A process already started is killed here, before the app can exit, not on another thread.
             child.ContinueWith(
-                (fun (t: Task<ChildProcess<AnalysisRequest, AnalysisReply>>) -> if t.IsCompletedSuccessfully then t.Result.Kill()),
+                (fun (t: Task<ChildProcess<AnalysisRequest, AnalysisReply>>) -> if t.IsCompletedSuccessfully then t.Result.Kill() else t.Exception |> ignore),
                 TaskContinuationOptions.ExecuteSynchronously
             )
             |> ignore
