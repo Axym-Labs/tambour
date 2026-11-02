@@ -82,6 +82,10 @@ type App() =
         let bare = Style(fun x -> x.OfType<TabControl>().Class("bare").Template().OfType<Avalonia.Controls.Presenters.ItemsPresenter>())
         bare.Setters.Add(Setter(Visual.IsVisibleProperty, false))
         this.Styles.Add bare
+        // Every window, the main one, Preferences and the dialogs, under the app's icon.
+        let icon = Style(fun x -> x.Is<Window>())
+        icon.Setters.Add(Setter(Window.IconProperty, WindowIcon(Platform.AssetLoader.Open(Uri "avares://tambour/Assets/tambour.png"))))
+        this.Styles.Add icon
         // AvaloniaEdit's control template.
         this.Styles.Add(Avalonia.Markup.Xaml.Styling.StyleInclude(Uri "avares://Tambour", Source = Uri "avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml"))
         this.RequestedThemeVariant <- App.VariantOf App.Theme

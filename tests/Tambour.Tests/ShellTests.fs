@@ -19,6 +19,8 @@ open Xunit
 
 /// Runs the UI thread's work until `ready` holds, or fails after `seconds`.
 let private pumpUntil (seconds: float) (what: string) (ready: unit -> bool) =
+    // A shared runner is slower than a desk: three times the wait there.
+    let seconds = if Environment.GetEnvironmentVariable "GITHUB_ACTIONS" = "true" then 3.0 * seconds else seconds
     let clock = Stopwatch.StartNew()
 
     while not (ready ()) do

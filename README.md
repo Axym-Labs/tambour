@@ -1,3 +1,5 @@
+<img src="assets/tambour.svg" alt="" width="96" align="right">
+
 # Tambour
 
 A desktop application for measured data, built on [Marey](https://github.com/Axym-Labs/marey): a

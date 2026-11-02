@@ -118,8 +118,8 @@ let private figures () =
       "scatter, 10^4 points", scatter 10_000 ]
     |> List.map (fun (label, figure) -> label, Chart.toScene extent figure)
 
-/// The limit a million points has from its bytes' arrival to the screen. A shared CI runner,
-/// painting in software, is held to three times it, as the timed tests are.
+/// The limit a million points has from its bytes' arrival to the screen. A shared CI runner is
+/// held to three times it, as the timed tests are.
 let private arrivalLimit =
     if Environment.GetEnvironmentVariable "GITHUB_ACTIONS" = "true" then 300.0 else 100.0
 
@@ -202,12 +202,20 @@ let private check (asked: float option) (pane: FigurePane) (window: Controls.Win
 
             say $"""{(if held then "holds" else "FAILS")}  {label}, {path}, scaling {scaling}, canvas {backend}: away from an edge at most {c.WorstAwayFromEdge}/255 (limit 4; {c.AwayOver4} pixels over), mean {c.Mean:F3}/255 (limit 0.5), largest {c.Worst}/255"""
 
-        match pane.GpuFailure with
-        | Some reason ->
+        // A driver drawing on the CPU, as a CI runner's, is timed against no GPU's limit.
+        let software =
+            pane.GpuRenderer
+            |> Option.filter (fun d -> [ "llvmpipe"; "softpipe"; "SwiftShader"; "Microsoft Basic Render" ] |> List.exists d.Contains)
+
+        match pane.GpuFailure, software with
+        | Some reason, _ ->
             // The vectors would take seconds; there is nothing here to time.
             say $"not measured  10^6 points: no GPU renderer on this machine ({reason})"
             return ok
-        | None ->
+        | None, Some driver ->
+            say $"not measured  10^6 points: the GPU renderer draws in software here ({driver})"
+            return ok
+        | None, None ->
 
         // A million points, from the worker's bytes to the screen.
         let node = Chart.toScene extent (scatter 1_000_000)
