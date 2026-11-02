@@ -50,3 +50,13 @@ let configDirectory () : string =
         match Environment.GetEnvironmentVariable "XDG_CONFIG_HOME" with
         | dir when not (String.IsNullOrEmpty dir) -> Path.Combine(dir, "tambour")
         | _ -> Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".config", "tambour")
+
+/// The directory for what the app keeps only while it needs it: `$XDG_CACHE_HOME/tambour`
+/// (`~/.cache/tambour` where that is unset), `%LOCALAPPDATA%\Tambour` on Windows.
+let cacheDirectory () : string =
+    if OperatingSystem.IsWindows() then
+        Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.LocalApplicationData, "Tambour")
+    else
+        match Environment.GetEnvironmentVariable "XDG_CACHE_HOME" with
+        | dir when not (String.IsNullOrEmpty dir) -> Path.Combine(dir, "tambour")
+        | _ -> Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".cache", "tambour")

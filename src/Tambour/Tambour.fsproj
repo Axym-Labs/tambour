@@ -25,6 +25,7 @@
     <Compile Include="App.fs" />
     <Compile Include="PreferencesView.fs" />
     <Compile Include="Project.fs" />
+    <Compile Include="Bundle.fs" />
     <Compile Include="Tables.fs" />
     <Compile Include="Plotting.fs" />
     <Compile Include="Shell.fs" />
