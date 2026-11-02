@@ -831,13 +831,15 @@ type TableGrid() as this =
 
     let clipboard () = TopLevel.GetTopLevel(this) |> Option.ofObj |> Option.map (fun top -> top.Clipboard)
 
-    /// The clipboard's text, read and handed on on the UI thread.
+    /// The clipboard's text, read and handed on on the UI thread, the one this was asked on.
     let withPasted (f: string[][] -> unit) =
         match clipboard () with
         | Some board ->
+            let ui = Threading.Dispatcher.UIThread
+
             board.TryGetTextAsync().ContinueWith(fun (t: Threading.Tasks.Task<string>) ->
                 if t.IsCompletedSuccessfully && not (isNull t.Result) then
-                    Threading.Dispatcher.UIThread.Post(fun () -> f (CellText.ofTsv t.Result)))
+                    ui.Post(fun () -> f (CellText.ofTsv t.Result)))
             |> ignore
         | None -> ()
 

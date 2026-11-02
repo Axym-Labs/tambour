@@ -3531,7 +3531,11 @@ type Workspace(script: string, path: string option, language: LanguageService, t
         |> Program.withHost this
         |> Program.withSubscription (subscriptions env this titled (fun d -> dispatch <- d))
         |> Program.withTermination (function Ended -> true | _ -> false) ignore
-        |> Program.runWithAvaloniaSyncDispatch ()
+        // Messages from other threads (a task's result, a file watcher) go to the dispatcher the
+        // workspace was made on. Avalonia's own sync dispatch reads `Dispatcher.UIThread` on the
+        // calling thread, which, once a headless test's application is torn down, makes a new
+        // dispatcher there and breaks the next test's start.
+        |> Program.runWithDispatch (fun dispatch msg -> if ui.CheckAccess() then dispatch msg else ui.Post(fun () -> dispatch msg)) ()
 
     /// Sends the workspace's loop a message, as its own controls do.
     member _.Post(msg: Msg) = dispatch msg

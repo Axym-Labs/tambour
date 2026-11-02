@@ -532,10 +532,12 @@ type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit, proje
 
         match watcher with
         | Some w ->
-            let changed = FileSystemEventHandler(fun _ _ -> Dispatcher.UIThread.Post(fun () -> reread ()))
+            // The watcher's events come on the thread pool: they go to the dispatcher this was made on.
+            let ui = Dispatcher.UIThread
+            let changed = FileSystemEventHandler(fun _ _ -> ui.Post(fun () -> reread ()))
             w.Changed.AddHandler changed
             w.Created.AddHandler changed
-            w.Renamed.AddHandler(RenamedEventHandler(fun _ _ -> Dispatcher.UIThread.Post(fun () -> reread ())))
+            w.Renamed.AddHandler(RenamedEventHandler(fun _ _ -> ui.Post(fun () -> reread ())))
             this.Closed.Add(fun _ -> w.Dispose())
         | None -> ()
 
