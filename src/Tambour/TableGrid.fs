@@ -288,9 +288,16 @@ type private Hit =
     | OnColumnHeader of int
     | OnRowHeader of int
 
+/// What a drag with the left button, begun on the grid, selects as it goes.
+type private Drag =
+    | Cells
+    | Columns
+    | Rows
+
 /// The table grid: a table drawn from its column arrays, only the cells in view, so a million rows
-/// scroll as ten do. Cells are selected with the pointer and the keys, edited in place (typed into,
-/// or Enter or F2), cleared with Delete, copied and pasted as a spreadsheet does. Every change is
+/// scroll as ten do. Cells are selected with the pointer and the keys, a block of them by dragging
+/// and further blocks with Ctrl, edited in place (typed into, or Enter or F2), cleared with Delete,
+/// copied and pasted as a spreadsheet does. Every change is
 /// reported as table edits, holding what they replace; the grid changes its table only when it is
 /// given a new one.
 type TableGrid() as this =
@@ -316,6 +323,9 @@ type TableGrid() as this =
     let mutable left = 0
     let mutable anchor = { Column = 0; Row = 0 }
     let mutable focus = { Column = 0; Row = 0 }
+    /// The blocks selected before the one from `anchor` to `focus`, with Ctrl, latest first.
+    let mutable others: (CellRef * CellRef) list = []
+    let mutable dragging: Drag option = None
     let mutable editing: CellRef option = None
     /// A column edge being dragged: the column, where the drag began, and its width then.
     let mutable resizing: (int * float * float) option = None
@@ -629,8 +639,24 @@ type TableGrid() as this =
 
         this.InvalidateVisual()
 
-    let selectionBounds () =
-        min anchor.Column focus.Column, max anchor.Column focus.Column, min anchor.Row focus.Row, max anchor.Row focus.Row
+    let boundsOf (a: CellRef, b: CellRef) =
+        min a.Column b.Column, max a.Column b.Column, min a.Row b.Row, max a.Row b.Row
+
+    let selectionBounds () = boundsOf (anchor, focus)
+
+    /// Every block selected, the one being made first.
+    let blocks () = (anchor, focus) :: others
+
+    /// The columns any block covers, those on screen, in the table's order.
+    let announce () =
+        selectionChanged.Trigger(
+            [ for block in blocks () do
+                  let c0, c1, _, _ = boundsOf block
+                  for j in c0..c1 do
+                      if posOf j >= 0 then j ]
+            |> List.distinct
+            |> List.sort
+        )
 
     /// The column on screen nearest a column, which may be hidden.
     let shownNear (j: int) =
@@ -648,10 +674,36 @@ type TableGrid() as this =
     let moveTo (c: CellRef) (extend: bool) =
         let c = { Column = shownNear (max 0 (min (columns () - 1) c.Column)); Row = max 0 (min (rows () - 1) c.Row) }
         focus <- c
-        if not extend then anchor <- c
+
+        if not extend then
+            anchor <- c
+            others <- []
+
         bringIntoView c
-        let c0, c1 = min anchor.Column focus.Column, max anchor.Column focus.Column
-        selectionChanged.Trigger [ for j in c0..c1 do if posOf j >= 0 then j ]
+        announce ()
+
+    /// A new block from a cell, the ones selected before kept beside it.
+    let addBlock (c: CellRef) =
+        let kept = blocks ()
+        moveTo c false
+        others <- kept
+        announce ()
+
+    /// The column under a point's x; past the columns in view, the next one off screen that way,
+    /// so a drag there scrolls to it.
+    let columnNear (x: float) =
+        match spans () with
+        | [] -> 0
+        | drawn ->
+            match drawn |> List.tryFind (fun (_, x0, w) -> x >= x0 && x < x0 + w) with
+            | Some(column, _, _) -> column
+            | None ->
+                let first, x0, _ = drawn.Head
+                let last, _, _ = List.last drawn
+                if x < x0 then (if left > frozen () then order.[left - 1] else first) else step last 1
+
+    /// The row under a point's y; above or below the rows in view, the next one off screen.
+    let rowNear (y: float) = top + int (floor ((y - headerHeight) / rowHeight))
 
     /// The cell under a point, or the column or row whose header it is over.
     let hit (p: Point) =
@@ -706,9 +758,11 @@ type TableGrid() as this =
             editor.CaretIndex <- editor.Text.Length
         | _ -> ()
 
-    let selection () : GridCommand.Selection =
-        let c0, c1, r0, r1 = selectionBounds ()
+    let selectionOf (block: CellRef * CellRef) : GridCommand.Selection =
+        let c0, c1, r0, r1 = boundsOf block
         { C0 = c0; C1 = c1; R0 = r0; R1 = r1; Hidden = set [ for j in c0..c1 do if posOf j < 0 then j ] }
+
+    let selection () = selectionOf (anchor, focus)
 
     /// The selection's cells as a block of exact text.
     let copied () =
@@ -728,10 +782,18 @@ type TableGrid() as this =
         | Some t when columns () > 0 -> report (GridCommand.paste t (selection ()) block)
         | _ -> ()
 
+    /// Every block's cells emptied, as one change.
     let clear () =
         match table with
-        | Some t when columns () > 0 && rows () > 0 -> report (Ok(GridCommand.clear t (selection ())))
+        | Some t when columns () > 0 && rows () > 0 -> report (Ok [ for block in List.rev (blocks ()) do yield! GridCommand.clear t (selectionOf block) ])
         | _ -> ()
+
+    /// Copy and Cut take one block, as a spreadsheet does; the other commands take the latest.
+    let oneBlock () =
+        if others.IsEmpty then true
+        else
+            refused.Trigger $"Copy and Cut take one block of cells, and {others.Length + 1} are selected"
+            false
 
     let clipboard () = TopLevel.GetTopLevel(this) |> Option.ofObj |> Option.map (fun top -> top.Clipboard)
 
@@ -753,6 +815,8 @@ type TableGrid() as this =
             let any = rows () > 0
 
             match kind with
+            | GridCommand.Copy
+            | GridCommand.Cut when any && not (oneBlock ()) -> ()
             | GridCommand.Copy when any -> clipboard () |> Option.iter (fun b -> b.SetTextAsync(copied ()) |> ignore)
             | GridCommand.Cut when any ->
                 clipboard () |> Option.iter (fun b -> b.SetTextAsync(copied ()) |> ignore)
@@ -875,6 +939,7 @@ type TableGrid() as this =
                 if focus.Row >= rows () || focus.Column >= columns () then
                     anchor <- { Column = 0; Row = 0 }
                     focus <- anchor
+                others <- others |> List.filter (fun block -> let _, c1, _, r1 = boundsOf block in c1 < columns () && r1 < rows ())
                 clampScroll ()
                 this.InvalidateVisual()
 
@@ -889,8 +954,12 @@ type TableGrid() as this =
     /// The selected cells: the corner the selection began at, and the one it reaches.
     member _.Selection = anchor, focus
 
+    /// Every block selected, each from the corner it began at, the earliest first.
+    member _.Blocks = List.rev (blocks ())
+
     member _.Select(a: CellRef, b: CellRef) =
         anchor <- a
+        others <- []
         moveTo b true
 
     /// The selection as a spreadsheet would copy it.
@@ -990,18 +1059,19 @@ type TableGrid() as this =
                 if marked.Contains(top + i) then
                     dc.FillRectangle(SolidColorBrush look.Marked, Rect(0.0, headerHeight + float i * rowHeight, bounds.Width, rowHeight))
 
-            let c0, c1, r0, r1 = selectionBounds ()
+            for block in List.rev (blocks ()) do
+                let c0, c1, r0, r1 = boundsOf block
 
-            if r1 >= top then
-                let y0 = headerHeight + float (max r0 top - top) * rowHeight
-                let y1 = headerHeight + float (r1 - top + 1) * rowHeight
+                if r1 >= top then
+                    let y0 = headerHeight + float (max r0 top - top) * rowHeight
+                    let y1 = headerHeight + float (r1 - top + 1) * rowHeight
 
-                for column, x, w in drawn do
-                    if column >= c0 && column <= c1 then
-                        dc.FillRectangle(SolidColorBrush look.Selected, Rect(x, y0, w, max 0.0 (y1 - y0)))
+                    for column, x, w in drawn do
+                        if column >= c0 && column <= c1 then
+                            dc.FillRectangle(SolidColorBrush look.Selected, Rect(x, y0, w, max 0.0 (y1 - y0)))
 
-                if posOf focus.Column >= 0 then
-                    dc.DrawRectangle(Pen(SolidColorBrush look.Accent, 2.0 * Tokens.border), cellRect focus)
+            if focus.Row >= top && posOf focus.Column >= 0 then
+                dc.DrawRectangle(Pen(SolidColorBrush look.Accent, 2.0 * Tokens.border), cellRect focus)
 
             for j, x, columnWidth in drawn do
                 let column = t.Columns.[j]
@@ -1074,9 +1144,16 @@ type TableGrid() as this =
         base.OnPointerMoved e
         let p = e.GetPosition this
 
-        match resizing with
-        | Some(j, x0, w0) -> setWidth j (w0 + p.X - x0)
-        | None ->
+        match resizing, dragging with
+        | Some(j, x0, w0), _ -> setWidth j (w0 + p.X - x0)
+        | None, Some drag ->
+            match drag with
+            | Cells -> moveTo { Column = columnNear p.X; Row = rowNear p.Y } true
+            | Columns -> moveTo { Column = columnNear p.X; Row = rows () - 1 } true
+            | Rows -> moveTo { Column = lastShown (); Row = rowNear p.Y } true
+
+            this.InvalidateVisual()
+        | None, None ->
             this.Cursor <- (if (edgeAt p).IsSome then resizeCursor.Value else null)
 
             let tip =
@@ -1089,21 +1166,38 @@ type TableGrid() as this =
     override _.OnPointerReleased(e: PointerReleasedEventArgs) =
         base.OnPointerReleased e
 
-        if resizing.IsSome then
+        if resizing.IsSome || dragging.IsSome then
             resizing <- None
+            dragging <- None
             e.Pointer.Capture null
+
+    override _.OnPointerCaptureLost(e: PointerCaptureLostEventArgs) =
+        base.OnPointerCaptureLost e
+        resizing <- None
+        dragging <- None
 
     /// A press anywhere but on a column's edge: selects, edits, or opens a header.
     member private _.Pressed(e: PointerPressedEventArgs) =
-        let extend = e.KeyModifiers.HasFlag KeyModifiers.Shift || e.KeyModifiers.HasFlag KeyModifiers.Control
-        let c0, c1, r0, r1 = selectionBounds ()
+        let shift = e.KeyModifiers.HasFlag KeyModifiers.Shift
+        let control = e.KeyModifiers.HasFlag KeyModifiers.Control
+        let extend = shift || control
+        let leftButton = e.GetCurrentPoint(this).Properties.IsLeftButtonPressed
+
+        // A drag with the left button from here selects as it goes.
+        let drags (drag: Drag) =
+            if leftButton && e.ClickCount = 1 then
+                dragging <- Some drag
+                e.Pointer.Capture this
 
         // A right click on what is selected keeps the selection for the menu it opens; elsewhere it
         // selects what it is on first.
+        let c0, c1, r0, r1 = selectionBounds ()
+
         let keep =
             e.GetCurrentPoint(this).Properties.IsRightButtonPressed
             && (match hit (e.GetPosition this) with
-                | Some(OnCell c) -> c.Column >= c0 && c.Column <= c1 && c.Row >= r0 && c.Row <= r1
+                | Some(OnCell c) ->
+                    blocks () |> List.exists (fun block -> let c0, c1, r0, r1 = boundsOf block in c.Column >= c0 && c.Column <= c1 && c.Row >= r0 && c.Row <= r1)
                 | Some(OnRowHeader r) -> r >= r0 && r <= r1 && c0 <= firstShown () && c1 >= lastShown ()
                 | Some(OnColumnHeader c) -> c >= c0 && c <= c1 && r0 = 0 && r1 = rows () - 1
                 | None -> true)
@@ -1112,19 +1206,23 @@ type TableGrid() as this =
             match hit (e.GetPosition this) with
             | Some(OnCell c) ->
                 if editing.IsSome then endEdit true
-                moveTo c (e.KeyModifiers.HasFlag KeyModifiers.Shift)
+                // Ctrl begins another block, keeping those selected; Shift stretches this one.
+                if control && not shift && leftButton then addBlock c else moveTo c shift
                 if e.ClickCount = 2 then beginEdit None
+                drags Cells
             | Some(OnColumnHeader column) when isCollapsed column -> toggleCollapsed column
             | Some(OnColumnHeader column) when e.ClickCount = 2 -> header.Trigger column
             | Some(OnColumnHeader column) ->
                 if not extend then anchor <- { Column = column; Row = 0 }
                 anchor <- { anchor with Row = 0 }
                 moveTo { Column = column; Row = rows () - 1 } true
+                drags Columns
             | Some(OnRowHeader row) ->
                 // A whole row; Shift or Ctrl extends the rows from the one the selection began at.
                 if not extend then anchor <- { Column = firstShown (); Row = row }
                 anchor <- { anchor with Column = firstShown () }
                 moveTo { Column = lastShown (); Row = row } true
+                drags Rows
             | None -> ()
 
     override _.OnPointerWheelChanged(e: PointerWheelEventArgs) =

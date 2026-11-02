@@ -175,6 +175,66 @@ let ``a row header selects its row, and the grid's commands are on its context m
     Assert.Equal<TableEdit list>([ expected ], Seq.exactlyOne edits)
     window.Close()
 
+/// A drag selects a block of cells, as in a spreadsheet; with Ctrl it adds another beside those
+/// selected, and Delete empties every block as one change. Copy takes one block only, and a click
+/// without Ctrl leaves a single cell selected again.
+[<AvaloniaFact>]
+let ``a drag selects a block, Ctrl adds another, and Delete empties them all at once`` () =
+    let grid, window, edits, refusals = shown trials
+    let cell column row = Avalonia.Point(grid.ColumnEdge column - grid.ColumnWidth column / 2.0, 40.0 + Tokens.Height.gridRow * (float row + 0.5))
+    let drag (a: Avalonia.Point) (b: Avalonia.Point) (modifiers: Avalonia.Input.RawInputModifiers) =
+        window.MouseDown(a, Avalonia.Input.MouseButton.Left, modifiers)
+        window.MouseMove(b, modifiers ||| Avalonia.Input.RawInputModifiers.LeftMouseButton)
+        window.MouseUp(b, Avalonia.Input.MouseButton.Left, modifiers)
+        Dispatcher.UIThread.RunJobs()
+
+    drag (cell 0 0) (cell 1 1) Avalonia.Input.RawInputModifiers.None
+    Assert.Equal(({ Column = 0; Row = 0 }, { Column = 1; Row = 1 }), grid.Selection)
+    drag (cell 2 2) (cell 2 1) Avalonia.Input.RawInputModifiers.Control
+    Assert.Equal<(CellRef * CellRef) list>([ { Column = 0; Row = 0 }, { Column = 1; Row = 1 }; { Column = 2; Row = 2 }, { Column = 2; Row = 1 } ], grid.Blocks)
+
+    grid.Run GridCommand.Copy
+    Assert.Contains("one block", Seq.exactlyOne refusals)
+    Assert.Empty edits
+
+    grid.Focus() |> ignore
+    window.KeyPress(Avalonia.Input.Key.Delete, Avalonia.Input.RawInputModifiers.None, Avalonia.Input.PhysicalKey.Delete, null)
+    let cleared = Seq.exactlyOne edits
+    Assert.Equal<TableEdit list>(
+        [ Cells("trials", 0, 0, Floats [| 0.0; 0.1 |], Floats [| nan; nan |])
+          Cells("trials", 1, 0, Ints [| 1; 2 |], Ints [| 0; 0 |])
+          Cells("trials", 2, 1, Texts [| "b"; "c" |], Texts [| ""; "" |]) ],
+        cleared)
+
+    window.MouseDown(cell 1 2, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    window.MouseUp(cell 1 2, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    Assert.Equal<(CellRef * CellRef) list>([ { Column = 1; Row = 2 }, { Column = 1; Row = 2 } ], grid.Blocks)
+    window.Close()
+
+/// A drag down the row numbers selects whole rows, and past the grid's bottom it scrolls on.
+[<AvaloniaFact>]
+let ``a drag over the row numbers selects rows, and scrolls past the grid's edge`` () =
+    let long = { Name = "long"; Columns = [ { Name = "n"; Unit = null; Values = Ints(Array.init 500 id) } ] }
+    let grid, window, _, _ = shown long
+    let header (y: float) = Avalonia.Point(6.0, y)
+    let row r = 40.0 + Tokens.Height.gridRow * (float r + 0.5)
+    window.MouseDown(header (row 2), Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    window.MouseMove(header (row 4), Avalonia.Input.RawInputModifiers.LeftMouseButton)
+    Assert.Equal(({ Column = 0; Row = 2 }, { Column = 0; Row = 4 }), grid.Selection)
+
+    for _ in 1..5 do
+        window.MouseMove(header (window.Height + 20.0), Avalonia.Input.RawInputModifiers.LeftMouseButton)
+
+    window.MouseUp(header (window.Height + 20.0), Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    let _, reached = grid.Selection
+    Assert.True(grid.Top > 0, "the grid did not scroll")
+    Assert.True(reached.Row >= grid.Top + 5, $"the selection reached row {reached.Row}, the grid's first row in view is {grid.Top}")
+
+    // Released, the pointer selects nothing more as it moves.
+    window.MouseMove(header (row 3))
+    Assert.Equal(reached, snd grid.Selection)
+    window.Close()
+
 /// Gate 16 (b), the columns: each is as wide as its content asks, within the tokens' bounds; a drag
 /// on a column's edge in the header resizes that column alone, and a double-click there fits it to
 /// its content again.
