@@ -187,8 +187,11 @@ jobs:
           chmod +x bin/appimagetool
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
+      # A tag's version, or the commit's for a run by hand, since a branch's name may hold a slash.
       - name: Build the packages
-        run: tools/package.sh "${GITHUB_REF_NAME#v}"
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then version=${GITHUB_REF_NAME#v}; else version=dev-${GITHUB_SHA::7}; fi
+          tools/package.sh "$version"
 
       - name: The package, end to end, with no .NET
         timeout-minutes: 5
