@@ -20,6 +20,7 @@
     <Compile Include="EditsTests.fs" />
     <Compile Include="HistoryTests.fs" />
     <Compile Include="BundleTests.fs" />
+    <Compile Include="AssociationTests.fs" />
     <Compile Include="FilesTests.fs" />
     <Compile Include="TabsTests.fs" />
     <Compile Include="PreferencesTests.fs" />

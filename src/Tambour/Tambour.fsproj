@@ -9,6 +9,8 @@
 
   <ItemGroup>
     <Compile Include="Paths.fs" />
+    <Compile Include="Bundle.fs" />
+    <Compile Include="Association.fs" />
     <Compile Include="Scaling.fs" />
     <Compile Include="Preferences.fs" />
     <Compile Include="Tokens.fs" />
@@ -26,7 +28,6 @@
     <Compile Include="App.fs" />
     <Compile Include="PreferencesView.fs" />
     <Compile Include="Project.fs" />
-    <Compile Include="Bundle.fs" />
     <Compile Include="Tables.fs" />
     <Compile Include="Plotting.fs" />
     <Compile Include="Shell.fs" />

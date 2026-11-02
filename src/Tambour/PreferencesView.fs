@@ -189,7 +189,33 @@ type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit, proje
         let row = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2)
         row.Children.Add keep
         row.Children.Add(text "files and folders" (look ()).Dim)
-        section "Recent files" [ "Keep", row ]
+
+        // The OS told, for this user, that Tambour opens `.tambour` files: nothing written until asked.
+        let told = small "" (look ()).Dim
+        let associate = Button(Name = "associate", Content = $"Open {Bundle.Extension} files with Tambour")
+
+        associate.Click.Add(fun _ ->
+            let icon =
+                use stream = Avalonia.Platform.AssetLoader.Open(Uri "avares://tambour/Assets/tambour.png")
+                use copy = new IO.MemoryStream()
+                stream.CopyTo copy
+                copy.ToArray()
+
+            match Association.register icon with
+            | Ok what ->
+                told.Text <- what
+                told.Foreground <- brush (look ()).Dim
+            | Error why ->
+                told.Text <- $"Not done: {why}"
+                told.Foreground <- brush (look ()).Warning)
+
+        let files = StackPanel(Spacing = Tokens.Space.s1)
+        files.Children.Add associate
+        files.Children.Add told
+        let page = StackPanel(Spacing = Tokens.Space.s5)
+        page.Children.Add(section "Recent files" [ "Keep", row ])
+        page.Children.Add(section "Workspace files" [ "File manager", files ])
+        page
 
     /// The shown tab's project: the resolution and fonts its figures are exported with.
     and projectPage () : Control =

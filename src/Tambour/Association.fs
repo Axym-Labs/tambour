@@ -1,0 +1,143 @@
+/// Telling the OS that Tambour opens `.tambour` files, for this user only and only when asked, from
+/// Preferences. On Linux: the MIME type (by its extension and by the `mimetype` entry a bundle
+/// begins with), a `.desktop` entry naming the app, the app's icon for both, and a thumbnailer that
+/// takes the figure a bundle keeps; all under `$XDG_DATA_HOME`. On Windows: a file class under
+/// `HKCU\Software\Classes` with the app's icon. Windows draws no thumbnail of its own for one: that
+/// would take a shell extension.
+module Tambour.Association
+
+open System
+open System.Diagnostics
+open System.IO
+open System.Runtime.InteropServices
+
+/// The app as the OS is to start it: the AppImage where it runs from one, else its executable.
+let executable () =
+    match Environment.GetEnvironmentVariable "APPIMAGE" with
+    | path when not (String.IsNullOrEmpty path) && File.Exists path -> path
+    | _ -> Environment.ProcessPath
+
+/// `$XDG_DATA_HOME`, `~/.local/share` where that is unset.
+let dataDirectory () =
+    match Environment.GetEnvironmentVariable "XDG_DATA_HOME" with
+    | dir when not (String.IsNullOrEmpty dir) -> dir
+    | _ -> Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".local", "share")
+
+let private mimeXml =
+    $"""<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="{Bundle.MimeType}">
+    <comment>Tambour workspace</comment>
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*{Bundle.Extension}"/>
+    <magic priority="60">
+      <match type="string" offset="30" value="mimetype{Bundle.MimeType}"/>
+    </magic>
+    <icon name="tambour"/>
+  </mime-type>
+</mime-info>
+"""
+
+/// A path as a `.desktop` file's Exec takes it: quoted, its `"`, `` ` ``, `$` and `\` escaped.
+let private quoted (path: string) =
+    let escaped = path.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("`", "\\`").Replace("$", "\\$")
+    $"\"{escaped}\""
+
+let private desktopEntry (exe: string) =
+    $"""[Desktop Entry]
+Type=Application
+Name=Tambour
+Comment=Measured data, figures and F# scripting
+Exec={quoted exe} %%f
+Icon=tambour
+MimeType={Bundle.MimeType};
+Categories=Science;Education;Development;
+Terminal=false
+"""
+
+let private thumbnailer (exe: string) =
+    $"""[Thumbnailer Entry]
+TryExec={exe}
+Exec={quoted exe} --thumbnail %%i %%o %%s
+MimeType={Bundle.MimeType};
+"""
+
+/// Runs a desktop database's tool on what was written, where it is installed; nothing where not.
+let private refresh (tool: string) (dir: string) =
+    try
+        use p = Process.Start(ProcessStartInfo(tool, [| dir |], UseShellExecute = false, CreateNoWindow = true))
+        p.WaitForExit 10000 |> ignore
+    with _ ->
+        ()
+
+/// What `linux` writes, from the data directory.
+let linuxFiles =
+    [ "mime/packages/tambour.xml"
+      "applications/tambour.desktop"
+      "thumbnailers/tambour.thumbnailer"
+      "icons/hicolor/256x256/apps/tambour.png"
+      "icons/hicolor/256x256/mimetypes/application-x-tambour.png" ]
+
+/// Writes the association under a data directory, the icon a 256 px PNG; with `databases`, the
+/// MIME and desktop databases are brought up to date from it.
+let linux (data: string) (exe: string) (icon: byte[]) (databases: bool) =
+    let write (relative: string) (bytes: byte[]) =
+        let path = Path.Combine(data, relative)
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllBytes(path, bytes)
+
+    let utf8 (s: string) = Text.Encoding.UTF8.GetBytes s
+
+    match linuxFiles with
+    | [ mime; desktop; thumb; appIcon; typeIcon ] ->
+        write mime (utf8 mimeXml)
+        write desktop (utf8 (desktopEntry exe))
+        write thumb (utf8 (thumbnailer exe))
+        write appIcon icon
+        write typeIcon icon
+    | _ -> ()
+
+    if databases then
+        refresh "update-mime-database" (Path.Combine(data, "mime"))
+        refresh "update-desktop-database" (Path.Combine(data, "applications"))
+
+[<DllImport("shell32.dll")>]
+extern void SHChangeNotify(int eventId, uint32 flags, nativeint item1, nativeint item2)
+
+/// Writes the file class under the user's own classes; Explorer is told the associations changed.
+let windows (exe: string) =
+    if OperatingSystem.IsWindows() then
+        use classes = Microsoft.Win32.Registry.CurrentUser.CreateSubKey @"Software\Classes"
+
+        do
+            use ext = classes.CreateSubKey Bundle.Extension
+            ext.SetValue("", "Tambour.Workspace")
+            ext.SetValue("Content Type", Bundle.MimeType)
+
+        use kind = classes.CreateSubKey "Tambour.Workspace"
+        kind.SetValue("", "Tambour workspace")
+
+        do
+            use icon = kind.CreateSubKey "DefaultIcon"
+            icon.SetValue("", $"\"{exe}\",0")
+
+        use command = kind.CreateSubKey @"shell\open\command"
+        command.SetValue("", $"\"{exe}\" \"%%1\"")
+        // SHCNE_ASSOCCHANGED, with no items.
+        SHChangeNotify(0x08000000, 0u, 0n, 0n)
+
+/// Registers the association for this OS: what it came to, as Preferences shows it.
+let register (icon: byte[]) : Result<string, string> =
+    try
+        let exe = executable ()
+
+        if OperatingSystem.IsWindows() then
+            windows exe
+            Ok "Explorer opens .tambour files with Tambour."
+        elif OperatingSystem.IsLinux() then
+            linux (dataDirectory ()) exe icon true
+            Ok "The file manager opens .tambour files with Tambour, and shows their figures."
+        else
+            Error "not on this OS"
+    with e ->
+        Error e.Message
