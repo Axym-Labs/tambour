@@ -278,6 +278,9 @@ type Model =
       Settings: Project.Settings option
       /// The `.tambour` the project directory was unpacked from, if it was: written back from there.
       Bundle: string option
+      /// Where a workspace not saved yet keeps the prelude of its tables, for the language
+      /// service and the worker to find beside its script as they would in a saved one.
+      Draft: string
       /// The script as last read or written, to tell what is unsaved, and our own writes from
       /// someone else's.
       Saved: string
@@ -482,6 +485,7 @@ let init (script: string) () : Model * Cmd<Msg> =
       Path = None
       Project = None
       Bundle = None
+      Draft = Bundle.draft ()
       Settings = None
       Saved = script
       Exporting = None
@@ -639,6 +643,14 @@ let private withTables (model: Model) (tables: Map<string, Tambour.Data.Table>) 
 /// The model and what follows once the script and the tables are `state`: a table that changed
 /// is sent to the worker, the prelude is written again when the columns changed, and the figure
 /// runs again.
+/// Where the script is for the language service and the worker: on disk, or in the draft
+/// directory of a workspace not saved yet, beside its tables' prelude.
+let private scriptPath (model: Model) =
+    match model.Path, model.Project with
+    | Some path, _ -> path
+    | None, Some dir -> Path.Combine(dir, "untitled.fsx")
+    | None, None -> Path.Combine(model.Draft, "untitled.fsx")
+
 let private toState (env: Env) (model: Model) (state: History.State) (schema: bool) : Model * Cmd<Msg> =
     let before = tablesOf model
     let next = withTables { model with Script = state.Script } state.Tables
@@ -653,7 +665,9 @@ let private toState (env: Env) (model: Model) (state: History.State) (schema: bo
     if schema then
         match next.Project with
         | Some dir -> Tables.writePrelude dir next.Tables |> ignore
-        | None -> ()
+        | None ->
+            Directory.CreateDirectory next.Draft |> ignore
+            Tables.writePrelude next.Draft next.Tables |> ignore
 
     if not (obj.ReferenceEquals(next.Layouts, model.Layouts)) then writeProject next
 
@@ -869,7 +883,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         | None -> model, Cmd.none
     | Run ->
         { model with Running = true; Status = "running…"; Playing = Set.empty },
-        send env (Request.Evaluate { Text = model.Script; Path = Option.toObj model.Path })
+        send env (Request.Evaluate { Text = model.Script; Path = scriptPath model })
     // An export ends as a run does, with the worker doing it; its reply, if one comes, is let go.
     | Cancel when model.Exporting.IsSome ->
         { model with Exporting = None; Status = "export cancelled" }, Cmd.OfTask.attempt env.Workers.CancelAsync () Failed
@@ -1378,7 +1392,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         match editable model with
         | None -> { model with ActionNote = "picking reads a plot { } block of a table; this figure is not one" }, Cmd.none
         | Some name ->
-            let script, path = model.Script, Option.toObj model.Path
+            let script, path = model.Script, scriptPath model
             model, Cmd.OfTask.either (fun () -> env.Language.PlottedAsync(script, path, name)) () (fun p -> PickFor(p, area)) Failed
     | PickFor(plotted, _) when plotted.Rows = "" -> { model with ActionNote = "picking reads a plot { } block of a table; this figure is not one" }, Cmd.none
     | PickFor(plotted, area) ->
@@ -2991,7 +3005,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                             Editor.create [
                                 Grid.row 0
                                 Editor.text model.Script
-                                Editor.path (Option.toObj model.Path)
+                                Editor.path (scriptPath model)
                                 Editor.language env.Language
                                 Editor.goTo model.GoTo
                                 Editor.onEdited (Edited >> dispatch)
@@ -3567,6 +3581,12 @@ type Workspace(script: string, path: string option, language: LanguageService, t
             (workers :> IDisposable).Dispose()
             // Written back if its settings changed since, and its cache removed.
             latest.Bundle |> Option.iter (fun file -> try Bundle.close file with _ -> ())
+
+            if Directory.Exists latest.Draft then
+                try
+                    Directory.Delete(latest.Draft, true)
+                with _ ->
+                    ()
 
 /// The windows a tab has been moved between, from one first window: the language service they
 /// share, ended once the last of them closes, and the tabs they keep for the next start.

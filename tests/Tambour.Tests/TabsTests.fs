@@ -274,6 +274,44 @@ let ``a new workspace with a table saves as a directory of its own`` () =
     Assert.Contains("\"tables/table.csv\"", File.ReadAllText(Path.Combine(dir, "prelude.fsx")))
     closeAll window
 
+/// A workspace not saved yet has its tables in scope as one saved has: checked, and run.
+[<AvaloniaFact>]
+let ``a new workspace's tables are in scope before it is saved`` () =
+    let window = new Shell.MainWindow("")
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    window.Post Shell.NewTable
+    pumpUntil 10.0 "the table" (fun () -> not window.Active.Unsaved.IsEmpty)
+    typeInto window "let n = table.Length\nlet m = nowhere\n"
+    let editor = editorOf window
+    pumpUntil 60.0 "the check" (fun () -> editor.Problems.Length > 0)
+    Assert.All(editor.Problems, fun d -> Assert.Equal(2, d.StartLine))
+
+    // A row's columns complete.
+    let script = "let r = table.[0]\n"
+    editor.Text <- script
+    editor.Editor.CaretOffset <- script.Length
+    editor.Editor.TextArea.PerformTextInput "r"
+    editor.Editor.TextArea.PerformTextInput "."
+    pumpUntil 30.0 "the completion list" (fun () -> editor.Completions.Length > 0)
+    Assert.Contains("x", editor.Completions)
+    Assert.Contains("y", editor.Completions)
+
+    // And the script runs with them: its output, which no run before had.
+    window.Post(Shell.ShowBottom 1)
+    editor.Editor.Document.Text <- "printfn \"%d rows\" table.Length\n"
+    window.KeyPress(Key.F5, RawInputModifiers.None, PhysicalKey.F5, null)
+
+    let output () =
+        window.GetVisualDescendants().OfType<TextBox>() |> Seq.map (fun b -> b.Text) |> Seq.filter (fun t -> not (isNull t)) |> String.concat " | "
+
+    (try
+        pumpUntil 30.0 "the run's output" (fun () -> (output ()).Contains "10 rows")
+     with e ->
+        failwith $"{e.Message}: {output ()}")
+
+    closeAll window
+
 /// Gate 15 (b): two tabs with different tables; each script compiles against its own, and a name
 /// from the other's tables is not in scope.
 [<AvaloniaFact>]

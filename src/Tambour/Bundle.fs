@@ -49,6 +49,11 @@ let private root () =
     | null -> Path.Combine(Paths.cacheDirectory (), "open")
     | dir -> dir
 
+/// A directory for a workspace not saved yet, beside the bundles' caches: one of its own, which
+/// is made only when it is first written to.
+let draft () =
+    Path.Combine(Path.GetDirectoryName(root ()), "drafts", $"{Environment.ProcessId}-{Guid.NewGuid():N}")
+
 /// The cache directory of a bundle: its name, and a hash of its full path so two of one name do not
 /// meet.
 let cacheOf (file: string) =
