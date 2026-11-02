@@ -71,8 +71,10 @@ let ``the outputs are read from a compositor's wl_output and xdg_output`` () =
     listener.Listen 1
     let bound = Collections.Generic.Dictionary<uint32, uint32 * uint32>() // global name -> id, version
 
+    // On a thread of its own: the reader under test waits a second for an answer, and the pool's
+    // threads may all be busy while the suite starts.
     let server =
-        Task.Run(fun () ->
+        Task.Factory.StartNew((fun () ->
             use client = listener.Accept()
             use stream = new NetworkStream(client)
 
@@ -139,7 +141,7 @@ let ``the outputs are read from a compositor's wl_output and xdg_output`` () =
                     | m, 1 when m = manager -> xdg.[u32 body 0] <- u32 body 4
                     | _ -> ()
             with :? EndOfStreamException ->
-                ())
+                ()), TaskCreationOptions.LongRunning)
 
     try
         let outputs = Scaling.outputs path |> List.sortBy (fun o -> o.Name)
