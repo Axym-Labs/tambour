@@ -58,7 +58,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -217,16 +217,25 @@ jobs:
           sudo apt-get install -y --no-install-recommends bubblewrap xvfb xauth
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
-      # AppImageKit's release 13, run without FUSE.
+      # appimagetool 1.9.1 and the runtime it embeds, both pinned by their digests, run without
+      # FUSE. Left to itself, appimagetool fetches the runtime's newest build.
       - name: Fetch appimagetool
         timeout-minutes: 3
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
-          curl -fsSL -o "$RUNNER_TEMP/appimagetool.AppImage" \
-            https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage
-          chmod +x "$RUNNER_TEMP/appimagetool.AppImage"
-          printf '#!/bin/sh\nexec "%s" --appimage-extract-and-run "$@"\n' "$RUNNER_TEMP/appimagetool.AppImage" > "$RUNNER_TEMP/bin/appimagetool"
-          chmod +x "$RUNNER_TEMP/bin/appimagetool"
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o appimagetool.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          curl -fsSL -o runtime-x86_64 \
+            https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+          sha256sum -c <<'SUMS'
+          ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool.AppImage
+          2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d  runtime-x86_64
+          SUMS
+          chmod +x appimagetool.AppImage
+          printf '#!/bin/sh\nexec "%s" --appimage-extract-and-run --runtime-file "%s" "$@"\n' \
+            "$RUNNER_TEMP/appimagetool.AppImage" "$RUNNER_TEMP/runtime-x86_64" > bin/appimagetool
+          chmod +x bin/appimagetool
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Build the packages
@@ -238,6 +247,10 @@ jobs:
           unpacked=$(mktemp -d)
           tar -xzf artifacts/package/*-linux-x64.tar.gz -C "$unpacked"
           xvfb-run -a tools/no-dotnet.sh "$unpacked"/tambour-*/tambour --check-package
+
+      - name: The AppImage, end to end
+        timeout-minutes: 5
+        run: xvfb-run -a artifacts/package/*.AppImage --appimage-extract-and-run --check-package
 
       - uses: actions/upload-artifact@v4
         with:
