@@ -17,19 +17,27 @@ let private window (path: string option) =
     let preferences = Preferences.read settings
     App.Theme <- preferences.Theme
     Preferences.Live.Current <- preferences
-    App.MainWindow <- fun () -> Shell.MainWindow.Start path :> Window
 
-    // The app's desktop entry and icon, by which a Wayland shell shows its windows.
-    if System.OperatingSystem.IsLinux() then
-        System.Threading.Tasks.Task.Run(fun () ->
-            try
-                use stream = Platform.AssetLoader.Open(System.Uri "avares://tambour/Assets/tambour.png")
-                use bytes = new System.IO.MemoryStream()
-                stream.CopyTo bytes
-                Association.entry (Association.dataDirectory ()) (Association.executable ()) (bytes.ToArray()) |> ignore
-            with _ ->
-                ())
-        |> ignore
+    // The app's desktop entry and icon, by which a Wayland shell shows its windows: written as the
+    // window is made, once the app's assets can be read.
+    let entry () =
+        if System.OperatingSystem.IsLinux() then
+            use stream = Platform.AssetLoader.Open(System.Uri "avares://tambour/Assets/tambour.png")
+            use bytes = new System.IO.MemoryStream()
+            stream.CopyTo bytes
+            let icon = bytes.ToArray()
+
+            System.Threading.Tasks.Task.Run(fun () ->
+                try
+                    Association.entry (Association.dataDirectory ()) (Association.executable ()) icon |> ignore
+                with _ ->
+                    ())
+            |> ignore
+
+    App.MainWindow <-
+        fun () ->
+            (try entry () with _ -> ())
+            Shell.MainWindow.Start path :> Window
 
     // Each screen's scaling, which Avalonia under XWayland cannot find out for itself.
     Scaling.apply () |> ignore
