@@ -1,12 +1,10 @@
-/// Telling the OS that Tambour opens `.tambour` files, for this user only and only when asked, from
-/// Preferences. On Linux: the MIME type (by its extension and by the `mimetype` entry a bundle
-/// begins with), a `.desktop` entry naming the app, the app's icon for both, and a thumbnailer that
-/// takes the figure a bundle keeps; all under `$XDG_DATA_HOME`. On Windows: a file class under
+/// Telling the OS that Tambour opens `.tambour` files, for this user only: on Linux at every start,
+/// on Windows when asked, from Preferences. On Linux: the MIME type (by its extension and by the
+/// `mimetype` entry a bundle begins with), a `.desktop` entry naming the app, the app's icon for
+/// both, and a thumbnailer that takes the figure a bundle keeps; all under `$XDG_DATA_HOME`. The
+/// desktop entry is also how a Wayland shell finds a window's icon. On Windows: a file class under
 /// `HKCU\Software\Classes` with the app's icon. Windows draws no thumbnail of its own for one: that
 /// would take a shell extension.
-///
-/// The desktop entry and the app's icon are written at every start on Linux too, without the file
-/// type: a Wayland shell finds a window's icon only through them.
 module Tambour.Association
 
 open System
@@ -46,17 +44,15 @@ let private quoted (path: string) =
     let escaped = path.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("`", "\\`").Replace("$", "\\$")
     $"\"{escaped}\""
 
-/// The app's desktop entry; with `files`, it opens `.tambour` files too.
-let private desktopEntry (exe: string) (files: bool) =
-    let mime = if files then $"MimeType={Bundle.MimeType};\n" else ""
-
+let private desktopEntry (exe: string) =
     $"""[Desktop Entry]
 Type=Application
 Name=Tambour
 Comment=Measured data, figures and F# scripting
 Exec={quoted exe} %%f
 Icon=tambour
-{mime}Categories=Science;Education;Development;
+MimeType={Bundle.MimeType};
+Categories=Science;Education;Development;
 Terminal=false
 StartupWMClass=tambour
 """
@@ -84,39 +80,13 @@ let linuxFiles =
       "icons/hicolor/256x256/apps/tambour.png"
       "icons/hicolor/256x256/mimetypes/application-x-tambour.png" ]
 
-/// Writes the association under a data directory, the icon a 256 px PNG; with `databases`, the
-/// MIME and desktop databases are brought up to date from it.
+/// Writes the association under a data directory, the icon a 256 px PNG, each file only where it
+/// is missing or differs; with `databases`, the MIME and desktop databases are brought up to date
+/// where their files changed. Whether anything was written.
 let linux (data: string) (exe: string) (icon: byte[]) (databases: bool) =
-    let write (relative: string) (bytes: byte[]) =
+    let wrote (relative: string) (bytes: byte[]) =
         let path = Path.Combine(data, relative)
-        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
-        File.WriteAllBytes(path, bytes)
 
-    let utf8 (s: string) = Text.Encoding.UTF8.GetBytes s
-
-    match linuxFiles with
-    | [ mime; desktop; thumb; appIcon; typeIcon ] ->
-        write mime (utf8 mimeXml)
-        write desktop (utf8 (desktopEntry exe true))
-        write thumb (utf8 (thumbnailer exe))
-        write appIcon icon
-        write typeIcon icon
-    | _ -> ()
-
-    if databases then
-        refresh "update-mime-database" (Path.Combine(data, "mime"))
-        refresh "update-desktop-database" (Path.Combine(data, "applications"))
-
-/// Writes the app's desktop entry and icon under a data directory where they are missing or differ:
-/// a shell then shows the window, whose class is `tambour`, under the app's icon. An entry that
-/// opens `.tambour` files keeps doing so, now with this executable. Whether anything was written.
-let entry (data: string) (exe: string) (icon: byte[]) =
-    let desktop = Path.Combine(data, "applications", "tambour.desktop")
-    let appIcon = Path.Combine(data, "icons", "hicolor", "256x256", "apps", "tambour.png")
-    let files = File.Exists desktop && File.ReadAllText(desktop).Contains $"MimeType={Bundle.MimeType};"
-    let text = desktopEntry exe files
-
-    let wrote (path: string) (bytes: byte[]) =
         if File.Exists path && File.ReadAllBytes path = bytes then
             false
         else
@@ -124,13 +94,19 @@ let entry (data: string) (exe: string) (icon: byte[]) =
             File.WriteAllBytes(path, bytes)
             true
 
-    let changed = wrote desktop (Text.Encoding.UTF8.GetBytes text)
-    let drawn = wrote appIcon icon
+    let utf8 (s: string) = Text.Encoding.UTF8.GetBytes s
 
-    if changed && files then
-        refresh "update-desktop-database" (Path.GetDirectoryName desktop)
+    match linuxFiles with
+    | [ mime; desktop; thumb; appIcon; typeIcon ] ->
+        let types = wrote mime (utf8 mimeXml)
+        let entry = wrote desktop (utf8 (desktopEntry exe))
+        // Each written, whether or not the one before was.
+        let others = [ wrote thumb (utf8 (thumbnailer exe)); wrote appIcon icon; wrote typeIcon icon ]
 
-    changed || drawn
+        if databases && types then refresh "update-mime-database" (Path.Combine(data, "mime"))
+        if databases && entry then refresh "update-desktop-database" (Path.Combine(data, "applications"))
+        types || entry || List.contains true others
+    | _ -> false
 
 [<DllImport("shell32.dll")>]
 extern void SHChangeNotify(int eventId, uint32 flags, nativeint item1, nativeint item2)
@@ -166,7 +142,7 @@ let register (icon: byte[]) : Result<string, string> =
             windows exe
             Ok "Explorer opens .tambour files with Tambour."
         elif OperatingSystem.IsLinux() then
-            linux (dataDirectory ()) exe icon true
+            linux (dataDirectory ()) exe icon true |> ignore
             Ok "The file manager opens .tambour files with Tambour, and shows their figures."
         else
             Error "not on this OS"

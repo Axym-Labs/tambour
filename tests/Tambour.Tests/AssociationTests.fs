@@ -11,7 +11,7 @@ open Xunit
 let ``the association on Linux writes only under the data directory, naming the app`` () =
     let data = (Directory.CreateTempSubdirectory "tambour-data").FullName
     let exe = "/opt/my apps/tambour"
-    Association.linux data exe [| 137uy; 80uy |] false
+    Association.linux data exe [| 137uy; 80uy |] false |> ignore
 
     let written =
         Directory.GetFiles(data, "*", SearchOption.AllDirectories)
@@ -31,24 +31,22 @@ let ``the association on Linux writes only under the data directory, naming the 
     Assert.Contains("--thumbnail %i %o %s", read "thumbnailers/tambour.thumbnailer")
     Assert.Equal<byte[]>([| 137uy; 80uy |], File.ReadAllBytes(Path.Combine(data, "icons/hicolor/256x256/mimetypes/application-x-tambour.png")))
 
-/// The entry written at every start: the app and its icon, without the file type until that is
-/// asked for, then with it, whichever executable started last.
+/// Written at every start: each file only where it is missing or differs, the executable that
+/// started last named.
 [<Fact>]
-let ``the app's entry is written where it is missing or differs, keeping the file type once asked for`` () =
+let ``the association is written again only where it differs`` () =
     let data = (Directory.CreateTempSubdirectory "tambour-data").FullName
     let desktop () = File.ReadAllText(Path.Combine(data, "applications/tambour.desktop"))
-    Assert.True(Association.entry data "/opt/tambour" [| 1uy |])
-    Assert.Contains("Exec=\"/opt/tambour\" %f", desktop ())
+    Assert.True(Association.linux data "/opt/tambour" [| 1uy |] false)
     Assert.Contains("StartupWMClass=tambour", desktop ())
-    Assert.DoesNotContain("MimeType=", desktop ())
-    Assert.Equal<byte[]>([| 1uy |], File.ReadAllBytes(Path.Combine(data, "icons/hicolor/256x256/apps/tambour.png")))
-    Assert.False(Association.entry data "/opt/tambour" [| 1uy |])
+    let written = File.GetLastWriteTimeUtc(Path.Combine(data, "mime/packages/tambour.xml"))
+    Assert.False(Association.linux data "/opt/tambour" [| 1uy |] false)
 
-    Association.linux data "/opt/tambour" [| 1uy |] false
-    Assert.True(Association.entry data "/home/me/tambour.AppImage" [| 2uy |])
+    Assert.True(Association.linux data "/home/me/tambour.AppImage" [| 2uy |] false)
     Assert.Contains("Exec=\"/home/me/tambour.AppImage\" %f", desktop ())
     Assert.Contains($"MimeType={Bundle.MimeType};", desktop ())
     Assert.Equal<byte[]>([| 2uy |], File.ReadAllBytes(Path.Combine(data, "icons/hicolor/256x256/apps/tambour.png")))
+    Assert.Equal(written, File.GetLastWriteTimeUtc(Path.Combine(data, "mime/packages/tambour.xml")))
 
 [<Fact>]
 let ``the thumbnailer writes a bundle's figure at the size asked, and fails on one without`` () =
