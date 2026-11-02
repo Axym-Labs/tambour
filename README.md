@@ -160,6 +160,10 @@ in a bubblewrap sandbox that hides every .NET installation:
 tools/no-dotnet.sh path/to/tambour-<version>-linux-x64/tambour --check-package
 ```
 
+CI builds the same packages on a run by hand and on a tag `v<version>`, and checks the tarball
+and the AppImage end to end. A tag's run, once every job holds, opens a draft GitHub Release with
+the packages and their `SHA256SUMS`; a tag with a suffix (`v1.0.0-rc.1`) makes a prerelease.
+
 [Third-party notices](THIRD-PARTY-NOTICES.md) list what a package carries and under which licences.
 
 ## Licence

@@ -143,7 +143,7 @@ jobs:
         run: tools/no-dotnet.sh artifacts/publish/linux-x64/tambour --check-analysis tests/Tambour.Tests/scripts/unit-error.fsx
 
   # The packages, on a version tag or by hand: a tarball and an AppImage for Linux, a zip for
-  # Windows, kept as the run's artifacts; nothing is released from here. The Linux tarball, unpacked
+  # Windows, kept as the run's artifacts, which a tag's release below carries. The Linux tarball, unpacked
   # in a sandbox with no .NET, is checked end to end: a script opened, drawn, its unit error shown
   # and taken back, an action applied and taken back, and a PNG exported that renderPng draws.
   # The Windows zip is checked by hand on a clean machine.
@@ -213,3 +213,49 @@ jobs:
             artifacts/package/*.zip
           if-no-files-found: error
 
+
+  # On a version tag, once the tests and the packages' checks hold: a draft release carrying the
+  # packages and their checksums, its notes naming the Marey inside. Published by hand once the
+  # Windows zip has been tried. A tag with a suffix (v1.0.0-rc.1) makes a prerelease; a rerun
+  # replaces the draft's files.
+  release:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: [build, no-dotnet, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: artifacts/package
+
+      - name: The draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          marey=$(sed -n 's:.*<MareyVersion>\(.*\)</MareyVersion>.*:\1:p' Directory.Packages.props)
+          commit=$(sed -n 's:.*<MareyCommit>\(.*\)</MareyCommit>.*:\1:p' Directory.Packages.props)
+          cd artifacts/package
+          sha256sum -- * > SHA256SUMS
+          cat > "$RUNNER_TEMP/notes.md" <<NOTES
+          Tambour $version, on Marey [$marey](https://www.nuget.org/packages/Marey/$marey) (Axym-Labs/marey@${commit::7}).
+
+          - \`tambour-$version-linux-x64.tar.gz\`: unpacks to a directory that runs from anywhere.
+          - \`tambour-$version-x86_64.AppImage\`: the same, as one file.
+          - \`tambour-$version-win-x64.zip\`: unpacks to a folder; \`tambour.exe\` runs from it. Not
+            code-signed yet: the README's *On Windows* says what SmartScreen and Smart App Control do.
+
+          None of them needs .NET installed. \`SHA256SUMS\` holds the files' checksums.
+          NOTES
+          case "$version" in *-*) pre=--prerelease ;; *) pre= ;; esac
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" * --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" * --draft $pre --verify-tag \
+              --title "Tambour $version" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
