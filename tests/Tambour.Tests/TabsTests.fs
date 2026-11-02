@@ -206,6 +206,25 @@ let ``opening takes an untouched tab, and finds a tab already showing the file``
     Assert.Equal(Some a, window.Active.Path)
     closeAll window
 
+/// A closed window's tabs stop with it, their file watchers with them: a message posted to one
+/// afterwards reaches neither it nor the closed window.
+[<AvaloniaFact>]
+let ``a closed window's tabs take nothing more`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-closed").FullName
+    let a = Path.Combine(dir, "a.fsx")
+    File.WriteAllText(a, "let a = 1\n")
+    let window = new Shell.MainWindow("")
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    window.Post(Shell.OpenTab a)
+    pumpUntil 10.0 "a in the tab" (fun () -> window.Active.Path = Some a)
+    let tab = window.Active
+    closeAll window
+
+    tab.Post(Shell.Renamed(Path.Combine(dir, "b.fsx")))
+    Dispatcher.UIThread.RunJobs()
+    Assert.Equal(Some a, tab.Path)
+
 let private trial (name: string) (column: string) : Tambour.Data.Table =
     { Name = name
       Columns = [ { Name = column; Unit = null; Values = Tambour.Data.Floats [| 1.0; 2.0 |] } ] }

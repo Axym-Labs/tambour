@@ -430,6 +430,9 @@ type Msg =
     /// Something to tell, shown where a GUI action's outcome is.
     | Note of string
     | Failed of exn
+    /// The workspace disposed: its loop stops and its subscriptions with it, so a closed tab no
+    /// longer watches its file or the preferences.
+    | Ended
 
 /// The bottom panel's height where a project has none.
 let defaultBottom = 170.0
@@ -1366,6 +1369,8 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         keepPanes next
         next, Cmd.none
     | TabsChanged tabs -> { model with OpenTabs = tabs }, Cmd.none
+    // Taken by the loop's termination before it reaches here.
+    | Ended -> model, Cmd.none
     | RenameFile path ->
         model,
         Cmd.OfTask.either
@@ -3334,6 +3339,7 @@ type Workspace(script: string, path: string option, language: LanguageService, t
         Program.mkProgram init step (view env)
         |> Program.withHost this
         |> Program.withSubscription (subscriptions env this titled (fun d -> dispatch <- d))
+        |> Program.withTermination (function Ended -> true | _ -> false) ignore
         |> Program.runWithAvaloniaSyncDispatch ()
 
     /// Sends the workspace's loop a message, as its own controls do.
@@ -3407,6 +3413,7 @@ type Workspace(script: string, path: string option, language: LanguageService, t
 
     interface IDisposable with
         member _.Dispose() =
+            dispatch Ended
             idle.Dispose()
             (workers :> IDisposable).Dispose()
 
