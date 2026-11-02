@@ -25,7 +25,9 @@ backends, never through a capture of the window.
 **The editor** checks the script as it is typed, with completion, tooltips, the call's overloads
 and renaming. A column plotted under the wrong unit is a compile error, underlined where it
 happens. Where Marey can tell what a call is missing, such as `Chart.lineIn t x` without the
-witnesses of its units, Ctrl+. or the right button on the call offers the fix.
+witnesses of its units, Ctrl+. or the right button on the call offers the fix. Ctrl+., Ctrl+Space
+(completion) and F2 (renaming) are Edit menu commands like any other, so their keys can be changed
+in Preferences → Keyboard shortcuts.
 
 **GUI actions** (title, labels, log axis, domain, theme, legend, colour, facet, fit, a layer)
 edit the script rather than the figure. An action, a fix and typed text share one history, so
