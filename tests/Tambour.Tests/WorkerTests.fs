@@ -259,11 +259,13 @@ let ``a re-run of 2000 points reaches the scene within 100 ms`` () : Task =
     }
 
 /// Cancelling a script stuck in a loop returns a worker that runs the next script, in
-/// under 0.5 s.
+/// under 0.5 s, once the spare is warm: before it is, a cancel waits for a cold start, which is
+/// not what this measures.
 [<Fact>]
 let ``cancel returns a usable worker within half a second`` () : Task =
     task {
         use workers = started (new Workers(command, init))
+        do! workers.SpareReady
         let stuck = workers.Pid
         do! workers.SendAsync(Request.Evaluate { Text = "while true do ()\n"; Path = null })
         do! Task.Delay 500

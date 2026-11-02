@@ -136,13 +136,18 @@ let ``a cold language service reports the unit error within three seconds`` () =
         { File = Path.Combine(AppContext.BaseDirectory, (if OperatingSystem.IsWindows() then "tambour.exe" else "tambour"))
           Arguments = [] }
 
+    // Other processes of the app still running would share the CPU with this one: none should be.
+    let others = Process.GetProcessesByName "tambour" |> Array.length
     let clock = Stopwatch.StartNew()
     use languages = new LanguageService(command, init)
+    languages.Ready.Wait()
+    let ready = clock.Elapsed.TotalSeconds
     let checkedScript = languages.CheckAsync(unitError, null).Result
     let elapsed = clock.Elapsed.TotalSeconds
-    TestContext.Current.TestOutputHelper.WriteLine $"cold start to the unit error: {elapsed:F2} s"
+    let measured = $"the unit error took {elapsed:F2} s, {ready:F2} s of it to start; {others} other processes of the app ran"
+    TestContext.Current.TestOutputHelper.WriteLine measured
     Assert.Contains(checkedScript.Diagnostics, fun d -> d.Code = "FS0001")
-    Assert.True(elapsed < limit 3.0, $"the unit error took {elapsed:F2} s")
+    Assert.True(elapsed < limit 3.0, measured)
 
 [<Fact>]
 let ``a check classifies the script's names, in the script's own lines`` () =
