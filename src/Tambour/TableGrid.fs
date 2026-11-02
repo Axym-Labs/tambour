@@ -239,6 +239,24 @@ module GridCommand =
     let insertRowBelow (t: Table) (s: Selection) = [ TableEdit.addRows t (min (s.R1 + 1) t.Rows) 1 ]
     let deleteRows (t: Table) (s: Selection) = [ TableEdit.removeRows t s.R0 (count s) ]
 
+    /// Whether a selection's cells on screen are all empty, as `clear` leaves them.
+    let isEmpty (t: Table) (s: Selection) =
+        shown s |> List.forall (fun c -> let v = t.Columns.[c].Values in (Values.slice s.R0 (count s) v).Equals(Values.blank v.Kind (count s)))
+
+    /// The rows of several selections removed, each row once where they overlap, the lowest last so
+    /// each removal's index holds.
+    let deleteRowsOf (t: Table) (selections: Selection list) =
+        selections
+        |> List.map (fun s -> s.R0, s.R1)
+        |> List.sort
+        |> List.fold
+            (fun runs (r0, r1) ->
+                match runs with
+                | (a, b) :: rest when r0 <= b + 1 -> (a, max b r1) :: rest
+                | _ -> (r0, r1) :: runs)
+            []
+        |> List.map (fun (r0, r1) -> TableEdit.removeRows t r0 (r1 - r0 + 1))
+
     /// Each selected column's first selected cell copied into the cells below it.
     let fillDown (t: Table) (s: Selection) =
         [ if s.R1 > s.R0 then
@@ -297,7 +315,7 @@ type private Drag =
 /// The table grid: a table drawn from its column arrays, only the cells in view, so a million rows
 /// scroll as ten do. Cells are selected with the pointer and the keys, a block of them by dragging
 /// and further blocks with Ctrl, edited in place (typed into, or Enter or F2), cleared with Delete,
-/// copied and pasted as a spreadsheet does. Every change is
+/// copied and pasted as a spreadsheet does; Delete on whole rows already empty removes them. Every change is
 /// reported as table edits, holding what they replace; the grid changes its table only when it is
 /// given a new one.
 type TableGrid() as this =
@@ -788,6 +806,22 @@ type TableGrid() as this =
         | Some t when columns () > 0 && rows () > 0 -> report (Ok [ for block in List.rev (blocks ()) do yield! GridCommand.clear t (selectionOf block) ])
         | _ -> ()
 
+    /// Delete: whole rows already empty are removed, and everything else is emptied, so a second
+    /// Delete on whole rows removes what the first emptied.
+    let delete () =
+        match table with
+        | Some t when columns () > 0 && rows () > 0 ->
+            let selected = List.rev (blocks ())
+            let wholeRows block = let c0, c1, _, _ = boundsOf block in c0 <= firstShown () && c1 >= lastShown ()
+
+            if selected |> List.forall (fun block -> wholeRows block && GridCommand.isEmpty t (selectionOf block)) then
+                let first = selected |> List.map (fun block -> let _, _, r0, _ = boundsOf block in r0) |> List.min
+                report (Ok(GridCommand.deleteRowsOf t (selected |> List.map selectionOf)))
+                moveTo { Column = firstShown (); Row = min first (rows () - 1) } false
+            else
+                clear ()
+        | _ -> ()
+
     /// Copy and Cut take one block, as a spreadsheet does; the other commands take the latest.
     let oneBlock () =
         if others.IsEmpty then true
@@ -1180,7 +1214,6 @@ type TableGrid() as this =
     member private _.Pressed(e: PointerPressedEventArgs) =
         let shift = e.KeyModifiers.HasFlag KeyModifiers.Shift
         let control = e.KeyModifiers.HasFlag KeyModifiers.Control
-        let extend = shift || control
         let leftButton = e.GetCurrentPoint(this).Properties.IsLeftButtonPressed
 
         // A drag with the left button from here selects as it goes.
@@ -1213,13 +1246,17 @@ type TableGrid() as this =
             | Some(OnColumnHeader column) when isCollapsed column -> toggleCollapsed column
             | Some(OnColumnHeader column) when e.ClickCount = 2 -> header.Trigger column
             | Some(OnColumnHeader column) ->
-                if not extend then anchor <- { Column = column; Row = 0 }
+                // A whole column; Shift extends the columns from the one the selection began at,
+                // and Ctrl begins another block of them.
+                if control && not shift then addBlock { Column = column; Row = 0 }
+                elif not shift then anchor <- { Column = column; Row = 0 }
                 anchor <- { anchor with Row = 0 }
                 moveTo { Column = column; Row = rows () - 1 } true
                 drags Columns
             | Some(OnRowHeader row) ->
-                // A whole row; Shift or Ctrl extends the rows from the one the selection began at.
-                if not extend then anchor <- { Column = firstShown (); Row = row }
+                // A whole row, as a column above.
+                if control && not shift then addBlock { Column = firstShown (); Row = row }
+                elif not shift then anchor <- { Column = firstShown (); Row = row }
                 anchor <- { anchor with Column = firstShown () }
                 moveTo { Column = lastShown (); Row = row } true
                 drags Rows
@@ -1251,7 +1288,7 @@ type TableGrid() as this =
             | Key.End when control -> moveTo { Column = focus.Column; Row = rows () - 1 } shift; e.Handled <- true
             | Key.Enter
             | Key.F2 -> beginEdit None; e.Handled <- true
-            | Key.Delete -> clear (); e.Handled <- true
+            | Key.Delete -> delete (); e.Handled <- true
             | _ when control ->
                 // A command's keys as the preferences have them, or its own.
                 let keysOf (name: string) (keys: string) = Preferences.Live.Current.Keys.TryFind name |> Option.defaultValue keys

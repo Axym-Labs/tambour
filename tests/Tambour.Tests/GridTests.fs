@@ -147,7 +147,7 @@ let ``the grid draws a frame over a million rows within 16 ms wherever it is scr
     let slowest = Seq.max recorded
     Assert.True(slowest < limit 16.0, $"the grid's slowest Render took {slowest:F2} ms")
 
-/// A row's header selects the row, Shift or Ctrl extends it; the context menu offers every grid
+/// A row's header selects the row, Shift extends it, Ctrl adds another; the context menu offers every grid
 /// command, as the Table menu does; a command taken there is one change, as its edits.
 [<AvaloniaFact>]
 let ``a row header selects its row, and the grid's commands are on its context menu`` () =
@@ -209,6 +209,42 @@ let ``a drag selects a block, Ctrl adds another, and Delete empties them all at 
     window.MouseDown(cell 1 2, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
     window.MouseUp(cell 1 2, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
     Assert.Equal<(CellRef * CellRef) list>([ { Column = 1; Row = 2 }, { Column = 1; Row = 2 } ], grid.Blocks)
+    window.Close()
+
+/// Delete on whole rows empties them, and on whole rows already empty removes them, so a second
+/// Delete removes what the first emptied; the blocks of rows Ctrl adds go with them. Cells short of
+/// whole rows are only ever emptied.
+[<AvaloniaFact>]
+let ``Delete on empty whole rows removes them, so a second Delete removes the rows it emptied`` () =
+    let five = { Name = "five"; Columns = [ { Name = "n"; Unit = null; Values = Ints [| 1; 2; 3; 4; 5 |] }; { Name = "s"; Unit = null; Values = Texts [| "a"; "b"; "c"; "d"; "e" |] } ] }
+    let grid, window, edits, _ = shown five
+    let delete () =
+        grid.Focus() |> ignore
+        window.KeyPress(Avalonia.Input.Key.Delete, Avalonia.Input.RawInputModifiers.None, Avalonia.Input.PhysicalKey.Delete, null)
+        let last = Seq.last edits
+        // The edits made the grid's table anew, as the shell does.
+        grid.Table <- Some((Map.ofList [ "five", grid.Table.Value ], last) ||> List.fold TableEdit.apply |> Map.find "five")
+        last
+
+    let row r = Avalonia.Point(6.0, 40.0 + Tokens.Height.gridRow * (float r + 0.5))
+    window.MouseDown(row 1, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    window.MouseUp(row 1, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+    window.MouseDown(row 3, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.Control)
+    window.MouseMove(row 4, Avalonia.Input.RawInputModifiers.Control ||| Avalonia.Input.RawInputModifiers.LeftMouseButton)
+    window.MouseUp(row 4, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.Control)
+    Assert.Equal(2, grid.Blocks.Length)
+
+    Assert.All(delete (), fun e -> Assert.True(e.IsCells, $"the first Delete did more than empty cells: {e}"))
+    Assert.Equal(5, grid.Table.Value.Rows)
+    Assert.Equal<TableEdit list>([ RemoveRows("five", 3, [ Ints [| 0; 0 |]; Texts [| ""; "" |] ]); RemoveRows("five", 1, [ Ints [| 0 |]; Texts [| "" |] ]) ], delete ())
+    Assert.Equal<Values list>([ Ints [| 1; 3 |]; Texts [| "a"; "c" |] ], grid.Table.Value.Columns |> List.map (fun c -> c.Values))
+    Assert.Equal<(CellRef * CellRef) list>([ { Column = 0; Row = 1 }, { Column = 0; Row = 1 } ], grid.Blocks)
+
+    // Empty cells short of a whole row stay.
+    grid.Select({ Column = 0; Row = 0 }, { Column = 0; Row = 0 })
+    delete () |> ignore
+    delete () |> ignore
+    Assert.Equal(2, grid.Table.Value.Rows)
     window.Close()
 
 /// A drag down the row numbers selects whole rows, and past the grid's bottom it scrolls on.
