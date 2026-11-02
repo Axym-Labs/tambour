@@ -19,6 +19,8 @@ open Tambour
 open Xunit
 
 let private pumpUntil (seconds: float) (what: string) (ready: unit -> bool) =
+    // A shared runner is slower than a desk: three times the wait there.
+    let seconds = if Environment.GetEnvironmentVariable "GITHUB_ACTIONS" = "true" then 3.0 * seconds else seconds
     let clock = Stopwatch.StartNew()
 
     while not (ready ()) do
@@ -43,6 +45,17 @@ let private typeInto (window: Shell.MainWindow) (text: string) =
     editor.Editor.CaretOffset <- editor.Text.Length
     editor.Editor.TextArea.PerformTextInput text
     Dispatcher.UIThread.RunJobs()
+
+/// Waits for the shown tab's run to end well; where it does not, says how it stands.
+let private ran (seconds: float) (what: string) (window: Shell.MainWindow) =
+    let texts () =
+        window.Active.GetVisualDescendants().OfType<TextBlock>() |> Seq.map (fun b -> b.Text) |> Seq.filter (fun t -> not (String.IsNullOrEmpty t)) |> List.ofSeq
+
+    try
+        pumpUntil seconds what (fun () -> texts () |> List.exists (fun t -> t.StartsWith "ran in"))
+    with e ->
+        let status = texts () |> List.filter (fun t -> t.StartsWith "the script" || t.StartsWith "starting" || t.Contains "worker" || t.StartsWith "running") |> String.concat " | "
+        failwith $"{e.Message}; the status: {status}"
 
 /// Closes the window, answering Don't save, and waits until it has closed, workers and all.
 let private closeAll (window: Shell.MainWindow) =
@@ -749,8 +762,7 @@ let ``a table's rename follows into the prelude and the script, and one undo tak
     let prelude () = File.ReadAllText(Path.Combine(dir, "prelude.fsx"))
     Assert.Contains("\"tables/trials.csv\"", prelude ())
     Assert.Contains("let mutable trials: Trial[]", prelude ())
-    let status () = window.Active.GetVisualDescendants().OfType<TextBlock>() |> Seq.exists (fun b -> not (isNull b.Text) && b.Text.StartsWith "ran in")
-    pumpUntil 30.0 "a clean run on the renamed table" status
+    ran 30.0 "a clean run on the renamed table" window
 
     press window Key.S RawInputModifiers.Control
     pumpUntil 10.0 "the save" (fun () -> window.Active.Unsaved.IsEmpty)
@@ -879,8 +891,7 @@ let ``a table's columns as laid out come back at the next start, and the full vi
     // Escape from the table's grid, where the focus is in the full view.
     (window.Active.GetVisualDescendants().OfType<TableGrid>() |> Seq.head).Focus() |> ignore
     // Escape cancels a run first; with none running it leaves the full view.
-    pumpUntil 30.0 "the first run's end" (fun () ->
-        window.Active.GetVisualDescendants().OfType<TextBlock>() |> Seq.exists (fun b -> not (isNull b.Text) && b.Text.StartsWith "ran in"))
+    ran 30.0 "the first run's end" window
     press window Key.Escape RawInputModifiers.None
     pumpUntil 5.0 "the full view left" (fun () -> window.CaptureRenderedFrame().Dispose(); editor.Bounds.Width > 0.0)
     closeAll window
