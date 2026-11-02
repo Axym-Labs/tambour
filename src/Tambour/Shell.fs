@@ -179,6 +179,8 @@ module Sheet =
 /// The script the window opens with.
 let example =
     """// Ctrl+Enter (or F5) runs the script; Escape cancels a run.
+open Marey.UnitsOfMeasure
+
 let t = Array.init 100 (fun i -> float i * 0.05<s>)
 
 let fall =
@@ -192,7 +194,7 @@ let fall =
 
 /// What every script may take for granted.
 let prelude =
-    "open Marey\nopen Marey.UnitsOfMeasure\nopen Microsoft.FSharp.Data.UnitSystems.SI.UnitSymbols\n"
+    "open Marey\nopen Microsoft.FSharp.Data.UnitSystems.SI.UnitSymbols\n"
 
 /// What a workspace asks of the window that holds it, whose tabs are workspaces.
 type Tabs =

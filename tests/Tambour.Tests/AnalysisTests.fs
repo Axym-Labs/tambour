@@ -76,6 +76,7 @@ let ``a script that fetches Marey from nuget is checked against the app's Marey`
     let script =
         "#r \"nuget: Marey.Sim\"\n"
         + "let energy = U.joule\n"
+        + "open Marey.UnitsOfMeasure\n"
         + "let figure = Chart.lineIn U.radian U.second [| 1.0<rad> |] [| 2.0<s> |]\n"
 
     let path = Path.Combine(Path.GetTempPath(), "tambour-nuget-marey.fsx")
@@ -243,22 +244,38 @@ let ``a completion entry is described by its signature and documentation`` () =
 
 // ---- Marey's witness fixes -------------------------------------------------------------------------
 
+/// Under the prelude an axis takes a unit only where the script gives one.
+[<Fact>]
+let ``an axis with no unit beside one with a unit checks clean`` () =
+    let script =
+        "type Row = { Index: int; Height: float<m> }\n"
+        + "let rows = [| { Index = 0; Height = 1.0<m> }; { Index = 1; Height = 2.0<m> } |]\n"
+        + "let fig =\n    plot rows {\n        x (fun r -> float r.Index)\n        y U.metre (fun r -> r.Height)\n        layer GeomPoint\n    }\n"
+        + "let plain = Chart.Line([| 0.0; 1.0 |], [| 2.0; 3.0 |])\n"
+
+    let found = service.Value.Check { Id = 1; Text = script; Path = null }
+    let errors = found.Diagnostics |> Array.filter (fun d -> d.Severity = "error")
+    Assert.True(errors.Length = 0, String.Join("\n", errors |> Array.map (fun d -> $"{d.Code} {d.Message}")))
+    Assert.Empty found.Findings
+
 let private measured = "let t = [| 0.0<s>; 1.0<s>; 2.0<s> |]\nlet x = [| 0.0<m>; 2.0<m>; 3.0<m> |]\n"
 
 /// A call short of the right witnesses is found where the script has it, and its first fix makes
-/// the call this one; each of its fixes makes the script check clean.
+/// the call this one; each of its fixes makes the script check clean. The calls on measured
+/// arrays are the unit-required mode's, which the script opens itself.
 [<Theory>]
 [<InlineData("Chart.lineIn t x", "MAREY001", "Chart.lineIn U.second U.metre t x")>]
 [<InlineData("Chart.lineIn U.metre U.metre t x", "MAREY002", "Chart.lineIn U.second U.metre t x")>]
 [<InlineData("Chart.line t x", "MAREY003", "Chart.lineIn U.second U.metre t x")>]
 let ``a call short of its witnesses is found, and its fixes check clean`` (call: string, code: string, first: string) =
-    let script = measured + $"let figure = {call}\n"
+    let before = "open Marey.UnitsOfMeasure\n" + measured
+    let script = before + $"let figure = {call}\n"
     let found = service.Value.Check { Id = 1; Text = script; Path = null }
     let finding = found.Findings |> Array.find (fun f -> f.Code = code)
-    Assert.Equal(3, finding.StartLine)
+    Assert.Equal(4, finding.StartLine)
     Assert.Equal("let figure = ".Length, finding.StartColumn)
     Assert.NotEmpty finding.Fixes
-    Assert.Equal(measured + $"let figure = {first}\n", Analysis.applyFix script finding.Fixes.[0])
+    Assert.Equal(before + $"let figure = {first}\n", Analysis.applyFix script finding.Fixes.[0])
 
     for fix in finding.Fixes do
         let fixedScript = Analysis.applyFix script fix
@@ -325,7 +342,7 @@ let ``a call on a table's columns is found on the script's line, and fixed`` (lo
 
     let script =
         (if loads then "#load \"prelude.fsx\"\nopen Prelude\n" else "")
-        + "let t = runs |> Array.map (fun r -> r.time)\nlet x = runs |> Array.map (fun r -> r.height)\nlet figure = Chart.lineIn t x\n"
+        + "open Marey.UnitsOfMeasure\nlet t = runs |> Array.map (fun r -> r.time)\nlet x = runs |> Array.map (fun r -> r.height)\nlet figure = Chart.lineIn t x\n"
 
     let line = script.Split('\n') |> Array.findIndex (fun l -> l.StartsWith "let figure") |> (+) 1
     let found = service.Value.Check { Id = 1; Text = script; Path = path }

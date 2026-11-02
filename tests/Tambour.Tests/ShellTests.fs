@@ -106,7 +106,7 @@ let ``the window runs its script on F5 and shows the figure with its control`` (
 [<AvaloniaFact>]
 let ``an action writes the script, and the figure is run again`` () =
     let script =
-        "let t = Array.init 50 (fun i -> float i * 0.1<s>)\nlet fig = Chart.lineIn U.second U.metre t (t |> Array.map (fun t -> 1.0<m> * exp (-t / 2.0<s>))) // decay\n"
+        "open Marey.UnitsOfMeasure\nlet t = Array.init 50 (fun i -> float i * 0.1<s>)\nlet fig = Chart.lineIn U.second U.metre t (t |> Array.map (fun t -> 1.0<m> * exp (-t / 2.0<s>))) // decay\n"
 
     let window = new Shell.MainWindow(script)
     window.Show()
@@ -211,7 +211,7 @@ let ``every command is in a menu with its shortcut, and its keys do what the ent
 [<AvaloniaFact>]
 let ``a call short of its witnesses is fixed from its menu, and undone to the byte`` () =
     let script =
-        "let t = [| 0.0<s>; 1.0<s>; 2.0<s> |]\nlet x = [| 0.0<m>; 2.0<m>; 3.0<m> |]\nlet figure = Chart.lineIn t x // drawn\n"
+        "open Marey.UnitsOfMeasure\nlet t = [| 0.0<s>; 1.0<s>; 2.0<s> |]\nlet x = [| 0.0<m>; 2.0<m>; 3.0<m> |]\nlet figure = Chart.lineIn t x // drawn\n"
 
     let window = new Shell.MainWindow(script)
     window.Show()
@@ -260,7 +260,7 @@ let ``a call short of its witnesses is fixed from its menu, and undone to the by
 [<AvaloniaFact>]
 let ``the fixes' key is the one the preferences give it, and the tooltip says so`` () =
     let script =
-        "let t = [| 0.0<s>; 1.0<s>; 2.0<s> |]\nlet x = [| 0.0<m>; 2.0<m>; 3.0<m> |]\nlet figure = Chart.lineIn t x\n"
+        "open Marey.UnitsOfMeasure\nlet t = [| 0.0<s>; 1.0<s>; 2.0<s> |]\nlet x = [| 0.0<m>; 2.0<m>; 3.0<m> |]\nlet figure = Chart.lineIn t x\n"
 
     let before = Preferences.Live.Current
     let window = new Shell.MainWindow(script)

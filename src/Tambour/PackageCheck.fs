@@ -18,7 +18,7 @@ open SkiaSharp
 open Tambour.Protocol
 
 let private script =
-    "let t = Array.init 50 (fun i -> float i * 0.1<s>)\nlet fig = Chart.lineIn U.second U.metre t (t |> Array.map (fun t -> 1.0<m> * exp (-t / 2.0<s>)))\n"
+    "open Marey.UnitsOfMeasure\nlet t = Array.init 50 (fun i -> float i * 0.1<s>)\nlet fig = Chart.lineIn U.second U.metre t (t |> Array.map (fun t -> 1.0<m> * exp (-t / 2.0<s>)))\n"
 
 /// The edit that plots metres under seconds.
 let private wrongUnit = "U.metre t", "U.second t"
