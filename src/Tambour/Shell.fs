@@ -165,6 +165,10 @@ module Sheet =
             ValueNone
         )
 
+    let layout (l: GridLayout) : IAttr<TableGrid> =
+        AttrBuilder<TableGrid>.CreateProperty<GridLayout>("Layout", l, ValueSome(fun (v: TableGrid) -> v.Layout), ValueSome(fun (v: TableGrid, l) -> v.Layout <- l), ValueNone)
+
+    let onLayoutChanged f = subscription "LayoutChanged" (fun g -> g.LayoutChanged) f
     let onEdited f = subscription "Edited" (fun g -> g.Edited) f
     let onSelectionChanged f = subscription "SelectionChanged" (fun g -> g.SelectionChanged) f
     let onRefused f = subscription "Refused" (fun g -> g.Refused) f
@@ -218,7 +222,13 @@ type Tabs =
       /// Files deleted: a tab showing one of them closes, as there is nothing left to save.
       Deleted: string list -> unit
       /// Moves the workspace's tab into a window of its own.
-      Detach: unit -> unit }
+      Detach: unit -> unit
+      /// Opens the Preferences dialog.
+      Preferences: unit -> unit
+      /// The tables of the other tabs, each with its tab's name.
+      OtherTables: unit -> (string * Tambour.Data.Table) list
+      /// Asks which of these tables to take; none where it was cancelled.
+      PickTable: (string * Tambour.Data.Table) list -> Task<Tambour.Data.Table option> }
 
 /// What a workspace runs with: its workers, started when first asked, the language service it
 /// shares with the other workspaces, the control it is drawn in, and the window's tabs.
@@ -305,6 +315,10 @@ type Model =
       Bottom: float
       /// Whether the figure's actions are shown.
       ActionsOpen: bool
+      /// How each table's columns are shown in its grid, by table name.
+      Layouts: Map<string, GridLayout>
+      /// Whether the right side takes the whole window.
+      FullView: bool
       /// The scripts and projects opened, most recent first, as the window keeps them.
       Recent: string list
       /// The project's scripts on disk, as the file list shows them, and whether it is shown.
@@ -358,6 +372,11 @@ type Msg =
     /// The shown table renamed or duplicated, from the Table menu.
     | RenameShownTable
     | DuplicateShownTable
+    /// Asks for a table of another tab, to copy into this workspace.
+    | ChooseCopyTable
+    | CopyTable of Tambour.Data.Table option
+    /// The project's text settings changed in Preferences: kept in its project file.
+    | SetSkia of Tambour.Protocol.SkiaSettings
     | TableSelected of table: string * columns: int list
     | PlotSelected
     | Pick of Rect
@@ -368,6 +387,12 @@ type Msg =
     | ToggleBottom
     | ShowBottom of tab: int
     | ToggleActions
+    | ToggleFullView
+    | OpenPreferences
+    /// The preferences changed: drawn again with them (the menus' shortcuts).
+    | PreferencesChanged
+    /// A table's grid laid its columns out anew.
+    | LaidOut of table: string * GridLayout
     /// A divider dragged: where the script's side ends, as a fraction, and the bottom panel's height.
     | Resized of split: float * bottom: float
     /// A grid command from the Table menu or its key, for the table shown.
@@ -405,11 +430,32 @@ type Msg =
     /// Something to tell, shown where a GUI action's outcome is.
     | Note of string
     | Failed of exn
+    /// The workspace disposed: its loop stops and its subscriptions with it, so a closed tab no
+    /// longer watches its file or the preferences.
+    | Ended
 
 /// The bottom panel's height where a project has none.
 let defaultBottom = 170.0
 
+/// The user's preferences, or the defaults where they are kept nowhere (a test's run).
+let private preferences () =
+    match App.SettingsDirectory with
+    | null -> Preferences.defaults
+    | dir -> Preferences.read dir
+
+/// Which panes are open, kept for the next tab and the next start.
+let private keepPanes (model: Model) =
+    match App.SettingsDirectory with
+    | null -> ()
+    | dir ->
+        try
+            Preferences.write dir { Preferences.read dir with FilesOpen = model.FilesOpen; BottomOpen = model.BottomOpen; ActionsOpen = model.ActionsOpen }
+        with _ ->
+            ()
+
 let init (script: string) () : Model * Cmd<Msg> =
+    let panes = preferences ()
+
     { Script = script
       Figures = [||]
       Selected = -1
@@ -447,13 +493,15 @@ let init (script: string) () : Model * Cmd<Msg> =
       Look = Palette.light
       Caret = (1, 1)
       Split = 0.5
-      BottomOpen = true
+      BottomOpen = panes.BottomOpen
       BottomTab = 0
       Bottom = defaultBottom
-      ActionsOpen = true
+      ActionsOpen = panes.ActionsOpen
+      Layouts = Map.empty
+      FullView = false
       Recent = []
       Files = []
-      FilesOpen = true
+      FilesOpen = panes.FilesOpen
       OpenTabs = Map.empty },
     Cmd.none
 
@@ -524,7 +572,13 @@ let private writeProject (model: Model) =
                 Script = Path.GetFileName path
                 Marey = Project.mareyVersion
                 Split = model.Split
-                Bottom = model.Bottom }
+                Bottom = model.Bottom
+                Columns =
+                    [| for KeyValue(name, l) in model.Layouts ->
+                           { Table = name
+                             Widths = [| for KeyValue(c, w) in l.Widths -> { Column = c; Width = w } |]
+                             Hidden = Array.ofSeq l.Hidden
+                             Collapsed = Array.ofSeq l.Collapsed } : Project.TableColumns |] }
     | _ -> ()
 
 /// The tables by name, as the history holds them.
@@ -560,7 +614,17 @@ let private withTables (model: Model) (tables: Map<string, Tambour.Data.Table>) 
         |> List.filter (fun (name, _) -> not (kept |> List.exists (fun s -> s.Table.Name = name)))
         |> List.map (fun (name, t) -> { Tambour.Data.Prelude.Table = t; Tambour.Data.Prelude.File = name + ".csv" })
 
-    { model with Tables = kept @ added }
+    // A renamed table's column layout goes with it to the new name.
+    let layouts =
+        model.Tables
+        |> List.fold
+            (fun (m: Map<string, GridLayout>) s ->
+                match tables.ContainsKey s.Table.Name, m.TryFind s.Table.Name, renamed s with
+                | false, Some l, Some r -> m.Remove(s.Table.Name).Add(r.Table.Name, l)
+                | _ -> m)
+            model.Layouts
+
+    { model with Tables = kept @ added; Layouts = layouts }
 
 /// The model and what follows once the script and the tables are `state`: a table that changed
 /// is sent to the worker, the prelude is written again when the columns changed, and the figure
@@ -580,6 +644,8 @@ let private toState (env: Env) (model: Model) (state: History.State) (schema: bo
         match next.Project with
         | Some dir -> Tables.writePrelude dir next.Tables |> ignore
         | None -> ()
+
+    if not (obj.ReferenceEquals(next.Layouts, model.Layouts)) then writeProject next
 
     next,
     Cmd.OfTask.either
@@ -713,7 +779,7 @@ let private aboutWindow (look: Palette.Look) =
             Foreground = SolidColorBrush look.Text
         )
 
-    let panel = StackPanel(Spacing = 12.0, Margin = Thickness 18.0)
+    let panel = StackPanel(Spacing = Tokens.Space.s3, Margin = Thickness Tokens.Space.s4)
     panel.Children.Add text
     panel.Children.Add close
 
@@ -758,8 +824,13 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | Run ->
         { model with Running = true; Status = "running…"; Playing = Set.empty },
         send env (Request.Evaluate { Text = model.Script; Path = Option.toObj model.Path })
+    // An export ends as a run does, with the worker doing it; its reply, if one comes, is let go.
+    | Cancel when model.Exporting.IsSome ->
+        { model with Exporting = None; Status = "export cancelled" }, Cmd.OfTask.attempt env.Workers.CancelAsync () Failed
     | Cancel when model.Running ->
         { model with Running = false; Status = "cancelled" }, Cmd.OfTask.attempt env.Workers.CancelAsync () Failed
+    // With nothing running, Escape leaves the full view.
+    | Cancel when model.FullView -> { model with FullView = false }, Cmd.none
     | Cancel -> model, Cmd.none
     | Replied reply ->
         match reply with
@@ -816,7 +887,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 with e ->
                     { model with Exporting = None; Status = $"the export was not written: {e.Message}" }, Cmd.none
             | None -> model, Cmd.none
-        | Reply.Failed message -> { model with Running = false; Status = message }, Cmd.none
+        | Reply.Failed message -> { model with Running = false; Exporting = None; Status = message }, Cmd.none
         | Reply.Picked located ->
             match model.Picking with
             | Some(plotted, area) ->
@@ -938,6 +1009,17 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 Files = (match opened.Project with Some dir -> Project.scripts dir |> Array.map (fun n -> Path.Combine(dir, n)) |> List.ofArray | None -> [])
                 Split = (match opened.Settings with Some s when s.Split > 0.05 && s.Split < 0.95 -> s.Split | _ -> model.Split)
                 Bottom = (match opened.Settings with Some s when s.Bottom > 0.0 -> s.Bottom | _ -> model.Bottom)
+                Layouts =
+                    match opened.Settings with
+                    | Some s ->
+                        let orEmpty (a: 'a[]) = if isNull a then [||] else a
+                        Map.ofList
+                            [ for c in s.Columns do
+                                  c.Table,
+                                  { Widths = Map.ofList [ for w in orEmpty c.Widths -> w.Column, w.Width ]
+                                    Hidden = Set.ofArray (orEmpty c.Hidden)
+                                    Collapsed = Set.ofArray (orEmpty c.Collapsed) } ]
+                    | None -> Map.empty
                 History = History.empty
                 Figures = [||]
                 Selected = -1
@@ -983,7 +1065,8 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 File.WriteAllText(path, model.Script)
                 writeProject model
                 let model = saveTables model
-                { model with Saved = model.Script; Status = $"saved {Path.GetFileName path}" }, Cmd.ofMsg Run
+                { model with Saved = model.Script; Status = $"saved {Path.GetFileName path}" },
+                (if Preferences.Live.Current.RunOnSave then Cmd.ofMsg Run else Cmd.none)
             with e ->
                 { model with Status = $"not saved: {e.Message}" }, Cmd.none
         | None ->
@@ -1017,7 +1100,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 Cmd.ofMsg Run
         | _ -> model, Cmd.none
     | ChooseExport ->
-        let format = model.Inputs.TryFind "export format" |> Option.defaultValue "png"
+        let format = model.Inputs.TryFind "export format" |> Option.defaultValue Preferences.Live.Current.ExportFormat
         let name = (model.Path |> Option.map Path.GetFileNameWithoutExtension |> Option.defaultValue "figure") + "." + format
 
         let size field fallback =
@@ -1037,7 +1120,7 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             (Option.map (fun path -> ExportTo(path, format, width, height)) >> Option.defaultValue Dismissed)
             Failed
     | ExportTo(path, format, width, height) when not (isNull model.Picture) ->
-        { model with Exporting = Some path; Status = "exporting…" },
+        { model with Exporting = Some path; Status = $"exporting {Path.GetFileName path}…" },
         send env (Request.Export { Format = format; Width = width; Height = height; Skia = skiaOf model })
     | ExportTo _ -> { model with Status = "there is no figure to export" }, Cmd.none
     | Dismissed -> model, Cmd.none
@@ -1170,6 +1253,19 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         model, (match List.tryItem (model.Tab - 1) model.Tables with Some s -> Cmd.ofMsg (RenameTable s.Table.Name) | None -> Cmd.none)
     | DuplicateShownTable ->
         model, (match List.tryItem (model.Tab - 1) model.Tables with Some s -> Cmd.ofMsg (DuplicateTable s.Table.Name) | None -> Cmd.none)
+    | ChooseCopyTable ->
+        match env.Tabs.OtherTables() with
+        | [] -> { model with ActionNote = "no other tab has a table to copy" }, Cmd.none
+        | others -> model, Cmd.OfTask.either env.Tabs.PickTable others CopyTable Failed
+    | CopyTable None -> model, Cmd.none
+    | SetSkia skia ->
+        let settings = model.Settings |> Option.defaultValue (Project.defaults (model.Path |> Option.map Path.GetFileName |> Option.defaultValue ""))
+        let next = { model with Settings = Some { settings with Skia = skia } }
+        writeProject next
+        next, Cmd.none
+    | CopyTable(Some t) ->
+        let copy = { t with Name = freshName model t.Name }
+        { model with Tab = model.Tables.Length + 1; ActionNote = $"copied {t.Name} into this workspace" }, Cmd.ofMsg (TableEdited [ Tambour.Data.AddTable copy ])
     | TableSelected(table, columns) -> { model with TableSelection = Some(table, columns) }, Cmd.none
     | PlotSelected ->
         match model.TableSelection |> Option.bind (fun (name, columns) -> model.Tables |> List.tryFind (fun s -> s.Table.Name = name) |> Option.map (fun s -> s.Table, columns)) with
@@ -1203,9 +1299,27 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         { model with Theme = theme }, Cmd.none
     | LookChanged look -> { model with Look = look }, Cmd.none
     | Caret(line, column) -> { model with Caret = (line, column) }, Cmd.none
-    | ToggleBottom -> { model with BottomOpen = not model.BottomOpen }, Cmd.none
-    | ShowBottom tab -> { model with BottomOpen = true; BottomTab = tab }, Cmd.none
-    | ToggleActions -> { model with ActionsOpen = not model.ActionsOpen }, Cmd.none
+    | ToggleBottom ->
+        let next = { model with BottomOpen = not model.BottomOpen }
+        keepPanes next
+        next, Cmd.none
+    | ShowBottom tab ->
+        let next = { model with BottomOpen = true; BottomTab = tab }
+        if not model.BottomOpen then keepPanes next
+        next, Cmd.none
+    | ToggleActions ->
+        let next = { model with ActionsOpen = not model.ActionsOpen }
+        keepPanes next
+        next, Cmd.none
+    | ToggleFullView -> { model with FullView = not model.FullView }, Cmd.none
+    | OpenPreferences ->
+        env.Tabs.Preferences()
+        model, Cmd.none
+    | PreferencesChanged -> model, Cmd.none
+    | LaidOut(table, layout) ->
+        let next = { model with Layouts = model.Layouts.Add(table, layout) }
+        writeProject next
+        next, Cmd.none
     | Grid kind ->
         // The grid of the table shown, the only one in the window's tree.
         env.Host.GetVisualDescendants() |> Seq.tryPick (function :? TableGrid as g -> Some g | _ -> None) |> Option.iter (fun g -> g.Run kind)
@@ -1250,8 +1364,13 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             | _ -> []
 
         { model with Files = files }, Cmd.none
-    | ToggleFiles -> { model with FilesOpen = not model.FilesOpen }, Cmd.none
+    | ToggleFiles ->
+        let next = { model with FilesOpen = not model.FilesOpen }
+        keepPanes next
+        next, Cmd.none
     | TabsChanged tabs -> { model with OpenTabs = tabs }, Cmd.none
+    // Taken by the loop's termination before it reaches here.
+    | Ended -> model, Cmd.none
     | RenameFile path ->
         model,
         Cmd.OfTask.either
@@ -1354,17 +1473,14 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | Note text -> { model with ActionNote = text }, Cmd.none
     | Failed e -> { model with Status = e.Message }, Cmd.none
 
-/// The one spacing unit; every margin and gap is a multiple of it.
-let gap = 6.0
-
 let private label (text: string) : IView =
-    TextBlock.create [ TextBlock.text text; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.margin (Thickness(0.0, 0.0, 8.0, 0.0)) ]
+    TextBlock.create [ TextBlock.text text; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.margin (Thickness(0.0, 0.0, Tokens.Space.s2, 0.0)) ]
 
 let private controlView (dispatch: Msg -> unit) (index: int) (c: ControlInfo) (playing: bool) : IView =
     let row (children: IView list) : IView =
-        DockPanel.create [ DockPanel.margin (Thickness(8.0, 2.0)); DockPanel.children children ]
+        DockPanel.create [ DockPanel.margin (Thickness(Tokens.Space.s2, Tokens.Space.s1)); DockPanel.children children ]
 
-    let shown = TextBlock.create [ TextBlock.dock Dock.Right; TextBlock.text c.Shown; TextBlock.width 90.0; TextBlock.margin (Thickness(12.0, 0.0, 0.0, 0.0)); TextBlock.verticalAlignment VerticalAlignment.Center ]
+    let shown = TextBlock.create [ TextBlock.dock Dock.Right; TextBlock.text c.Shown; TextBlock.width 90.0; TextBlock.margin (Thickness(Tokens.Space.s3, 0.0, 0.0, 0.0)); TextBlock.verticalAlignment VerticalAlignment.Center ]
 
     let slider =
         Slider.create [
@@ -1379,7 +1495,7 @@ let private controlView (dispatch: Msg -> unit) (index: int) (c: ControlInfo) (p
     | "time" ->
         row [
             Button.create [ Button.dock Dock.Left; Button.content (if playing then "Pause" else "Play"); Button.onClick (fun _ -> dispatch (TogglePlay index)) ]
-            TextBlock.create [ TextBlock.dock Dock.Left; TextBlock.text c.Label; TextBlock.margin (Thickness(8.0, 0.0)); TextBlock.verticalAlignment VerticalAlignment.Center ]
+            TextBlock.create [ TextBlock.dock Dock.Left; TextBlock.text c.Label; TextBlock.margin (Thickness(Tokens.Space.s2, 0.0)); TextBlock.verticalAlignment VerticalAlignment.Center ]
             shown
             slider
         ]
@@ -1425,12 +1541,27 @@ let private actionsView (model: Model) (dispatch: Msg -> unit) : IView =
         | Some _ -> "writes the script"
         | None -> ""
 
-    let input field (watermark: string) (width: float) : IView =
+    let spec kind (text: string) = Some { Kind = kind; Text = text; Lo = 0.0; Hi = 0.0 }
+
+    /// A field that writes its action into the script on Enter.
+    let input kind field (watermark: string) (apply: string -> ActionSpec option) : IView =
         TextBox.create [
             TextBox.placeHolderText watermark
-            TextBox.width width
+            TextBox.verticalContentAlignment VerticalAlignment.Center
+            TextBox.isEnabled (enabled kind)
+            TextBox.tip (tip kind)
             TextBox.text (model.Inputs.TryFind field |> Option.defaultValue "")
             TextBox.onTextChanged (fun t -> if Some t <> model.Inputs.TryFind field then dispatch (Typed(field, t)))
+            TextBox.onKeyDown (
+                (fun e ->
+                    if e.Key = Key.Enter then
+                        match e.Source with
+                        | :? TextBox as box ->
+                            apply (Option.ofObj box.Text |> Option.defaultValue "") |> Option.iter (Act >> dispatch)
+                            e.Handled <- true
+                        | _ -> ()),
+                SubPatchOptions.Always
+            )
         ]
 
     let button kind (label: string) (spec: unit -> ActionSpec option) : IView =
@@ -1438,6 +1569,7 @@ let private actionsView (model: Model) (dispatch: Msg -> unit) : IView =
             Button.content label
             Button.isEnabled (enabled kind)
             Button.tip (tip kind)
+            Button.verticalAlignment VerticalAlignment.Center
             // Every render's handler, since it reads what is typed now.
             Button.onClick ((fun _ -> spec () |> Option.iter (Act >> dispatch)), SubPatchOptions.Always)
         ]
@@ -1447,6 +1579,7 @@ let private actionsView (model: Model) (dispatch: Msg -> unit) : IView =
         ComboBox.create [
             ComboBox.placeholderText label
             ComboBox.minWidth 120.0
+            ComboBox.verticalAlignment VerticalAlignment.Center
             ComboBox.dataItems items
             ComboBox.selectedIndex -1
             ComboBox.isEnabled (enabled kind && items.Length > 0)
@@ -1459,9 +1592,62 @@ let private actionsView (model: Model) (dispatch: Msg -> unit) : IView =
             )
         ]
 
-    let text kind field = fun () -> Some { Kind = kind; Text = model.Inputs.TryFind field |> Option.defaultValue ""; Lo = 0.0; Hi = 0.0 }
+    /// The actions the bar has no room for, as one menu: each a submenu of its choices, or one entry.
+    let more : IView =
+        let choices kind (header: string) (items: string[]) : IView =
+            MenuItem.create [
+                MenuItem.header header
+                MenuItem.isEnabled (enabled kind && items.Length > 0)
+                MenuItem.tip (tip kind)
+                MenuItem.viewItems [
+                    for item in items do
+                        MenuItem.create [ MenuItem.header item; MenuItem.onClick ((fun _ -> spec kind item |> Option.iter (Act >> dispatch)), SubPatchOptions.Always) ]
+                ]
+            ]
 
-    let domain () =
+        Button.create [
+            Button.name "more actions"
+            Button.width Tokens.Height.control
+            Button.height Tokens.Height.control
+            Button.padding (Thickness 0.0)
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.horizontalContentAlignment HorizontalAlignment.Center
+            Button.verticalContentAlignment VerticalAlignment.Center
+            Button.background Brushes.Transparent
+            Button.tip "More: legend, colour by, facet by, fit"
+            Button.contextMenu (
+                ContextMenu.create [
+                    ContextMenu.viewItems [
+                        choices "legend" "_Legend" placements
+                        choices "colour by" "_Colour by" model.Columns
+                        choices "facet" "_Facet by" model.Columns
+                        MenuItem.create [
+                            MenuItem.header "_Fit"
+                            MenuItem.isEnabled (enabled "fit")
+                            MenuItem.tip (tip "fit")
+                            MenuItem.onClick ((fun _ -> spec "fit" "" |> Option.iter (Act >> dispatch)), SubPatchOptions.Always)
+                        ]
+                    ]
+                ]
+            )
+            Button.onClick (
+                (fun e ->
+                    match e.Source with
+                    | :? Control as c when not (isNull c.ContextMenu) -> c.ContextMenu.Open c
+                    | _ -> ()),
+                SubPatchOptions.Always
+            )
+            Button.content (
+                Avalonia.FuncUI.DSL.Path.create [
+                    Shapes.Path.data (Geometry.Parse "M2.25,8 A1.25,1.25 0 1 1 2.26,8 Z M6.75,8 A1.25,1.25 0 1 1 6.76,8 Z M11.25,8 A1.25,1.25 0 1 1 11.26,8 Z")
+                    Shapes.Path.fill (SolidColorBrush model.Look.Text)
+                    Shapes.Path.width Tokens.Height.icon
+                    Shapes.Path.height Tokens.Height.icon
+                ]
+            )
+        ]
+
+    let domain (_: string) =
         let parse field =
             match Double.TryParse(model.Inputs.TryFind field |> Option.defaultValue "", Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
             | true, v -> Some v
@@ -1473,54 +1659,68 @@ let private actionsView (model: Model) (dispatch: Msg -> unit) : IView =
             dispatch (Failed(FormatException "a y domain wants two numbers"))
             None
 
-    let group (children: IView list) : IView =
-        StackPanel.create [ StackPanel.orientation Orientation.Horizontal; StackPanel.spacing gap; StackPanel.margin (Thickness(0.0, 0.0, 2.0 * gap, gap)); StackPanel.children children ]
+    let note (text: string) : IView =
+        TextBlock.create [ TextBlock.margin (Thickness Tokens.Space.s3); TextBlock.textWrapping TextWrapping.Wrap; TextBlock.foreground (SolidColorBrush model.Look.Dim); TextBlock.text text ]
+
+    /// A row's label, in the column of labels.
+    let rowLabel (text: string) : IView =
+        TextBlock.create [
+            TextBlock.width Tokens.Width.label
+            TextBlock.verticalAlignment VerticalAlignment.Center
+            TextBlock.foreground (SolidColorBrush model.Look.Dim)
+            TextBlock.text text
+        ]
+
+    let labelled (text: string) (field: IView) : IView =
+        DockPanel.create [
+            DockPanel.children [
+                Border.create [ Border.dock Dock.Left; Border.child (rowLabel text) ]
+                field
+            ]
+        ]
 
     match Array.tryItem model.Selected model.Figures with
     | Some f when f.Controls > 0 ->
-        TextBlock.create [
-            TextBlock.margin (Thickness(8.0, 4.0))
-            TextBlock.textWrapping TextWrapping.Wrap
-            TextBlock.text "This figure is inside interact { }: it is shown and driven, but the actions edit plot { } blocks and Chart.* pipelines only."
-        ]
+        note "This figure is inside interact { }: it is shown and driven, but the actions edit plot { } blocks and Chart.* pipelines only."
     | Some _ ->
-        let section (name: string) (children: IView list) : IView =
-            DockPanel.create [
-                DockPanel.margin (Thickness(0.0, 0.0, 0.0, gap))
-                DockPanel.children [
-                    TextBlock.create [
-                        TextBlock.dock Dock.Left
-                        TextBlock.width 64.0
-                        TextBlock.margin (Thickness(0.0, 6.0, 0.0, 0.0))
-                        TextBlock.text name
-                        TextBlock.fontSize 12.0
-                        TextBlock.foreground (SolidColorBrush model.Look.Dim)
-                    ]
-                    WrapPanel.create [ WrapPanel.children children ]
-                ]
-            ]
+        let small (width: float) (child: IView) : IView = Border.create [ Border.width width; Border.child child ]
 
         StackPanel.create [
-            StackPanel.margin (Thickness(2.0 * gap, gap))
+            StackPanel.margin (Thickness Tokens.Space.s3)
+            StackPanel.spacing Tokens.Space.s2
             StackPanel.children [
-                section "Labels" [
-                    group [ input "title" "title" 140.0; button "title" "Title" (text "title" "title") ]
-                    group [ input "x label" "x label" 100.0; button "x label" "X label" (text "x label" "x label") ]
-                    group [ input "y label" "y label" 100.0; button "y label" "Y label" (text "y label" "y label") ]
+                labelled "Title" (input "title" "title" "title" (spec "title"))
+                Grid.create [
+                    Grid.columnDefinitions $"*,{Tokens.Space.s3},*"
+                    Grid.children [
+                        Border.create [ Grid.column 0; Border.child (labelled "x label" (input "x label" "x label" "x label" (spec "x label"))) ]
+                        Border.create [ Grid.column 2; Border.child (labelled "y label" (input "y label" "y label" "y label" (spec "y label"))) ]
+                    ]
                 ]
-                section "Axes" [
-                    group [ button "log y" "Log y" (fun () -> Some { Kind = "log y"; Text = ""; Lo = 0.0; Hi = 0.0 }) ]
-                    group [ input "lo" "from" 60.0; input "hi" "to" 60.0; button "y domain" "Y domain" domain ]
-                ]
-                section "Look" [
-                    group [ menu "theme" "Theme" themes; menu "legend" "Legend" placements; menu "colour by" "Colour by" model.Columns ]
-                ]
-                section "Layers" [
-                    group [ menu "layer" "Add layer" geoms; button "fit" "Fit" (fun () -> Some { Kind = "fit"; Text = ""; Lo = 0.0; Hi = 0.0 }); menu "facet" "Facet by" model.Columns ]
+                DockPanel.create [
+                    DockPanel.children [
+                        StackPanel.create [
+                            StackPanel.dock Dock.Right
+                            StackPanel.orientation Orientation.Horizontal
+                            StackPanel.spacing Tokens.Space.s2
+                            StackPanel.children [ menu "theme" "Theme" themes; menu "layer" "Add layer" geoms; more ]
+                        ]
+                        StackPanel.create [
+                            StackPanel.orientation Orientation.Horizontal
+                            StackPanel.spacing Tokens.Space.s2
+                            StackPanel.children [
+                                rowLabel "y axis"
+                                button "log y" "Log" (fun () -> spec "log y" "")
+                                small (2.0 * Tokens.Height.control) (input "y domain" "lo" "from" domain)
+                                TextBlock.create [ TextBlock.text "–"; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.foreground (SolidColorBrush model.Look.Dim) ]
+                                small (2.0 * Tokens.Height.control) (input "y domain" "hi" "to" domain)
+                            ]
+                        ]
+                    ]
                 ]
             ]
         ]
-    | None -> TextBlock.create [ TextBlock.margin (Thickness(8.0, 4.0)); TextBlock.text "Run a script that binds a figure to edit it here." ]
+    | None -> note "Run a script that binds a figure to edit it here."
 
 /// Puts a text on the clipboard of the window a control is in.
 let private copyFrom (source: obj) (text: string) =
@@ -1539,7 +1739,7 @@ let private problemView (look: Palette.Look) (dispatch: Msg -> unit) (all: Diagn
         Button.background Brushes.Transparent
         Button.horizontalAlignment HorizontalAlignment.Stretch
         Button.horizontalContentAlignment HorizontalAlignment.Left
-        Button.padding (Thickness(6.0, 1.0))
+        Button.padding (Thickness(Tokens.Space.s2, Tokens.border))
         Button.onClick ((fun _ -> dispatch (GoTo(d.StartLine, d.StartColumn))), SubPatchOptions.Always)
         Button.onKeyDown (
             (fun e ->
@@ -1595,8 +1795,8 @@ let rec private headerView (model: Model) (dispatch: Msg -> unit) (column: int) 
         StackPanel.dock Dock.Top
         StackPanel.isVisible shown
         StackPanel.orientation Orientation.Horizontal
-        StackPanel.spacing 6.0
-        StackPanel.margin (Thickness(6.0, 4.0))
+        StackPanel.spacing Tokens.Space.s2
+        StackPanel.margin (Thickness(Tokens.Space.s2, Tokens.Space.s1))
         StackPanel.children [
             label (if column < 0 then "New column" else "Column")
             input "header name" "name" 140.0
@@ -1626,25 +1826,253 @@ let rec private headerView (model: Model) (dispatch: Msg -> unit) (column: int) 
 
 /// A table's tab: what can be done to it, the header's form when one is open, and its grid.
 and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Table) : IView =
+    let look = model.Look
+
+    let glyph (data: string) (colour: Color) : IView =
+        Avalonia.FuncUI.DSL.Path.create [
+            Shapes.Path.data (Geometry.Parse data)
+            Shapes.Path.width Tokens.Height.icon
+            Shapes.Path.height Tokens.Height.icon
+            Shapes.Path.verticalAlignment VerticalAlignment.Center
+            Shapes.Path.stroke (SolidColorBrush colour)
+            Shapes.Path.strokeThickness 1.5
+            Shapes.Path.strokeLineCap PenLineCap.Round
+            Shapes.Path.strokeJoin PenLineJoin.Round
+        ]
+
+    let plus = "M8,3.5 V12.5 M3.5,8 H12.5"
+    let chevron = "M4.5,6.5 L8,10 L11.5,6.5"
+
+    /// A button of the bar: an icon, a word, and a chevron where it opens a menu.
+    let barButton (icon: string option) (word: string) (primary: bool) (menu: (string * Msg) list) (act: Msg option) : IView =
+        let fore = if primary then look.Roles.OnAccent else look.Text
+
+        Button.create [
+            Button.height Tokens.Height.control
+            Button.padding (Thickness(Tokens.Space.s2, 0.0, Tokens.Space.s3, 0.0))
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.verticalContentAlignment VerticalAlignment.Center
+            if primary then
+                Button.background (SolidColorBrush look.Roles.AccentFill)
+                Button.foreground (SolidColorBrush fore)
+            if not menu.IsEmpty then
+                Button.contextMenu (
+                    ContextMenu.create [
+                        ContextMenu.viewItems [
+                            for header, msg in menu do
+                                MenuItem.create [ MenuItem.header header; MenuItem.onClick ((fun _ -> dispatch msg), SubPatchOptions.Always) ]
+                        ]
+                    ]
+                )
+            Button.onClick (
+                (fun e ->
+                    match act, e.Source with
+                    | Some msg, _ -> dispatch msg
+                    | None, (:? Control as c) when not (isNull c.ContextMenu) -> c.ContextMenu.Open c
+                    | _ -> ()),
+                SubPatchOptions.Always
+            )
+            Button.content (
+                StackPanel.create [
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.spacing Tokens.Space.s1
+                    StackPanel.children [
+                        match icon with
+                        | Some data -> glyph data fore
+                        | None -> ()
+                        TextBlock.create [ TextBlock.text word; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.foreground (SolidColorBrush fore) ]
+                        if not menu.IsEmpty && act.IsNone then glyph chevron look.Dim
+                    ]
+                ]
+            )
+        ]
+
+    let selected =
+        match model.TableSelection with
+        | Some(name, columns) when name = t.Name && not columns.IsEmpty ->
+            let names = columns |> List.choose (fun c -> List.tryItem c t.Columns) |> List.map (fun c -> c.Name)
+            " · " + String.Join(", ", names) + " selected"
+        | _ -> ""
+
+    let layout = model.Layouts.TryFind t.Name |> Option.defaultValue GridLayout.Empty
+    let shownCount = t.Columns |> List.filter (fun c -> not (layout.Hidden.Contains c.Name)) |> List.length
+    let filter = model.Inputs.TryFind "column filter" |> Option.defaultValue ""
+
+    let laidOut (next: GridLayout) = dispatch (LaidOut(t.Name, next))
+
+    // Every column with a check to show or hide it, filtered by name, and collapsed ones marked.
+    let chooser : IView =
+        Button.create [
+            Button.dock Dock.Right
+            Button.height Tokens.Height.control
+            Button.margin (Thickness(0.0, 0.0, Tokens.Space.s1, 0.0))
+            Button.padding (Thickness(Tokens.Space.s2, 0.0, Tokens.Space.s1, 0.0))
+            Button.verticalContentAlignment VerticalAlignment.Center
+            Button.tip "Choose the columns shown"
+            Button.flyout (
+                Flyout.create [
+                    Flyout.content (
+                        StackPanel.create [
+                            StackPanel.width 280.0
+                            StackPanel.spacing Tokens.Space.s2
+                            StackPanel.children [
+                                TextBox.create [
+                                    TextBox.placeHolderText "Filter columns"
+                                    TextBox.text filter
+                                    TextBox.onTextChanged ((fun f -> if f <> filter then dispatch (Typed("column filter", f))), SubPatchOptions.Always)
+                                ]
+                                ScrollViewer.create [
+                                    ScrollViewer.maxHeight (12.0 * Tokens.Height.row)
+                                    ScrollViewer.content (
+                                        StackPanel.create [
+                                            StackPanel.children [
+                                                for c in t.Columns do
+                                                    if filter = "" || c.Name.Contains(filter, StringComparison.OrdinalIgnoreCase) then
+                                                        let shown = not (layout.Hidden.Contains c.Name)
+
+                                                        CheckBox.create [
+                                                            CheckBox.isChecked shown
+                                                            CheckBox.isEnabled (not shown || shownCount > 1)
+                                                            CheckBox.onClick (
+                                                                (fun _ ->
+                                                                    laidOut { layout with Hidden = (if shown then layout.Hidden.Add c.Name else layout.Hidden.Remove c.Name) }),
+                                                                SubPatchOptions.Always
+                                                            )
+                                                            CheckBox.content (
+                                                                StackPanel.create [
+                                                                    StackPanel.orientation Orientation.Horizontal
+                                                                    StackPanel.spacing Tokens.Space.s2
+                                                                    StackPanel.children [
+                                                                        TextBlock.create [ TextBlock.text c.Name ]
+                                                                        if not (String.IsNullOrEmpty c.Unit) then
+                                                                            TextBlock.create [ TextBlock.text c.Unit; TextBlock.fontSize Tokens.Type.small; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.foreground (SolidColorBrush look.Dim) ]
+                                                                        if layout.Collapsed.Contains c.Name then
+                                                                            TextBlock.create [ TextBlock.text "collapsed"; TextBlock.fontSize Tokens.Type.small; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.foreground (SolidColorBrush look.Dim) ]
+                                                                    ]
+                                                                ]
+                                                            )
+                                                        ]
+                                            ]
+                                        ]
+                                    )
+                                ]
+                                DockPanel.create [
+                                    DockPanel.children [
+                                        Button.create [
+                                            Button.dock Dock.Right
+                                            Button.content "Show all"
+                                            Button.background Brushes.Transparent
+                                            Button.onClick ((fun _ -> laidOut { layout with Hidden = Set.empty; Collapsed = Set.empty }), SubPatchOptions.Always)
+                                        ]
+                                        TextBlock.create [
+                                            TextBlock.text $"{shownCount} of {t.Columns.Length} shown"
+                                            TextBlock.verticalAlignment VerticalAlignment.Center
+                                            TextBlock.fontSize Tokens.Type.small
+                                            TextBlock.foreground (SolidColorBrush look.Dim)
+                                        ]
+                                    ]
+                                ]
+                            ]
+                        ]
+                    )
+                ]
+            )
+            Button.content (
+                StackPanel.create [
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.spacing Tokens.Space.s1
+                    StackPanel.children [
+                        glyph "M2.5,3 H13.5 V13 H2.5 Z M6.17,3 V13 M9.83,3 V13" look.Text
+                        TextBlock.create [ TextBlock.text "Columns"; TextBlock.verticalAlignment VerticalAlignment.Center ]
+                        TextBlock.create [ TextBlock.text $"{shownCount} of {t.Columns.Length}"; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.foreground (SolidColorBrush look.Dim) ]
+                        glyph chevron look.Dim
+                    ]
+                ]
+            )
+        ]
+
     DockPanel.create [
         DockPanel.children [
-            StackPanel.create [
-                StackPanel.dock Dock.Top
-                StackPanel.orientation Orientation.Horizontal
-                StackPanel.spacing 6.0
-                StackPanel.margin (Thickness(6.0, 4.0))
-                StackPanel.children [
-                    Button.create [ Button.content "Add column"; Button.onClick ((fun _ -> dispatch (EditHeader(t.Name, -1 - t.Columns.Length))), SubPatchOptions.Always) ]
-                    Button.create [
-                        Button.content "Add 10 rows"
-                        Button.onClick ((fun _ -> dispatch (TableEdited [ Tambour.Data.TableEdit.addRows t t.Rows 10 ])), SubPatchOptions.Always)
+            Border.create [
+                Border.dock Dock.Top
+                Border.padding (Thickness(Tokens.Space.s3, Tokens.Space.s2))
+                Border.borderBrush (SolidColorBrush look.Line)
+                Border.borderThickness (Thickness(0.0, 0.0, 0.0, Tokens.border))
+                Border.child (
+                    DockPanel.create [
+                        DockPanel.children [
+                            Button.create [
+                                Button.dock Dock.Right
+                                Button.width Tokens.Height.control
+                                Button.height Tokens.Height.control
+                                Button.padding (Thickness 0.0)
+                                Button.background Brushes.Transparent
+                                Button.horizontalContentAlignment HorizontalAlignment.Center
+                                Button.verticalContentAlignment VerticalAlignment.Center
+                                Button.tip "More: rename, duplicate, remove the table"
+                                Button.contextMenu (
+                                    ContextMenu.create [
+                                        ContextMenu.viewItems [
+                                            MenuItem.create [ MenuItem.header "_Rename…"; MenuItem.onClick ((fun _ -> dispatch (RenameTable t.Name)), SubPatchOptions.Always) ]
+                                            MenuItem.create [ MenuItem.header "_Duplicate"; MenuItem.onClick ((fun _ -> dispatch (DuplicateTable t.Name)), SubPatchOptions.Always) ]
+                                            MenuItem.create [ MenuItem.header "Re_move table"; MenuItem.onClick ((fun _ -> dispatch (RemoveTable t.Name)), SubPatchOptions.Always) ]
+                                        ]
+                                    ]
+                                )
+                                Button.onClick (
+                                    (fun e ->
+                                        match e.Source with
+                                        | :? Control as c when not (isNull c.ContextMenu) -> c.ContextMenu.Open c
+                                        | _ -> ()),
+                                    SubPatchOptions.Always
+                                )
+                                Button.content (
+                                    Avalonia.FuncUI.DSL.Path.create [
+                                        Shapes.Path.data (Geometry.Parse "M2.25,8 A1.25,1.25 0 1 1 2.26,8 Z M6.75,8 A1.25,1.25 0 1 1 6.76,8 Z M11.25,8 A1.25,1.25 0 1 1 11.26,8 Z")
+                                        Shapes.Path.fill (SolidColorBrush look.Text)
+                                        Shapes.Path.width Tokens.Height.icon
+                                        Shapes.Path.height Tokens.Height.icon
+                                    ]
+                                )
+                            ]
+                            chooser
+                            StackPanel.create [
+                                StackPanel.dock Dock.Left
+                                StackPanel.orientation Orientation.Horizontal
+                                StackPanel.spacing Tokens.Space.s2
+                                StackPanel.children [
+                                    barButton (Some plus) "Column" false [] (Some(EditHeader(t.Name, -1 - t.Columns.Length)))
+                                    barButton
+                                        (Some plus)
+                                        "Rows"
+                                        false
+                                        [ for n in [ 1; 10; 100 ] ->
+                                              (if n = 1 then "Add 1 row" else $"Add {n} rows"), TableEdited [ Tambour.Data.TableEdit.addRows t t.Rows n ] ]
+                                        None
+                                    Border.create [
+                                        Border.width Tokens.border
+                                        Border.height Tokens.Height.icon
+                                        Border.verticalAlignment VerticalAlignment.Center
+                                        Border.background (SolidColorBrush look.Line)
+                                    ]
+                                    Border.create [
+                                        Border.tip "Plot selected columns (Ctrl+Shift+P)"
+                                        Border.child (barButton (Some "M2.5,2.5 V13.5 H13.5 M5,10 L8,6.5 L10,8.5 L13.5,4.5") "Plot" true [] (Some PlotSelected))
+                                    ]
+                                ]
+                            ]
+                            // What the table holds and what is selected, in the room left, cut short there.
+                            TextBlock.create [
+                                TextBlock.text $"{t.Rows} rows · {t.Columns.Length} columns{selected}"
+                                TextBlock.verticalAlignment VerticalAlignment.Center
+                                TextBlock.margin (Thickness(Tokens.Space.s3, 0.0, Tokens.Space.s2, 0.0))
+                                TextBlock.foreground (SolidColorBrush look.Dim)
+                                TextBlock.textTrimming TextTrimming.CharacterEllipsis
+                                TextBlock.tip "Right-click, or the Table menu, for what can be done to cells, rows and columns; Ctrl+click or Alt+drag in a figure picks rows."
+                            ]
+                        ]
                     ]
-                    Button.create [ Button.content "Rename…"; Button.onClick ((fun _ -> dispatch (RenameTable t.Name)), SubPatchOptions.Always) ]
-                    Button.create [ Button.content "Duplicate"; Button.onClick ((fun _ -> dispatch (DuplicateTable t.Name)), SubPatchOptions.Always) ]
-                    Button.create [ Button.content "Remove table"; Button.onClick ((fun _ -> dispatch (RemoveTable t.Name)), SubPatchOptions.Always) ]
-                    Button.create [ Button.content "Plot selected columns"; Button.onClick (fun _ -> dispatch PlotSelected) ]
-                    label $"{t.Rows} rows. Right-click, or the Table menu, for what can be done to cells, rows and columns; Ctrl+click or Alt+drag in a figure picks rows."
-                ]
+                )
             ]
             // Always there, and hidden when no header is being edited, so the grid after it keeps its
             // place among the children and is not made again.
@@ -1659,6 +2087,8 @@ and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Ta
                 Sheet.onRefused (fun why -> dispatch (Failed(FormatException why)))
                 Sheet.onHeaderActivated (fun column -> dispatch (EditHeader(t.Name, column)))
                 Sheet.onInsertColumnAt (fun at -> dispatch (EditHeader(t.Name, -1 - at)))
+                Sheet.layout (model.Layouts.TryFind t.Name |> Option.defaultValue GridLayout.Empty)
+                Sheet.onLayoutChanged (fun l -> dispatch (LaidOut(t.Name, l)))
             ]
         ]
     ]
@@ -1708,10 +2138,12 @@ let commands: Command list =
       c "_File" "_Quit" "Ctrl+Q" [] Quit always
       c "_Edit" "_Undo" "Ctrl+Z" [] Undo (fun m -> not m.History.Done.IsEmpty)
       c "_Edit" "_Redo" "Ctrl+Y" [ "Ctrl+Shift+Z" ] Redo (fun m -> not m.History.Undone.IsEmpty)
+      c "_Edit" "_Preferences…" "Ctrl+OemComma" [] OpenPreferences always
       c "_Run" "_Run" "F5" [ "Ctrl+Enter" ] Run always
-      c "_Run" "_Cancel" "Escape" [] Cancel (fun m -> m.Running)
+      c "_Run" "_Cancel" "Escape" [] Cancel (fun m -> m.Running || m.Exporting.IsSome || m.FullView)
       c "_Table" "_New table" "Ctrl+T" [] NewTable always
       c "_Table" "_Import table…" "Ctrl+Shift+I" [] ChooseImport always
+      c "_Table" "_Copy a table from another tab…" "" [] ChooseCopyTable always
       c "_Table" "_Rename table…" "" [] RenameShownTable (fun m -> m.Tab > 0)
       c "_Table" "D_uplicate table" "" [] DuplicateShownTable (fun m -> m.Tab > 0)
       c "_Table" "_Plot selected columns" "Ctrl+Shift+P" [] PlotSelected (fun m -> m.TableSelection.IsSome)
@@ -1722,29 +2154,40 @@ let commands: Command list =
       c "_View" "_Bottom panel" "Ctrl+J" [] ToggleBottom always
       c "_View" "_Actions" "Ctrl+Shift+A" [] ToggleActions always
       c "_View" "_Files" "Ctrl+Shift+E" [] ToggleFiles (fun m -> m.Project.IsSome)
+      c "_View" "F_ull view" "Ctrl+Shift+F" [] ToggleFullView always
       c "_View" "_Next tab" "Ctrl+Tab" [] (CycleTab 1) always
       c "_View" "Pre_vious tab" "Ctrl+Shift+Tab" [] (CycleTab -1) always
       c "_View" "Move tab to a _new window" "" [] DetachTab always
       c "_Help" "_About Tambour" "" [] About always ]
 
+/// A command's keys now: as the user changed them in the preferences, or its own.
+let gesturesOf (c: Command) =
+    match Preferences.Live.Current.Keys.TryFind c.Header with
+    | Some "" -> []
+    | Some k -> (try [ KeyGesture.Parse k ] with _ -> [])
+    | None -> Option.toList c.Gesture @ c.Also
+
 /// The command a key and its modifiers take, if one does.
 let commandFor (key: Key) (modifiers: KeyModifiers) =
     commands
-    |> List.tryFind (fun c -> (Option.toList c.Gesture @ c.Also) |> List.exists (fun g -> g.Key = key && g.KeyModifiers = modifiers))
+    |> List.tryFind (fun c -> gesturesOf c |> List.exists (fun g -> g.Key = key && g.KeyModifiers = modifiers))
 
 let private commandNamed (header: string) = commands |> List.find (fun c -> c.Header = header)
 
-/// A small drawn icon, in the look's text colour: stroked unless it is a solid shape.
-let private icon (look: Palette.Look) (data: string) (solid: bool) (enabled: bool) : IView =
+/// A small drawn icon: stroked in a colour, or a solid shape filled with it; faint while it
+/// cannot be taken.
+let private icon (look: Palette.Look) (data: string) (solid: bool) (colour: Color) (enabled: bool) : IView =
+    let colour = if enabled then colour else look.Roles.Faint
+
     Avalonia.FuncUI.DSL.Path.create [
         Shapes.Path.data (Geometry.Parse data)
-        Shapes.Path.width 16.0
-        Shapes.Path.height 16.0
-        Shapes.Path.opacity (if enabled then 1.0 else 0.4)
+        Shapes.Path.width Tokens.Height.icon
+        Shapes.Path.height Tokens.Height.icon
+        Shapes.Path.verticalAlignment VerticalAlignment.Center
         if solid then
-            Shapes.Path.fill (SolidColorBrush look.Accent)
+            Shapes.Path.fill (SolidColorBrush colour)
         else
-            Shapes.Path.stroke (SolidColorBrush look.Text)
+            Shapes.Path.stroke (SolidColorBrush colour)
             Shapes.Path.strokeThickness 1.5
             Shapes.Path.strokeLineCap PenLineCap.Round
             Shapes.Path.strokeJoin PenLineJoin.Round
@@ -1792,9 +2235,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
     let menuItem (command: Command) : IView =
         MenuItem.create [
             MenuItem.header command.Header
-            match command.Gesture with
-            | Some g -> MenuItem.inputGesture g
-            | None -> ()
+            MenuItem.inputGesture (gesturesOf command |> List.tryHead |> Option.toObj)
             MenuItem.isEnabled (command.Enabled model)
             MenuItem.onClick ((fun _ -> dispatch command.Msg), SubPatchOptions.Always)
         ]
@@ -1810,7 +2251,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
 
     let menuBar =
         Menu.create [
-            Menu.dock Dock.Top
+            Menu.verticalAlignment VerticalAlignment.Center
             Menu.viewItems [
                 for name in menus do
                     MenuItem.create [
@@ -1861,49 +2302,87 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
             ]
         ]
 
-    let tool (header: string) : IView =
+    /// A command's button on the bar: its icon alone, or with a word beside it.
+    let tool (header: string) (word: string option) : IView =
         let command = commandNamed header
         let data, solid = icons.[header]
         let enabled = command.Enabled model
         let name = header.Replace("_", "").TrimEnd('…')
+        let colour = if header = "_Run" then look.Roles.Success else look.Text
 
         Button.create [
-            Button.content (icon look data solid enabled)
+            match word with
+            | None ->
+                Button.content (icon look data solid colour enabled)
+                Button.width Tokens.Height.control
+                Button.padding (Thickness 0.0)
+            | Some word ->
+                Button.content (
+                    StackPanel.create [
+                        StackPanel.orientation Orientation.Horizontal
+                        StackPanel.spacing Tokens.Space.s1
+                        StackPanel.children [
+                            icon look data solid colour enabled
+                            TextBlock.create [ TextBlock.text word; TextBlock.verticalAlignment VerticalAlignment.Center ]
+                        ]
+                    ]
+                )
+                Button.padding (Thickness(Tokens.Space.s2, 0.0, Tokens.Space.s3, 0.0))
+            Button.height Tokens.Height.control
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.horizontalContentAlignment HorizontalAlignment.Center
+            Button.verticalContentAlignment VerticalAlignment.Center
             Button.isEnabled enabled
-            Button.padding (Thickness(gap, gap * 0.75))
             Button.background Brushes.Transparent
-            Button.tip (match command.Gesture with Some g -> $"{name} ({g})" | None -> name)
+            Button.tip (match gesturesOf command with g :: _ -> $"""{name} ({g.ToString("p", null)})""" | [] -> name)
             Button.onClick ((fun _ -> dispatch command.Msg), SubPatchOptions.Always)
         ]
 
+    let separator () : IView =
+        Border.create [
+            Border.width Tokens.border
+            Border.height Tokens.Height.icon
+            Border.margin (Thickness(Tokens.Space.s1, 0.0))
+            Border.verticalAlignment VerticalAlignment.Center
+            Border.background (brush look.Line)
+        ]
+
+    // One bar: the menus, then the commands most taken.
     let toolbar =
         Border.create [
             Border.dock Dock.Top
+            Border.height Tokens.Height.toolbar
+            Border.background (brush look.Surface)
             Border.borderBrush (brush look.Line)
-            Border.borderThickness (Thickness(0.0, 0.0, 0.0, 1.0))
+            Border.borderThickness (Thickness(0.0, 0.0, 0.0, Tokens.border))
             Border.child (
                 StackPanel.create [
                     StackPanel.orientation Orientation.Horizontal
-                    StackPanel.margin (Thickness(gap, gap / 2.0))
-                    StackPanel.spacing (gap / 2.0)
+                    StackPanel.margin (Thickness(Tokens.Space.s2, 0.0))
+                    StackPanel.spacing Tokens.Space.s1
                     StackPanel.children [
-                        tool "_Run"
-                        tool "_Cancel"
-                        Border.create [ Border.width 1.0; Border.margin (Thickness(gap, gap / 2.0)); Border.background (brush look.Line) ]
-                        tool "_Undo"
-                        tool "_Redo"
-                        Border.create [ Border.width 1.0; Border.margin (Thickness(gap, gap / 2.0)); Border.background (brush look.Line) ]
-                        tool "_Export figure…"
+                        menuBar
+                        separator ()
+                        tool "_Run" None
+                        tool "_Cancel" None
+                        separator ()
+                        tool "_Undo" None
+                        tool "_Redo" None
+                        separator ()
+                        tool "_Export figure…" (Some "Export")
                         ComboBox.create [
                             ComboBox.dataItems exportFormats
                             ComboBox.verticalAlignment VerticalAlignment.Center
                             ComboBox.tip "the format Export writes"
-                            ComboBox.selectedIndex (exportFormats |> Array.tryFindIndex (fun f -> Some f = model.Inputs.TryFind "export format") |> Option.defaultValue 0)
+                            ComboBox.selectedIndex (
+                                let format = model.Inputs.TryFind "export format" |> Option.defaultValue Preferences.Live.Current.ExportFormat
+                                exportFormats |> Array.tryFindIndex ((=) format) |> Option.defaultValue 0
+                            )
                             ComboBox.onSelectedIndexChanged ((fun i -> if i >= 0 then dispatch (Typed("export format", exportFormats.[i]))), SubPatchOptions.Always)
                         ]
                         ComboBox.create [
                             ComboBox.minWidth 140.0
-                            ComboBox.margin (Thickness(gap, 0.0, 0.0, 0.0))
+                            ComboBox.margin (Thickness(Tokens.Space.s2, 0.0, 0.0, 0.0))
                             ComboBox.verticalAlignment VerticalAlignment.Center
                             ComboBox.isVisible (model.Figures.Length > 1)
                             ComboBox.tip "the figure shown"
@@ -1913,7 +2392,7 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                         ]
                         TextBlock.create [
                             TextBlock.text model.ActionNote
-                            TextBlock.margin (Thickness(gap, 0.0, 0.0, 0.0))
+                            TextBlock.margin (Thickness(Tokens.Space.s2, 0.0, 0.0, 0.0))
                             TextBlock.verticalAlignment VerticalAlignment.Center
                             TextBlock.foreground (brush (if model.ActionNote.Contains "whole expression" || model.ActionNote.StartsWith "not done" then look.Warning else look.Dim))
                         ]
@@ -1928,28 +2407,32 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
     let statusText (text: string) (colour: Color) : IView =
         TextBlock.create [
             TextBlock.text text
-            TextBlock.fontSize 12.0
+            TextBlock.fontSize Tokens.Type.small
+            TextBlock.lineHeight Tokens.Type.smallLine
             TextBlock.verticalAlignment VerticalAlignment.Center
-            TextBlock.margin (Thickness(gap, 0.0))
             TextBlock.foreground (brush colour)
         ]
 
     let statusBar =
         Border.create [
             Border.dock Dock.Bottom
-            Border.background (brush look.Raised)
+            Border.height Tokens.Height.status
+            Border.background (brush look.Surface)
             Border.borderBrush (brush look.Line)
-            Border.borderThickness (Thickness(0.0, 1.0, 0.0, 0.0))
+            Border.borderThickness (Thickness(0.0, Tokens.border, 0.0, 0.0))
             Border.child (
                 DockPanel.create [
-                    DockPanel.margin (Thickness(gap, 2.0))
+                    DockPanel.margin (Thickness(Tokens.Space.s3, 0.0))
                     DockPanel.children [
                         StackPanel.create [
                             StackPanel.dock Dock.Right
                             StackPanel.orientation Orientation.Horizontal
+                            StackPanel.spacing Tokens.Space.s4
                             StackPanel.children [
                                 Button.create [
-                                    Button.padding (Thickness(gap, 1.0))
+                                    Button.padding (Thickness 0.0)
+                                    Button.minHeight 0.0
+                                    Button.verticalAlignment VerticalAlignment.Center
                                     Button.background Brushes.Transparent
                                     Button.tip "show the problems (Ctrl+Shift+M)"
                                     Button.onClick ((fun _ -> dispatch (ShowBottom 0)), SubPatchOptions.Always)
@@ -1960,12 +2443,24 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                              | e, 0 -> $"""{e} error{if e = 1 then "" else "s"}"""
                                              | 0, w -> $"""{w} warning{if w = 1 then "" else "s"}"""
                                              | e, w -> $"""{e} error{if e = 1 then "" else "s"}, {w} warning{if w = 1 then "" else "s"}""")
-                                            (if errors > 0 then look.Error elif warnings > 0 then look.Warning else look.Text)
+                                            (if errors > 0 then look.Error elif warnings > 0 then look.Warning else look.Dim)
                                     )
                                 ]
-                                statusText $"Ln {fst model.Caret}, Col {snd model.Caret}" look.Text
+                                statusText $"Ln {fst model.Caret}, Col {snd model.Caret}" look.Dim
                                 statusText $"Marey {Project.mareyVersion}" look.Dim
                             ]
+                        ]
+                        // Something under way, a run or an export, which Cancel ends.
+                        ProgressBar.create [
+                            ProgressBar.dock Dock.Left
+                            ProgressBar.isIndeterminate true
+                            ProgressBar.isVisible (model.Running || model.Exporting.IsSome)
+                            ProgressBar.width Tokens.Width.label
+                            ProgressBar.minWidth 0.0
+                            ProgressBar.height Tokens.Space.s1
+                            ProgressBar.minHeight 0.0
+                            ProgressBar.verticalAlignment VerticalAlignment.Center
+                            ProgressBar.margin (Thickness(0.0, 0.0, Tokens.Space.s2, 0.0))
                         ]
                         statusText model.Status look.Text
                     ]
@@ -1973,23 +2468,127 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
             )
         ]
 
+    /// One of a pane's tabs in its header: the accent under the one shown.
+    let paneTab (text: string) (glyph: string option) (count: int option) (selected: bool) (act: unit -> unit) : IView =
+        Button.create [
+            Button.background Brushes.Transparent
+            Button.cornerRadius (CornerRadius 0.0)
+            Button.padding (Thickness 0.0)
+            Button.minHeight 0.0
+            Button.height Tokens.Height.paneHeader
+            Button.borderThickness (Thickness(0.0, 0.0, 0.0, 2.0 * Tokens.border))
+            Button.borderBrush (if selected then brush look.Accent :> IBrush else Brushes.Transparent)
+            Button.verticalContentAlignment VerticalAlignment.Center
+            Button.onClick ((fun _ -> act ()), SubPatchOptions.Always)
+            Button.content (
+                StackPanel.create [
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.spacing Tokens.Space.s2
+                    StackPanel.children [
+                        match glyph with
+                        | Some data -> icon look data false (if selected then look.Text else look.Dim) true
+                        | None -> ()
+                        TextBlock.create [
+                            TextBlock.text text
+                            TextBlock.verticalAlignment VerticalAlignment.Center
+                            TextBlock.fontWeight FontWeight.Medium
+                            TextBlock.foreground (brush (if selected then look.Text else look.Dim))
+                        ]
+                        match count with
+                        | Some n ->
+                            Border.create [
+                                Border.minWidth Tokens.Space.s4
+                                Border.height Tokens.Space.s4
+                                Border.padding (Thickness(Tokens.Space.s1, 0.0))
+                                Border.cornerRadius (CornerRadius Tokens.Space.s2)
+                                Border.background (brush look.Raised)
+                                Border.verticalAlignment VerticalAlignment.Center
+                                Border.child (
+                                    TextBlock.create [
+                                        TextBlock.text (string n)
+                                        TextBlock.fontSize Tokens.Type.small
+                                        TextBlock.horizontalAlignment HorizontalAlignment.Center
+                                        TextBlock.verticalAlignment VerticalAlignment.Center
+                                        TextBlock.foreground (brush look.Dim)
+                                    ]
+                                )
+                            ]
+                        | None -> ()
+                    ]
+                ]
+            )
+        ]
+
+    /// A small icon button of a pane's header, lit while what it shows is shown.
+    let paneAction (data: string) (tip: string) (on: bool) (act: unit -> unit) : IView =
+        Button.create [
+            Button.width Tokens.Height.controlSm
+            Button.height Tokens.Height.controlSm
+            Button.minHeight 0.0
+            Button.padding (Thickness 0.0)
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.horizontalContentAlignment HorizontalAlignment.Center
+            Button.verticalContentAlignment VerticalAlignment.Center
+            Button.background (if on then brush look.Roles.Hover :> IBrush else Brushes.Transparent)
+            Button.tip tip
+            Button.onClick ((fun _ -> act ()), SubPatchOptions.Always)
+            Button.content (icon look data false look.Text true)
+        ]
+
+    /// A pane's header: its tabs, what follows them, and its actions at the right.
+    let paneHeader (tabs: IView list) (after: IView list) (actions: IView list) : IView =
+        Border.create [
+            Border.dock Dock.Top
+            Border.height Tokens.Height.paneHeader
+            Border.background (brush look.Surface)
+            Border.borderBrush (brush look.Line)
+            Border.borderThickness (Thickness(0.0, 0.0, 0.0, Tokens.border))
+            Border.padding (Thickness(Tokens.Space.s3, 0.0, Tokens.Space.s2, 0.0))
+            Border.child (
+                DockPanel.create [
+                    DockPanel.children [
+                        StackPanel.create [
+                            StackPanel.dock Dock.Right
+                            StackPanel.orientation Orientation.Horizontal
+                            StackPanel.spacing Tokens.Space.s1
+                            StackPanel.children actions
+                        ]
+                        StackPanel.create [
+                            StackPanel.orientation Orientation.Horizontal
+                            StackPanel.spacing Tokens.Space.s4
+                            StackPanel.children (tabs @ after)
+                        ]
+                    ]
+                ]
+            )
+        ]
+
+    let tableGlyph = "M2.5,3 H13.5 V13 H2.5 Z M2.5,6.5 H13.5 M6.5,6.5 V13"
+
+    let bottomHeader =
+        paneHeader
+            [ paneTab "Problems" None (Some model.Problems.Length) (model.BottomTab = 0) (fun () -> dispatch (ShowBottom 0))
+              paneTab "Output" None None (model.BottomTab = 1) (fun () -> dispatch (ShowBottom 1)) ]
+            []
+            [ paneAction "M4.5,6.5 L8,10 L11.5,6.5" "Hide the panel (Ctrl+J)" false (fun () -> dispatch ToggleBottom) ]
+
     let bottomPanel =
         TabControl.create [
-            Grid.row 2
+            TabControl.classes [ "bare" ]
+            TabControl.padding (Thickness 0.0)
             TabControl.isVisible model.BottomOpen
             TabControl.selectedIndex model.BottomTab
             TabControl.onSelectedIndexChanged ((fun i -> if i >= 0 && i <> model.BottomTab then dispatch (ShowBottom i)), SubPatchOptions.Always)
             TabControl.viewItems [
                 TabItem.create [
                     TabItem.header (if model.Problems.Length = 0 then "Problems" else $"Problems ({model.Problems.Length})")
-                    TabItem.fontSize 13.0
                     TabItem.content (
                         ScrollViewer.create [
                             ScrollViewer.content (
                                 StackPanel.create [
                                     StackPanel.children [
                                         if model.Problems.Length = 0 then
-                                            TextBlock.create [ TextBlock.margin (Thickness gap); TextBlock.text "No problems in the script."; TextBlock.foreground (brush look.Dim) ]
+                                            TextBlock.create [ TextBlock.margin (Thickness Tokens.Space.s3); TextBlock.text "No problems in the script."; TextBlock.foreground (brush look.Dim) ]
                                         for d in model.Problems do
                                             problemView look dispatch model.Problems d
                                     ]
@@ -2000,7 +2599,6 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                 ]
                 TabItem.create [
                     TabItem.header "Output"
-                    TabItem.fontSize 13.0
                     TabItem.content (
                         TextBox.create [
                             TextBox.text output
@@ -2030,140 +2628,226 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
     let split = Math.Clamp(model.Split, 0.05, 0.95)
     let inv (v: float) = v.ToString(Globalization.CultureInfo.InvariantCulture)
 
-    let actionsHeader =
-        Button.create [
-            Button.horizontalAlignment HorizontalAlignment.Left
-            Button.horizontalContentAlignment HorizontalAlignment.Left
-            Button.background Brushes.Transparent
-            Button.padding (Thickness(2.0 * gap, gap / 2.0))
-            Button.tip "show or hide the figure's actions (Ctrl+Shift+A)"
-            Button.onClick ((fun _ -> dispatch ToggleActions), SubPatchOptions.Always)
-            Button.content (
-                TextBlock.create [
-                    TextBlock.text ((if model.ActionsOpen then "▾ " else "▸ ") + "Actions")
-                    TextBlock.fontWeight FontWeight.SemiBold
-                    TextBlock.foreground (brush look.Text)
+    let fileGlyph = "M4,1.75 H9 L12,4.75 V14.25 H4 Z M9,1.75 V4.75 H12"
+
+    /// A row of the project's list: an icon, a name, and what goes at its end.
+    let listRow (indent: float) (glyph: string) (name: string) (nameColour: Color) (shown: bool) (fin: IView option) : IView =
+        DockPanel.create [
+            DockPanel.height Tokens.Height.row
+            DockPanel.children [
+                match fin with
+                | Some v -> Border.create [ Border.dock Dock.Right; Border.margin (Thickness(Tokens.Space.s2, 0.0, 0.0, 0.0)); Border.verticalAlignment VerticalAlignment.Center; Border.child v ]
+                | None -> ()
+                StackPanel.create [
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.spacing Tokens.Space.s2
+                    StackPanel.margin (Thickness(indent, 0.0, 0.0, 0.0))
+                    StackPanel.verticalAlignment VerticalAlignment.Center
+                    StackPanel.children [
+                        icon look glyph false look.Dim true
+                        TextBlock.create [
+                            TextBlock.text name
+                            TextBlock.verticalAlignment VerticalAlignment.Center
+                            TextBlock.fontWeight (if shown then FontWeight.Medium else FontWeight.Normal)
+                            TextBlock.foreground (brush nameColour)
+                            TextBlock.textTrimming TextTrimming.CharacterEllipsis
+                        ]
+                    ]
                 ]
-            )
+            ]
         ]
 
-    // The project's scripts, each open one in the text colour and dotted while unsaved, the shown
-    // one in bold with its workspace's tables under it.
+    let rowButton (shown: bool) (tip: string) (onOpen: unit -> unit) (menu: IView list) (content: IView) : IView =
+        Button.create [
+            Button.background (if shown then brush look.Roles.AccentSubtle :> IBrush else Brushes.Transparent)
+            Button.horizontalAlignment HorizontalAlignment.Stretch
+            Button.horizontalContentAlignment HorizontalAlignment.Stretch
+            Button.padding (Thickness(Tokens.Space.s2, 0.0))
+            Button.minHeight 0.0
+            Button.cornerRadius (CornerRadius Tokens.Radius.sm)
+            Button.onDoubleTapped ((fun _ -> onOpen ()), SubPatchOptions.Always)
+            Button.tip tip
+            Button.contextMenu (ContextMenu.create [ ContextMenu.viewItems menu ])
+            Button.content content
+        ]
+
+    let menuItemOf (header: string) (msg: Msg) : IView =
+        MenuItem.create [ MenuItem.header header; MenuItem.onClick ((fun _ -> dispatch msg), SubPatchOptions.Always) ]
+
+    // The project's scripts: the shown one on the accent's tint, open ones in the text colour and
+    // the rest muted, a dot at the end of each unsaved; the shown one's tables under it.
     let fileItem (path: string) : IView =
         let shown = model.Path = Some path
         let unsaved = if shown then not (unsaved model).IsEmpty else model.OpenTabs.TryFind path = Some true
         let opened = shown || model.OpenTabs.ContainsKey path
 
-        Button.create [
-            Button.background Brushes.Transparent
-            Button.horizontalAlignment HorizontalAlignment.Stretch
-            Button.horizontalContentAlignment HorizontalAlignment.Left
-            Button.padding (Thickness(gap, 1.0))
-            Button.onDoubleTapped ((fun _ -> dispatch (OpenTab path)), SubPatchOptions.Always)
-            Button.tip path
-            Button.contextMenu (
-                ContextMenu.create [
-                    ContextMenu.viewItems [
-                        MenuItem.create [ MenuItem.header "_Open"; MenuItem.onClick ((fun _ -> dispatch (OpenTab path)), SubPatchOptions.Always) ]
-                        MenuItem.create [ MenuItem.header "_Rename…"; MenuItem.onClick ((fun _ -> dispatch (RenameFile path)), SubPatchOptions.Always) ]
-                        MenuItem.create [ MenuItem.header "_Duplicate"; MenuItem.onClick ((fun _ -> dispatch (DuplicateFile path)), SubPatchOptions.Always) ]
-                        MenuItem.create [ MenuItem.header "Dele_te…"; MenuItem.onClick ((fun _ -> dispatch (DeleteFile path)), SubPatchOptions.Always) ]
-                        Separator.create []
-                        MenuItem.create [ MenuItem.header "Reveal in file _manager"; MenuItem.onClick ((fun _ -> dispatch (RevealFile path)), SubPatchOptions.Always) ]
-                        MenuItem.create [ MenuItem.header "_New script"; MenuItem.onClick ((fun _ -> dispatch NewScript), SubPatchOptions.Always) ]
-                    ]
-                ]
-            )
-            Button.content (
-                TextBlock.create [
-                    TextBlock.text (Path.GetFileName path + (if unsaved then " •" else ""))
-                    TextBlock.fontWeight (if shown then FontWeight.SemiBold else FontWeight.Normal)
-                    TextBlock.foreground (brush (if opened then look.Text else look.Dim))
-                    TextBlock.textTrimming TextTrimming.CharacterEllipsis
-                ]
-            )
-        ]
+        let dot: IView option =
+            if unsaved then
+                Some(Border.create [ Border.width Tokens.Space.s2; Border.height Tokens.Space.s2; Border.cornerRadius (CornerRadius Tokens.Space.s1); Border.background (brush look.Text); Border.tip "unsaved" ])
+            else
+                None
 
-    // A table of the shown script's workspace: a double-click shows it, and its menu renames,
-    // duplicates or removes it.
-    let tableItem (tab: int) (name: string) : IView =
-        let item (header: string) (msg: Msg) =
-            MenuItem.create [ MenuItem.header header; MenuItem.onClick ((fun _ -> dispatch msg), SubPatchOptions.Always) ] :> IView
+        rowButton
+            shown
+            path
+            (fun () -> dispatch (OpenTab path))
+            [ menuItemOf "_Open" (OpenTab path)
+              menuItemOf "_Rename…" (RenameFile path)
+              menuItemOf "_Duplicate" (DuplicateFile path)
+              menuItemOf "Dele_te…" (DeleteFile path)
+              Separator.create []
+              menuItemOf "Reveal in file _manager" (RevealFile path)
+              menuItemOf "_New script" NewScript ]
+            (listRow 0.0 fileGlyph (Path.GetFileName path) (if opened then look.Text else look.Dim) shown dot)
 
-        Button.create [
-            Button.background Brushes.Transparent
-            Button.horizontalAlignment HorizontalAlignment.Stretch
-            Button.horizontalContentAlignment HorizontalAlignment.Left
-            Button.padding (Thickness(gap * 3.0, 1.0, gap, 1.0))
-            Button.onDoubleTapped ((fun _ -> dispatch (SelectTab tab)), SubPatchOptions.Always)
-            Button.contextMenu (
-                ContextMenu.create [
-                    ContextMenu.viewItems [
-                        item "_Show" (SelectTab tab)
-                        item "_Rename…" (RenameTable name)
-                        item "_Duplicate" (DuplicateTable name)
-                        item "Re_move" (RemoveTable name)
-                    ]
-                ]
-            )
-            Button.content (
-                TextBlock.create [
-                    TextBlock.text $"▦ {name}"
-                    TextBlock.foreground (brush look.Dim)
-                    TextBlock.textTrimming TextTrimming.CharacterEllipsis
-                ]
-            )
-        ]
+    // A table of the shown script's workspace, with its rows and columns: a double-click shows it,
+    // and its menu renames, duplicates or removes it.
+    let tableItem (tab: int) (t: Tambour.Data.Table) : IView =
+        let size =
+            TextBlock.create [
+                TextBlock.text $"{t.Rows} × {t.Columns.Length}"
+                TextBlock.fontSize Tokens.Type.small
+                TextBlock.foreground (brush look.Dim)
+            ]
+
+        rowButton
+            false
+            t.Name
+            (fun () -> dispatch (SelectTab tab))
+            [ menuItemOf "_Show" (SelectTab tab)
+              menuItemOf "_Rename…" (RenameTable t.Name)
+              menuItemOf "_Duplicate" (DuplicateTable t.Name)
+              menuItemOf "Re_move" (RemoveTable t.Name) ]
+            (listRow Tokens.Space.s5 tableGlyph t.Name look.Text false (Some size))
 
     let filesPanel (dir: string) : IView =
         Border.create [
             DockPanel.dock Dock.Left
-            Border.width 200.0
-            Border.background (brush look.Raised)
+            Border.width Tokens.Width.files
+            Border.background (brush look.Surface)
             Border.borderBrush (brush look.Line)
-            Border.borderThickness (Thickness(0.0, 0.0, 1.0, 0.0))
+            Border.borderThickness (Thickness(0.0, 0.0, Tokens.border, 0.0))
             Border.child (
-                ScrollViewer.create [
-                    ScrollViewer.content (
-                        StackPanel.create [
-                            StackPanel.margin (Thickness(0.0, gap))
-                            StackPanel.children [
-                                TextBlock.create [
-                                    TextBlock.text (Path.GetFileName dir)
-                                    TextBlock.fontWeight FontWeight.SemiBold
-                                    TextBlock.margin (Thickness(gap * 1.5, 0.0, gap, gap))
-                                    TextBlock.foreground (brush look.Text)
-                                    TextBlock.textTrimming TextTrimming.CharacterEllipsis
-                                    TextBlock.tip dir
+                DockPanel.create [
+                    DockPanel.children [
+                        Border.create [
+                            Border.dock Dock.Top
+                            Border.height Tokens.Height.paneHeader
+                            Border.borderBrush (brush look.Line)
+                            Border.borderThickness (Thickness(0.0, 0.0, 0.0, Tokens.border))
+                            Border.padding (Thickness(Tokens.Space.s3, 0.0, Tokens.Space.s2, 0.0))
+                            Border.child (
+                                DockPanel.create [
+                                    DockPanel.children [
+                                        Border.create [
+                                            Border.dock Dock.Right
+                                            Border.verticalAlignment VerticalAlignment.Center
+                                            Border.child (paneAction "M8,3.5 V12.5 M3.5,8 H12.5" "New script (Ctrl+N)" false (fun () -> dispatch NewScript))
+                                        ]
+                                        TextBlock.create [
+                                            TextBlock.text (Path.GetFileName dir)
+                                            TextBlock.fontSize Tokens.Type.title
+                                            TextBlock.fontWeight FontWeight.SemiBold
+                                            TextBlock.verticalAlignment VerticalAlignment.Center
+                                            TextBlock.foreground (brush look.Text)
+                                            TextBlock.textTrimming TextTrimming.CharacterEllipsis
+                                            TextBlock.tip dir
+                                        ]
+                                    ]
                                 ]
-                                for f in model.Files do
-                                    fileItem f
-
-                                    if model.Path = Some f then
-                                        for i, t in List.indexed model.Tables do
-                                            tableItem (i + 1) t.Table.Name
-                            ]
+                            )
                         ]
-                    )
+                        ScrollViewer.create [
+                            ScrollViewer.content (
+                                StackPanel.create [
+                                    StackPanel.margin (Thickness Tokens.Space.s2)
+                                    StackPanel.children [
+                                        for f in model.Files do
+                                            fileItem f
+
+                                            if model.Path = Some f then
+                                                for i, t in List.indexed model.Tables do
+                                                    tableItem (i + 1) t.Table
+                                    ]
+                                ]
+                            )
+                        ]
+                    ]
                 ]
             )
         ]
 
+    // The figure pane's header: Figure and each table, Add for another table, and the figure's
+    // actions and the zoom hint at the right.
+    let addTable : IView =
+        // The Table menu's commands, with their keys as the user has them.
+        let item (header: string) (msg: Msg) : IView =
+            MenuItem.create [
+                MenuItem.header header
+                MenuItem.inputGesture (gesturesOf (commandNamed header) |> List.tryHead |> Option.toObj)
+                MenuItem.onClick ((fun _ -> dispatch msg), SubPatchOptions.Always)
+            ]
+
+        Button.create [
+            Button.background Brushes.Transparent
+            Button.height Tokens.Height.controlSm
+            Button.minHeight 0.0
+            Button.padding (Thickness(Tokens.Space.s1, 0.0))
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.verticalContentAlignment VerticalAlignment.Center
+            Button.tip "Add a table to this workspace"
+            Button.contextMenu (ContextMenu.create [ ContextMenu.viewItems [ item "_New table" NewTable; item "_Import table…" ChooseImport; item "_Copy a table from another tab…" ChooseCopyTable ] ])
+            Button.onClick (
+                (fun e ->
+                    match e.Source with
+                    | :? Control as c when not (isNull c.ContextMenu) -> c.ContextMenu.Open c
+                    | _ -> ()),
+                SubPatchOptions.Always
+            )
+            Button.content (
+                StackPanel.create [
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.spacing Tokens.Space.s1
+                    StackPanel.children [
+                        icon look "M8,3.5 V12.5 M3.5,8 H12.5" false look.Text true
+                        TextBlock.create [ TextBlock.text "Add"; TextBlock.verticalAlignment VerticalAlignment.Center ]
+                        icon look "M4.5,6.5 L8,10 L11.5,6.5" false look.Dim true
+                    ]
+                ]
+            )
+        ]
+
+    let figureHeader =
+        paneHeader
+            [ paneTab "Figure" None None (model.Tab = 0) (fun () -> dispatch (SelectTab 0))
+              for i, source in List.indexed model.Tables do
+                  paneTab source.Table.Name (Some tableGlyph) None (model.Tab = i + 1) (fun () -> dispatch (SelectTab(i + 1))) ]
+            [ addTable ]
+            [ if model.Tab = 0 then
+                  paneAction "M2,4.5 H14 M2,11.5 H14 M5.5,2.75 V6.25 M10.5,9.75 V13.25" "Show or hide the figure's actions (Ctrl+Shift+A)" model.ActionsOpen (fun () -> dispatch ToggleActions)
+                  paneAction "M8,1.75 A6.25,6.25 0 1 1 7.99,1.75 Z M8,7.25 V11.25 M8,4.8 V4.81" "Drag to zoom · Shift+drag pans · double-click resets" false ignore
+              if model.FullView then
+                  paneAction "M6,2.5 V6 H2.5 M10,2.5 V6 H13.5 M13.5,10 H10 V13.5 M2.5,10 H6 V13.5" "Leave the full view (Escape, Ctrl+Shift+F)" true (fun () -> dispatch ToggleFullView)
+              else
+                  paneAction "M2.5,6 V2.5 H6 M10,2.5 H13.5 V6 M13.5,10 V13.5 H10 M6,13.5 H2.5 V10" "Full view (Ctrl+Shift+F)" false (fun () -> dispatch ToggleFullView) ]
+
     DockPanel.create [
         DockPanel.background (brush look.Surface)
         DockPanel.children [
-            menuBar
             toolbar
             statusBar
+            // Always in its place, hidden rather than left out: a child left out moves the ones
+            // after it, and the editor would be made anew.
             match model.Project with
-            | Some dir when model.FilesOpen -> filesPanel dir
-            | _ -> ()
+            | Some dir -> Border.create [ DockPanel.dock Dock.Left; Border.isVisible (model.FilesOpen && not model.FullView); Border.child (filesPanel dir) ]
+            | None -> Border.create [ DockPanel.dock Dock.Left; Border.isVisible false ]
             Grid.create [
-                Grid.columnDefinitions $"{inv split}*,4,{inv (1.0 - split)}*"
+                // The full view gives the right side the whole width.
+                Grid.columnDefinitions (if model.FullView then "0,0,*" else $"{inv split}*,{Tokens.border},{inv (1.0 - split)}*")
                 Grid.children [
                     Grid.create [
                         Grid.column 0
-                        Grid.rowDefinitions (if model.BottomOpen then $"*,4,{inv model.Bottom}" else "*,0,0")
+                        Grid.rowDefinitions (if model.BottomOpen then $"*,{Tokens.border},{inv model.Bottom}" else "*,0,0")
                         Grid.children [
                             Editor.create [
                                 Grid.row 0
@@ -2175,67 +2859,86 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                 Editor.onProblemsChanged (Problems >> dispatch)
                                 Editor.onCaretMoved (Caret >> dispatch)
                             ]
+                            Border.create [ Grid.row 1; Border.background (brush look.Line) ]
                             GridSplitter.create [
                                 Grid.row 1
                                 GridSplitter.isVisible model.BottomOpen
-                                GridSplitter.background (brush look.Line)
+                                GridSplitter.resizeDirection GridResizeDirection.Rows
+                                GridSplitter.background Brushes.Transparent
+                                GridSplitter.margin (Thickness(0.0, -Tokens.Space.s1))
+                                Visual.zIndex 1
                                 Primitives.Thumb.onDragCompleted dragged
                             ]
-                            bottomPanel
+                            DockPanel.create [
+                                Grid.row 2
+                                DockPanel.isVisible model.BottomOpen
+                                DockPanel.children [ bottomHeader; bottomPanel ]
+                            ]
                         ]
                     ]
-                    GridSplitter.create [ Grid.column 1; GridSplitter.background (brush look.Line); Primitives.Thumb.onDragCompleted dragged ]
-                    TabControl.create [
-                        Grid.column 2
+                    // A rule of one pixel, grabbed a little either side of it.
+                    Border.create [ Grid.column 1; Border.background (brush look.Line) ]
+                    GridSplitter.create [
+                        Grid.column 1
+                        GridSplitter.resizeDirection GridResizeDirection.Columns
+                        GridSplitter.background Brushes.Transparent
+                        GridSplitter.margin (Thickness(-Tokens.Space.s1, 0.0))
+                        Visual.zIndex 1
+                        Primitives.Thumb.onDragCompleted dragged
+                    ]
+                    DockPanel.create [
+                      Grid.column 2
+                      DockPanel.children [
+                        figureHeader
+                        TabControl.create [
                         TabControl.name "sheets"
+                        TabControl.classes [ "bare" ]
+                        TabControl.padding (Thickness 0.0)
                         TabControl.selectedIndex model.Tab
                         TabControl.onSelectedIndexChanged ((fun i -> if i >= 0 && i <> model.Tab then dispatch (SelectTab i)), SubPatchOptions.Always)
                         TabControl.viewItems [
                             TabItem.create [
                                 TabItem.header "Figure"
-                                TabItem.fontSize 15.0
                                 TabItem.content (
                                     DockPanel.create [
                                         DockPanel.children [
-                                            DockPanel.create [
-                                                DockPanel.dock Dock.Top
-                                                DockPanel.children [
-                                                    TextBlock.create [
-                                                        TextBlock.dock Dock.Right
-                                                        TextBlock.margin (Thickness(gap, 0.0, 2.0 * gap, 0.0))
-                                                        TextBlock.verticalAlignment VerticalAlignment.Center
-                                                        TextBlock.fontSize 12.0
-                                                        TextBlock.foreground (brush look.Dim)
-                                                        TextBlock.text "drag to zoom · Shift+drag pans · double-click resets"
-                                                    ]
-                                                    actionsHeader
-                                                ]
-                                            ]
                                             Border.create [
                                                 Border.dock Dock.Top
                                                 Border.isVisible model.ActionsOpen
                                                 Border.borderBrush (brush look.Line)
-                                                Border.borderThickness (Thickness(0.0, 0.0, 0.0, 1.0))
+                                                Border.borderThickness (Thickness(0.0, 0.0, 0.0, Tokens.border))
                                                 Border.child (actionsView model dispatch)
                                             ]
                                             StackPanel.create [
                                                 StackPanel.dock Dock.Bottom
                                                 StackPanel.children (model.Controls |> Array.mapi (fun i c -> controlView dispatch i c (model.Playing.Contains i)) |> List.ofArray)
                                             ]
-                                            Pane.create [
-                                                Pane.picture model.Picture
-                                                Pane.readout model.Readout
-                                                Pane.marks model.Marks
-                                                Pane.onInput (Input >> dispatch)
-                                                Pane.onPicked (Pick >> dispatch)
+                                            // The figure as a card, with the same margin on every side.
+                                            Border.create [
+                                                Border.margin (Thickness Tokens.Space.s4)
+                                                Border.borderBrush (brush look.Line)
+                                                Border.borderThickness (Thickness Tokens.border)
+                                                Border.cornerRadius (CornerRadius Tokens.Radius.md)
+                                                Border.clipToBounds true
+                                                Border.child (
+                                                    Pane.create [
+                                                        Pane.picture model.Picture
+                                                        Pane.readout model.Readout
+                                                        Pane.marks model.Marks
+                                                        Pane.onInput (Input >> dispatch)
+                                                        Pane.onPicked (Pick >> dispatch)
+                                                    ]
+                                                )
                                             ]
                                         ]
                                     ]
                                 )
                             ]
                             for source in model.Tables do
-                                TabItem.create [ TabItem.header source.Table.Name; TabItem.fontSize 15.0; TabItem.content (tableView model dispatch source.Table) ]
+                                TabItem.create [ TabItem.header source.Table.Name; TabItem.content (tableView model dispatch source.Table) ]
                         ]
+                        ]
+                      ]
                     ]
                 ]
             ]
@@ -2371,6 +3074,7 @@ let private subscriptions (env: Env) (host: Control) (titled: string -> unit) (e
         { new IDisposable with member _.Dispose() = () }
 
     [ [ "replies" ], replies
+      [ "preferences" ], (fun dispatch -> Preferences.Live.Changed.Subscribe(fun _ -> dispatch PreferencesChanged))
       // Made again when what can be taken changes, as the keys read it.
       [ "keys"; commands |> List.map (fun c -> if c.Enabled model then "1" else "0") |> String.concat "" ], keys
       [ "post" ], exposed
@@ -2403,11 +3107,11 @@ let askToSave (owner: Window) (look: Palette.Look) (names: string list) : Task<U
     let save = Button(Content = "Save", IsDefault = true)
     let discard = Button(Content = "Don't save")
     let keep = Button(Content = "Cancel", IsCancel = true)
-    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = 8.0, HorizontalAlignment = HorizontalAlignment.Right)
+    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2, HorizontalAlignment = HorizontalAlignment.Right)
     buttons.Children.Add discard
     buttons.Children.Add keep
     buttons.Children.Add save
-    let panel = StackPanel(Spacing = 12.0, Margin = Thickness 18.0)
+    let panel = StackPanel(Spacing = Tokens.Space.s3, Margin = Thickness Tokens.Space.s4)
     panel.Children.Add text
     panel.Children.Add buttons
 
@@ -2431,10 +3135,10 @@ let askForName (owner: Window) (title: string) (current: string) : Task<string o
     let box = TextBox(Text = current, SelectionStart = 0, SelectionEnd = current.Length)
     let ok = Button(Content = "OK", IsDefault = true)
     let cancel = Button(Content = "Cancel", IsCancel = true)
-    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = 8.0, HorizontalAlignment = HorizontalAlignment.Right)
+    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2, HorizontalAlignment = HorizontalAlignment.Right)
     buttons.Children.Add cancel
     buttons.Children.Add ok
-    let panel = StackPanel(Spacing = 12.0, Margin = Thickness 18.0)
+    let panel = StackPanel(Spacing = Tokens.Space.s3, Margin = Thickness Tokens.Space.s4)
     panel.Children.Add box
     panel.Children.Add buttons
 
@@ -2464,10 +3168,10 @@ let confirmDeleting (owner: Window) (look: Palette.Look) (files: string list) : 
 
     let delete = Button(Content = "Delete")
     let cancel = Button(Content = "Cancel", IsDefault = true, IsCancel = true)
-    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = 8.0, HorizontalAlignment = HorizontalAlignment.Right)
+    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2, HorizontalAlignment = HorizontalAlignment.Right)
     buttons.Children.Add delete
     buttons.Children.Add cancel
-    let panel = StackPanel(Spacing = 12.0, Margin = Thickness 18.0)
+    let panel = StackPanel(Spacing = Tokens.Space.s3, Margin = Thickness Tokens.Space.s4)
     panel.Children.Add text
     panel.Children.Add buttons
 
@@ -2490,10 +3194,10 @@ let askToConfirm (owner: Window) (look: Palette.Look) (question: string) (yes: s
     let text = TextBlock(Text = question, TextWrapping = TextWrapping.Wrap, Foreground = SolidColorBrush look.Text)
     let yesButton = Button(Content = yes, IsDefault = true)
     let noButton = Button(Content = no, IsCancel = true)
-    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = 8.0, HorizontalAlignment = HorizontalAlignment.Right)
+    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2, HorizontalAlignment = HorizontalAlignment.Right)
     buttons.Children.Add noButton
     buttons.Children.Add yesButton
-    let panel = StackPanel(Spacing = 12.0, Margin = Thickness 18.0)
+    let panel = StackPanel(Spacing = Tokens.Space.s3, Margin = Thickness Tokens.Space.s4)
     panel.Children.Add text
     panel.Children.Add buttons
 
@@ -2506,6 +3210,48 @@ let askToConfirm (owner: Window) (look: Palette.Look) (question: string) (yes: s
 
     noButton.Click.Add(fun _ -> window.Close())
     window.Closed.Add(fun _ -> answer.TrySetResult false |> ignore)
+    window.ShowDialog owner |> ignore
+    answer.Task
+
+/// Asks which table to take, each named with its tab, its rows and columns; none where it was
+/// cancelled.
+let askForTable (owner: Window) (look: Palette.Look) (choices: (string * Tambour.Data.Table) list) : Task<Tambour.Data.Table option> =
+    let answer = TaskCompletionSource<Tambour.Data.Table option>()
+    let text = TextBlock(Text = "Copy which table into this workspace?", Foreground = SolidColorBrush look.Text)
+
+    let row (tab: string, t: Tambour.Data.Table) =
+        let line = DockPanel()
+        let size = TextBlock(Text = $"{tab} · {t.Rows} × {t.Columns.Length}", FontSize = Tokens.Type.small, Foreground = SolidColorBrush look.Dim, VerticalAlignment = VerticalAlignment.Center)
+        DockPanel.SetDock(size, Dock.Right)
+        line.Children.Add size
+        line.Children.Add(TextBlock(Text = t.Name, Foreground = SolidColorBrush look.Text, VerticalAlignment = VerticalAlignment.Center))
+        line
+
+    let list = ListBox(ItemsSource = [ for c in choices -> row c ], SelectedIndex = 0, MaxHeight = 320.0)
+    let yesButton = Button(Content = "Copy", IsDefault = true)
+    let noButton = Button(Content = "Cancel", IsCancel = true)
+    let buttons = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2, HorizontalAlignment = HorizontalAlignment.Right)
+    buttons.Children.Add noButton
+    buttons.Children.Add yesButton
+    let panel = StackPanel(Spacing = Tokens.Space.s3, Margin = Thickness Tokens.Space.s4)
+    panel.Children.Add text
+    panel.Children.Add list
+    panel.Children.Add buttons
+
+    let window =
+        Window(Title = "Tambour", Width = 440.0, SizeToContent = SizeToContent.Height, CanResize = false, Content = panel, WindowStartupLocation = WindowStartupLocation.CenterOwner)
+
+    let take () =
+        match List.tryItem list.SelectedIndex choices with
+        | Some(_, t) -> answer.TrySetResult(Some t) |> ignore
+        | None -> ()
+
+        window.Close()
+
+    yesButton.Click.Add(fun _ -> take ())
+    list.DoubleTapped.Add(fun _ -> take ())
+    noButton.Click.Add(fun _ -> window.Close())
+    window.Closed.Add(fun _ -> answer.TrySetResult None |> ignore)
     window.ShowDialog owner |> ignore
     answer.Task
 
@@ -2533,7 +3279,10 @@ type Workspace(script: string, path: string option, language: LanguageService, t
           Confirm = fun question yes no -> owner.Confirm question yes no
           Renamed = fun before after -> owner.Renamed before after
           Deleted = fun files -> owner.Deleted files
-          Detach = fun () -> owner.Detach() }
+          Detach = fun () -> owner.Detach()
+          Preferences = fun () -> owner.Preferences()
+          OtherTables = fun () -> owner.OtherTables()
+          PickTable = fun choices -> owner.PickTable choices }
 
     let mutable dispatch: Msg -> unit = ignore
     let mutable title = "Tambour"
@@ -2590,6 +3339,7 @@ type Workspace(script: string, path: string option, language: LanguageService, t
         Program.mkProgram init step (view env)
         |> Program.withHost this
         |> Program.withSubscription (subscriptions env this titled (fun d -> dispatch <- d))
+        |> Program.withTermination (function Ended -> true | _ -> false) ignore
         |> Program.runWithAvaloniaSyncDispatch ()
 
     /// Sends the workspace's loop a message, as its own controls do.
@@ -2619,6 +3369,12 @@ type Workspace(script: string, path: string option, language: LanguageService, t
 
     /// The script's name, as its tab shows it.
     member _.ScriptName = scriptName latest
+
+    /// Its tables, as they are now.
+    member _.Tables = [ for s in latest.Tables -> s.Table ]
+
+    /// The text settings its figures are exported with: its project's, or the app's.
+    member _.Skia = skiaOf latest
 
     /// What is unsaved in it, by name; empty when everything is on disk.
     member _.Unsaved = unsaved latest
@@ -2657,6 +3413,7 @@ type Workspace(script: string, path: string option, language: LanguageService, t
 
     interface IDisposable with
         member _.Dispose() =
+            dispatch Ended
             idle.Dispose()
             (workers :> IDisposable).Dispose()
 
@@ -2686,7 +3443,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
     let language = group.Language
     let workspaces = ResizeArray<Workspace>()
     let mutable active = -1
-    let strip = StackPanel(Orientation = Orientation.Horizontal)
+    let strip = StackPanel(Orientation = Orientation.Horizontal, Margin = Thickness(Tokens.Space.s2, 0.0))
     let deck = Avalonia.Controls.Grid()
     /// The start view, in the deck while no tab is open, and what it has to tell.
     let start = Border(IsVisible = false)
@@ -2725,6 +3482,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
     let mutable askName: string -> string -> Task<string option> = fun _ _ -> Task.FromResult None
     let mutable confirmDelete: string list -> Task<bool> = fun _ -> Task.FromResult false
     let mutable confirm: string -> string -> string -> Task<bool> = fun _ _ _ -> Task.FromResult false
+    let mutable pickTable: (string * Tambour.Data.Table) list -> Task<Tambour.Data.Table option> = fun _ -> Task.FromResult None
     /// The open scripts as last told to the tabs.
     let mutable told: Map<string, bool> = Map.empty
 
@@ -2768,24 +3526,65 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
             let look = look ()
             strip.Children.Clear()
 
+            // A drawn mark: stroked, at the icon size, in a colour.
+            let mark (data: string) (colour: Color) =
+                Shapes.Path(
+                    Data = Geometry.Parse data,
+                    Width = Tokens.Height.icon,
+                    Height = Tokens.Height.icon,
+                    Stroke = SolidColorBrush colour,
+                    StrokeThickness = 1.5,
+                    StrokeLineCap = PenLineCap.Round
+                )
+
+            let quiet (content: Control) (tip: string) =
+                let b =
+                    Button(
+                        Content = content,
+                        Width = Tokens.Height.controlSm,
+                        Height = Tokens.Height.controlSm,
+                        MinHeight = 0.0,
+                        Padding = Thickness 0.0,
+                        HorizontalContentAlignment = HorizontalAlignment.Center,
+                        VerticalContentAlignment = VerticalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center,
+                        Background = Brushes.Transparent
+                    )
+
+                ToolTip.SetTip(b, tip)
+                b
+
+            let tabHeight = Tokens.Height.tabs - Tokens.Space.s1
+
             workspaces
             |> Seq.iteri (fun i w ->
                 let shown = i = active
-                let name = TextBlock(Text = labelOf w, VerticalAlignment = VerticalAlignment.Center, Foreground = SolidColorBrush(if shown then look.Text else look.Dim))
-                let close = Button(Content = "×", Padding = Thickness(4.0, 0.0), Background = Brushes.Transparent, VerticalAlignment = VerticalAlignment.Center)
-                ToolTip.SetTip(close, "Close tab (Ctrl+W)")
+                let name = TextBlock(Text = w.ScriptName, VerticalAlignment = VerticalAlignment.Center, Foreground = SolidColorBrush(if shown then look.Text else look.Dim))
+                let close = quiet (mark "M4.5,4.5 L11.5,11.5 M11.5,4.5 L4.5,11.5" look.Dim) "Close tab (Ctrl+W)"
                 close.Click.Add(fun _ -> closeTab w |> ignore)
-                let row = StackPanel(Orientation = Orientation.Horizontal, Spacing = 6.0)
+                let row = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2)
                 row.Children.Add name
+
+                if not w.Unsaved.IsEmpty then
+                    let dot = Shapes.Ellipse(Width = Tokens.Space.s2, Height = Tokens.Space.s2, Fill = SolidColorBrush(if shown then look.Text else look.Dim), VerticalAlignment = VerticalAlignment.Center)
+                    ToolTip.SetTip(dot, "unsaved")
+                    row.Children.Add dot
+
                 row.Children.Add close
 
+                // The shown tab on the bar's colour, open to it below: one piece with the bar.
                 let tab =
                     Button(
                         Content = row,
-                        Padding = Thickness(10.0, 3.0, 4.0, 3.0),
-                        CornerRadius = CornerRadius(4.0, 4.0, 0.0, 0.0),
-                        Background = SolidColorBrush(if shown then look.Surface else look.Raised),
-                        BorderThickness = Thickness(0.0)
+                        Height = (if shown then tabHeight + Tokens.border else tabHeight),
+                        MinHeight = 0.0,
+                        VerticalAlignment = VerticalAlignment.Bottom,
+                        VerticalContentAlignment = VerticalAlignment.Center,
+                        Padding = Thickness(Tokens.Space.s3, 0.0, Tokens.Space.s1, 0.0),
+                        CornerRadius = CornerRadius(Tokens.Radius.md, Tokens.Radius.md, 0.0, 0.0),
+                        Background = (if shown then SolidColorBrush look.Surface :> IBrush else Brushes.Transparent),
+                        BorderBrush = (if shown then SolidColorBrush look.Line :> IBrush else Brushes.Transparent),
+                        BorderThickness = Thickness(Tokens.border, Tokens.border, Tokens.border, 0.0)
                     )
 
                 ToolTip.SetTip(tab, (match w.Path with Some p -> p | None -> "not saved yet"))
@@ -2837,6 +3636,12 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
                 tab.ContextMenu <- menu
                 strip.Children.Add tab)
 
+            let plus = quiet (mark "M8,3.5 V12.5 M3.5,8 H12.5" look.Dim) "New script (Ctrl+N)"
+            plus.Margin <- Thickness(Tokens.Space.s1, 0.0, 0.0, Tokens.Space.s1)
+            plus.VerticalAlignment <- VerticalAlignment.Bottom
+            plus.Click.Add(fun _ -> add "" None)
+            strip.Children.Add plus
+
     and show (i: int) =
         if i >= 0 && i < workspaces.Count then
             start.IsVisible <- false
@@ -2853,6 +3658,16 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
         start.IsVisible <- true
         refresh true
 
+    /// What the start view's menus and keys do, there being no tab to do it.
+    and startCommand (msg: Msg) =
+        match msg with
+        | NewScript -> add "" None
+        | ChooseOpen folder -> chooseOpen folder |> ignore
+        | OpenPreferences -> openPreferences ()
+        | Quit -> this.Close()
+        | About -> (aboutWindow (look ())).ShowDialog this |> ignore
+        | _ -> ()
+
     /// Asks for a script or a folder, and opens it in a tab.
     and chooseOpen (folder: bool) =
         task {
@@ -2868,7 +3683,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
           Open = openPath
           Close = fun () -> closeTab (self ()) |> ignore
           Cycle = fun step -> if workspaces.Count > 0 then show ((active + step + workspaces.Count) % workspaces.Count)
-          Opened = fun path -> setRecent (Preferences.opened path recent)
+          Opened = fun path -> setRecent (Preferences.opened Preferences.Live.Current.RecentKeep path recent)
           ForgetRecent =
             fun missingOnly ->
                 setRecent (if missingOnly then recent |> List.filter (fun p -> File.Exists p || Directory.Exists p) else [])
@@ -2890,7 +3705,34 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
                         match w.Path with
                         | Some p when List.contains p files -> (win :?> MainWindow).Forget w
                         | _ -> ()
-          Detach = fun () -> if workspaces.Count > 1 then detach (self ()) None |> ignore }
+          Detach = fun () -> if workspaces.Count > 1 then detach (self ()) None |> ignore
+          Preferences = fun () -> openPreferences ()
+          OtherTables =
+            fun () ->
+                [ for win in List.ofSeq group.Windows do
+                      for (w: Workspace) in (win :?> MainWindow).Workspaces do
+                          if not (obj.ReferenceEquals(w, self ())) then
+                              for t in w.Tables -> w.ScriptName, t ]
+          PickTable = fun choices -> pickTable choices }
+
+    /// The Preferences dialog, over this window, with the commands' shortcuts to show and change.
+    and openPreferences () =
+        let shortcuts: PreferencesView.Shortcut list =
+            [ for c in commands ->
+                  { Menu = c.Menu
+                    Header = c.Header
+                    Keys = Option.toList c.Gesture @ c.Also |> List.map string
+                    InGrid = c.InGrid } ]
+
+        // The Project page edits the shown tab's project, where it has one.
+        let project: PreferencesView.ProjectPage option =
+            if active < 0 then None
+            else
+                let w = workspaces.[active]
+                w.Project |> Option.map (fun dir -> { Name = Path.GetFileName dir; Skia = w.Skia; Set = fun s -> w.Post(SetSkia s) })
+
+        let dialog = PreferencesView.PreferencesWindow(shortcuts, openPath, project)
+        dialog.ShowDialog this |> ignore
 
     and add (script: string) (path: string option) =
         let self = ref Unchecked.defaultof<Workspace>
@@ -2980,7 +3822,7 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
 
         match workspaces |> Seq.tryFindIndex showing with
         | Some i ->
-            setRecent (Preferences.opened full recent)
+            setRecent (Preferences.opened Preferences.Live.Current.RecentKeep full recent)
             show i
         | None when active >= 0 && workspaces.[active].Untouched -> workspaces.[active].Post(OpenPath full)
         | None -> add "" (Some full)
@@ -3039,6 +3881,72 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
         this.Resources.["ButtonBorderBrushDisabled"] <- Brushes.Transparent
         this.Width <- 1280.0
         this.Height <- 800.0
+
+        // The window where it was last closed, as large, maximized if it was; not a window a tab
+        // was moved into. A place on no screen now (one unplugged since) is left to the system.
+        if not moved && group.Windows.Count = 0 then
+            match (preferences ()).Window with
+            | Some p ->
+                this.Width <- p.Width
+                this.Height <- p.Height
+                this.Position <- PixelPoint(p.X, p.Y)
+                this.WindowStartupLocation <- WindowStartupLocation.Manual
+
+                this.Opened.Add(fun _ ->
+                    let onScreen = this.Screens.All |> Seq.exists (fun s -> s.Bounds.Contains(PixelPoint(p.X + 16, p.Y + 16)))
+                    if not onScreen && this.Screens.All.Count > 0 then this.WindowStartupLocation <- WindowStartupLocation.CenterScreen
+
+                    // No larger than the screen it is on, nor past its edges: a screen's scaling
+                    // may have grown since, which makes the same size larger.
+                    match this.Screens.ScreenFromWindow this with
+                    | null -> ()
+                    | screen ->
+                        let area = screen.WorkingArea
+                        let scale = screen.Scaling
+                        let width = min this.Width (float area.Width / scale)
+                        let height = min this.Height (float area.Height / scale)
+
+                        if width < this.Width || height < this.Height then
+                            this.Width <- width
+                            this.Height <- height
+
+                        let x = Math.Clamp(this.Position.X, area.X, max area.X (area.Right - int (width * scale)))
+                        let y = Math.Clamp(this.Position.Y, area.Y, max area.Y (area.Bottom - int (height * scale)))
+                        if PixelPoint(x, y) <> this.Position then this.Position <- PixelPoint(x, y)
+
+                    if p.Maximized then this.WindowState <- WindowState.Maximized)
+            | None -> ()
+
+            // The size and place it had last while neither maximized nor minimized, kept on close.
+            let mutable normal = (this.Position, this.Width, this.Height)
+
+            let track () =
+                if this.WindowState = WindowState.Normal then normal <- (this.Position, this.Width, this.Height)
+
+            this.PositionChanged.Add(fun _ -> track ())
+            this.PropertyChanged.Add(fun e -> if e.Property = Window.ClientSizeProperty then track ())
+            // Taken as closing begins: once closed, the window no longer knows where it was.
+            this.Closing.Add(fun _ -> track ())
+
+            this.Closed.Add(fun _ ->
+                match App.SettingsDirectory with
+                | null -> ()
+                | dir ->
+                    let position, width, height = normal
+
+                    try
+                        Preferences.write
+                            dir
+                            { Preferences.read dir with
+                                Window =
+                                    Some
+                                        { X = position.X
+                                          Y = position.Y
+                                          Width = width
+                                          Height = height
+                                          Maximized = (this.WindowState = WindowState.Maximized) } }
+                    with _ ->
+                        ())
         ask <-
             fun names ->
                 match App.AnswerUnsaved with
@@ -3055,7 +3963,23 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
         confirm <-
             fun question yes no ->
                 if App.AnswerUnsaved.IsSome then Task.FromResult false else askToConfirm this (look ()) question yes no
-        let tabsRow = ScrollViewer(Content = strip, HorizontalScrollBarVisibility = Primitives.ScrollBarVisibility.Auto, VerticalScrollBarVisibility = Primitives.ScrollBarVisibility.Disabled)
+
+        pickTable <- fun choices -> if App.AnswerUnsaved.IsSome then Task.FromResult None else askForTable this (look ()) choices
+        // The strip, with its rule along the bottom drawn under the tabs, so that the shown one
+        // covers it.
+        let rule = Border(Height = Tokens.border, VerticalAlignment = VerticalAlignment.Bottom)
+        let tabsRow = Avalonia.Controls.Grid(Height = Tokens.Height.tabs)
+        tabsRow.Children.Add rule
+        tabsRow.Children.Add(ScrollViewer(Content = strip, HorizontalScrollBarVisibility = Primitives.ScrollBarVisibility.Auto, VerticalScrollBarVisibility = Primitives.ScrollBarVisibility.Disabled))
+
+        // The strip's colours follow the theme.
+        let paintStrip () =
+            let look = look ()
+            tabsRow.Background <- SolidColorBrush look.Raised
+            rule.Background <- SolidColorBrush look.Line
+
+        paintStrip ()
+        this.ActualThemeVariantChanged.Add(fun _ -> paintStrip ())
         let layout = DockPanel()
         DockPanel.SetDock(tabsRow, Dock.Top)
         layout.Children.Add tabsRow
@@ -3068,49 +3992,138 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
         startView.Value <-
             fun () ->
                 let look = look ()
-                let panel = StackPanel(Spacing = 8.0, Margin = Thickness(48.0, 40.0), Width = 520.0, HorizontalAlignment = HorizontalAlignment.Left)
-                let heading (text: string) (size: float) = TextBlock(Text = text, FontSize = size, FontWeight = FontWeight.SemiBold, Foreground = SolidColorBrush look.Text, Margin = Thickness(0.0, 12.0, 0.0, 4.0))
+                let brush (c: Color) = SolidColorBrush c
 
-                let entry (text: string) (keys: string) (enabled: bool) (act: unit -> unit) =
-                    let row = DockPanel()
-                    let shortcut = TextBlock(Text = keys, Foreground = SolidColorBrush look.Dim, Margin = Thickness(24.0, 0.0, 0.0, 0.0), TextTrimming = TextTrimming.CharacterEllipsis)
-                    DockPanel.SetDock(shortcut, Dock.Right)
-                    row.Children.Add shortcut
-                    row.Children.Add(TextBlock(Text = text, Foreground = SolidColorBrush(if enabled then look.Accent else look.Dim), TextTrimming = TextTrimming.CharacterEllipsis))
-                    let b = Button(Content = row, Background = Brushes.Transparent, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, IsEnabled = enabled, Padding = Thickness(4.0, 2.0))
+                let glyph (data: string) (colour: Color) =
+                    Shapes.Path(
+                        Data = Geometry.Parse data,
+                        Width = Tokens.Height.icon,
+                        Height = Tokens.Height.icon,
+                        Stroke = brush colour,
+                        StrokeThickness = 1.25,
+                        StrokeJoin = PenLineJoin.Round,
+                        StrokeLineCap = PenLineCap.Round,
+                        VerticalAlignment = VerticalAlignment.Center
+                    )
+
+                let file = "M4,1.75 H9 L12,4.75 V14.25 H4 Z M9,1.75 V4.75 H12"
+                let folder = "M1.75,4.25 A1,1 0 0 1 2.75,3.25 H5.75 L7.25,4.75 H13.25 A1,1 0 0 1 14.25,5.75 V12.25 A1,1 0 0 1 13.25,13.25 H2.75 A1,1 0 0 1 1.75,12.25 Z"
+
+                /// A row: an icon, a name, and at its end a shortcut or where the file is.
+                let entry (icon: string) (text: string) (fin: string) (there: bool) (act: unit -> unit) =
+                    let row = DockPanel(Height = Tokens.Height.row)
+                    let tail = TextBlock(Text = fin, FontSize = Tokens.Type.small, Foreground = brush (if there then look.Dim else look.Roles.Faint), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, Margin = Thickness(Tokens.Space.s4, 0.0, 0.0, 0.0))
+                    DockPanel.SetDock(tail, Dock.Right)
+                    row.Children.Add tail
+                    let name = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2)
+                    name.Children.Add(glyph icon (if there then look.Dim else look.Roles.Faint))
+                    name.Children.Add(TextBlock(Text = text, Foreground = brush (if there then look.Text else look.Roles.Faint), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center))
+                    row.Children.Add name
+
+                    let b =
+                        Button(
+                            Content = row,
+                            Background = Brushes.Transparent,
+                            HorizontalAlignment = HorizontalAlignment.Stretch,
+                            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                            Padding = Thickness(Tokens.Space.s2, 0.0),
+                            MinHeight = 0.0
+                        )
+
                     b.Click.Add(fun _ -> act ())
                     b
 
-                panel.Children.Add(heading "Tambour" 22.0)
+                let section (title: string) =
+                    let column = StackPanel()
+                    column.Children.Add(TextBlock(Text = title, FontSize = Tokens.Type.small, FontWeight = FontWeight.SemiBold, Foreground = brush look.Dim, Height = Tokens.Height.row, Padding = Thickness(Tokens.Space.s2, Tokens.Space.s1 + Tokens.border, 0.0, 0.0)))
+                    column
+
+                let quiet (text: string) (act: unit -> unit) =
+                    let b = Button(Content = text, Background = Brushes.Transparent)
+                    b.Click.Add(fun _ -> act ())
+                    b
+
+                let panel = StackPanel(Spacing = Tokens.Space.s6, Width = 800.0, Margin = Thickness(Tokens.Space.s4, Tokens.Space.s7, Tokens.Space.s4, Tokens.Space.s5), HorizontalAlignment = HorizontalAlignment.Center)
+                let title = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s3)
+                title.Children.Add(TextBlock(Text = "Tambour", FontSize = Tokens.Type.display, FontWeight = FontWeight.SemiBold, Foreground = brush look.Text, VerticalAlignment = VerticalAlignment.Bottom))
+                title.Children.Add(TextBlock(Text = "Measured data, figures and F# scripting", Foreground = brush look.Dim, VerticalAlignment = VerticalAlignment.Bottom, Margin = Thickness(0.0, 0.0, 0.0, Tokens.Space.s1)))
+                panel.Children.Add title
 
                 if startNote <> "" then
-                    panel.Children.Add(TextBlock(Text = startNote, Foreground = SolidColorBrush look.Warning, TextWrapping = TextWrapping.Wrap))
+                    panel.Children.Add(TextBlock(Text = startNote, Foreground = brush look.Warning, TextWrapping = TextWrapping.Wrap))
 
-                panel.Children.Add(heading "Start" 15.0)
-                panel.Children.Add(entry "New script" "Ctrl+N" true (fun () -> add "" None))
-                panel.Children.Add(entry "Open…" "Ctrl+O" true (fun () -> chooseOpen false))
-                panel.Children.Add(entry "Open folder…" "Ctrl+Shift+O" true (fun () -> chooseOpen true))
-                panel.Children.Add(entry "The example figure" "" true (fun () -> add example None))
+                let columns = Avalonia.Controls.Grid(ColumnDefinitions = ColumnDefinitions $"280,{Tokens.Space.s6},*")
+                let start = section "Start"
+                start.Children.Add(entry "M4,1.75 H9 L12,4.75 V14.25 H4 Z M9,1.75 V4.75 H12 M8,7.5 V11.5 M6,9.5 H10" "New script" "Ctrl+N" true (fun () -> add "" None))
+                start.Children.Add(entry file "Open…" "Ctrl+O" true (fun () -> chooseOpen false))
+                start.Children.Add(entry folder "Open folder…" "Ctrl+Shift+O" true (fun () -> chooseOpen true))
+                start.Children.Add(entry "M2.5,2.5 V13.5 H13.5 M5,10 L8,6.5 L10,8.5 L13.5,4.5" "The example figure" "" true (fun () -> add example None))
+                columns.Children.Add start
 
                 if not recent.IsEmpty then
-                    panel.Children.Add(heading "Recent" 15.0)
+                    let recentColumn = section "Recent"
+                    Avalonia.Controls.Grid.SetColumn(recentColumn, 2)
 
                     for p in recent do
                         let there = File.Exists p || Directory.Exists p
-                        let e = entry (Path.GetFileName p) (Path.GetDirectoryName p) there (fun () -> openPath p)
+                        let home = Environment.GetFolderPath Environment.SpecialFolder.UserProfile
+                        let where = Path.GetDirectoryName p |> fun d -> if not (String.IsNullOrEmpty home) && d.StartsWith home then "~" + d.Substring home.Length else d
+                        let e = entry (if Directory.Exists p then folder else file) (Path.GetFileName p) (if there then where else $"missing · {where}") there (fun () -> if there then openPath p)
                         ToolTip.SetTip(e, (if there then p else $"{p}: no longer there"))
-                        panel.Children.Add e
+                        recentColumn.Children.Add e
 
-                ScrollViewer(Content = panel) :> Control
+                    let actions = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2, Margin = Thickness(0.0, Tokens.Space.s2, 0.0, 0.0))
+                    actions.Children.Add(quiet "Remove missing" (fun () -> setRecent (recent |> List.filter (fun p -> File.Exists p || Directory.Exists p))))
+                    actions.Children.Add(quiet "Clear" (fun () -> setRecent []))
+                    recentColumn.Children.Add actions
+                    columns.Children.Add recentColumn
 
-        // While no tab is open, the start view's keys.
+                panel.Children.Add columns
+
+                // The menus that need no tab, as the tabs' bar has them.
+                let item (header: string) (act: unit -> unit) =
+                    let command = commandNamed header
+                    let m = MenuItem(Header = header, InputGesture = (gesturesOf command |> List.tryHead |> Option.toObj))
+                    m.Click.Add(fun _ -> act ())
+                    m
+
+                let top (header: string) (items: Control list) =
+                    let m = MenuItem(Header = header)
+                    for i in items do
+                        m.Items.Add i |> ignore
+                    m
+
+                let recentItem = MenuItem(Header = "Open _recent", IsEnabled = not recent.IsEmpty)
+                for p in recent do
+                    let there = File.Exists p || Directory.Exists p
+                    let m = MenuItem(Header = p, IsEnabled = there)
+                    m.Click.Add(fun _ -> openPath p)
+                    recentItem.Items.Add m |> ignore
+
+                let menu = Menu(VerticalAlignment = VerticalAlignment.Center)
+                menu.Items.Add(
+                    top "_File" [ for h in [ "_New script"; "_Open…"; "Open _folder…" ] do
+                                      yield item h (fun () -> startCommand (commandNamed h).Msg) :> Control
+                                  yield recentItem
+                                  yield Separator()
+                                  yield item "_Quit" (fun () -> startCommand Quit) ]) |> ignore
+                menu.Items.Add(top "_Edit" [ item "_Preferences…" (fun () -> startCommand OpenPreferences) ]) |> ignore
+                menu.Items.Add(top "_Help" [ item "_About Tambour" (fun () -> startCommand About) ]) |> ignore
+
+                let bar = Border(Child = menu, Height = Tokens.Height.toolbar, Padding = Thickness(Tokens.Space.s2, 0.0), Background = brush look.Surface, BorderBrush = brush look.Line, BorderThickness = Thickness(0.0, 0.0, 0.0, Tokens.border))
+                let view = DockPanel()
+                DockPanel.SetDock(bar, Dock.Top)
+                view.Children.Add bar
+                view.Children.Add(ScrollViewer(Content = panel))
+                view :> Control
+
+        // While no tab is open, the start view's keys: those of its menus, as the user has them.
         this.KeyDown.Add(fun e ->
             if workspaces.Count = 0 then
-                match e.Key, e.KeyModifiers with
-                | Key.N, KeyModifiers.Control -> add "" None; e.Handled <- true
-                | Key.O, KeyModifiers.Control -> chooseOpen false; e.Handled <- true
-                | Key.O, m when m = (KeyModifiers.Control ||| KeyModifiers.Shift) -> chooseOpen true; e.Handled <- true
-                | Key.Q, KeyModifiers.Control -> this.Close(); e.Handled <- true
+                match commandFor e.Key e.KeyModifiers with
+                | Some c when (match c.Msg with NewScript | ChooseOpen _ | OpenPreferences | Quit | About -> true | _ -> false) ->
+                    startCommand c.Msg
+                    e.Handled <- true
                 | _ -> ())
 
         if opening.IsEmpty then showStart ()
@@ -3244,6 +4257,11 @@ type MainWindow private (opening: (string * string option) list, group: WindowGr
     member _.AskName
         with get () = askName
         and set (value: string -> string -> Task<string option>) = askName <- value
+
+    /// Asks which of the other tabs' tables to copy; a test's stands in for the dialog.
+    member _.PickTable
+        with get () = pickTable
+        and set (value: (string * Tambour.Data.Table) list -> Task<Tambour.Data.Table option>) = pickTable <- value
 
     member _.ConfirmDelete
         with get () = confirmDelete

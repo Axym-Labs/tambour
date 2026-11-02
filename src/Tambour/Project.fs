@@ -41,6 +41,17 @@ let tableFile (directory: string) (file: string) =
 let private settingsPath (directory: string) =
     Path.Combine(directory, (if isWorkspace directory then WorkspaceFile else FileName))
 
+/// A column's width, as dragged in the grid.
+type ColumnWidth = { Column: string; Width: float }
+
+/// How a table's columns were shown: the widths dragged, the columns hidden and those collapsed,
+/// by name.
+type TableColumns =
+    { Table: string
+      Widths: ColumnWidth[]
+      Hidden: string[]
+      Collapsed: string[] }
+
 /// What `project.json` holds.
 type Settings =
     { /// The script that was open, by its name in the directory.
@@ -51,7 +62,9 @@ type Settings =
       /// Where the divider between the script and the figure is, as a fraction of the width.
       Split: float
       /// The height of the panel under the script, in px; 0 for the app's own.
-      Bottom: float }
+      Bottom: float
+      /// How each table's columns are shown; none in a file from before.
+      Columns: TableColumns[] }
 
 /// The Marey this app runs scripts on.
 let mareyVersion =
@@ -66,7 +79,8 @@ let defaults (script: string) =
       Marey = mareyVersion
       Skia = { Dpi = float Marey.Space.screenDpi; FontFiles = [||] }
       Split = 0.5
-      Bottom = 0.0 }
+      Bottom = 0.0
+      Columns = [||] }
 
 let private json = JsonSerializerOptions(WriteIndented = true)
 
@@ -78,7 +92,11 @@ let read (directory: string) : Settings option =
         try
             match JsonSerializer.Deserialize<Settings>(File.ReadAllText path, json) with
             | s when isNull (box s) -> None
-            | s -> Some { s with Skia = (if isNull (box s.Skia) then (defaults s.Script).Skia else s.Skia) }
+            | s ->
+                Some
+                    { s with
+                        Skia = (if isNull (box s.Skia) then (defaults s.Script).Skia else s.Skia)
+                        Columns = (if isNull s.Columns then [||] else s.Columns) }
         with _ ->
             None
     else

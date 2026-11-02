@@ -106,6 +106,11 @@ module Shown =
         // The colour of the name before a dot, which the name after it continues.
         let mutable last: IBrush = plain
         let mutable dotted: IBrush option = None
+        // `custom operation: name (Type)`, a computation expression's operation, its name drawn as
+        // the editor draws the operation, a keyword, and its argument a type.
+        let mutable custom = false
+        // `Calls Type.Method` under it: the method the operation calls.
+        let mutable calls = false
 
         for m in pieces.Matches text do
             let p = m.Value
@@ -118,14 +123,34 @@ module Shown =
                         depth <- 0
                         lineStart <- true
                         nameKind <- "function"
+                        custom <- false
+                        calls <- false
 
                     plain
                 elif Char.IsLetter p.[0] || p.[0] = '_' then
                     // `from Marey` under a module's or type's name: where it is from.
                     let isFrom = p = "from" && lineStart
+                    let first = lineStart
                     lineStart <- false
 
-                    if depth = 0 && not expectType && (keywords.Contains p || isFrom) then
+                    if first && p = "Calls" then
+                        calls <- true
+                        plain
+                    elif calls then
+                        // A type before each dot, the method after the last.
+                        let next = m.Index + m.Length
+                        brush (if next < text.Length && text.[next] = '.' then "type" else "method")
+                    elif first && p = "custom" then
+                        brush "keyword"
+                    elif p = "operation" && previous = " " && not named && not custom then
+                        custom <- true
+                        brush "keyword"
+                    elif custom && not named then
+                        named <- true
+                        brush "keyword"
+                    elif custom then
+                        brush "type"
+                    elif depth = 0 && not expectType && (keywords.Contains p || isFrom) then
                         match naming.TryFind p with
                         | Some kind when not named -> nameKind <- kind
                         | _ -> ()
@@ -142,6 +167,8 @@ module Shown =
                     lineStart <- false
 
                     match p with
+                    // The name follows the colon of `custom operation:`.
+                    | ":" when custom && not named -> ()
                     | "<" -> depth <- depth + 1
                     | ">" when previous = "-" -> expectType <- true
                     | ">" -> depth <- max 0 (depth - 1)
@@ -157,7 +184,7 @@ module Shown =
 
             let colour =
                 match dotted with
-                | Some qualified when Char.IsLetter p.[0] || p.[0] = '_' -> qualified
+                | Some qualified when (Char.IsLetter p.[0] || p.[0] = '_') && not calls -> qualified
                 | _ -> coloured
 
             dotted <- if p = "."&& (Char.IsLetter previous.[0] || previous.[0] = '_') then Some last else None
@@ -169,6 +196,23 @@ module Shown =
 
 /// One completion as the completion list shows and inserts it: its kind's glyph, and its name in
 /// the kind's colour with what has been typed of it in bold. The kind's name is its description.
+/// Where a hover's tip goes beside the hovered word.
+module Tip =
+
+    type Side =
+        | Above
+        | Below
+
+    /// Above the word where the tip fits, as an editor's hover is; below where only that fits; and
+    /// where neither does, the side with more room, the tip slid into the window from there.
+    let side (word: Rect) (tip: Size) (bounds: Rect) =
+        let above, below = word.Top - bounds.Top, bounds.Bottom - word.Bottom
+
+        if tip.Height <= above then Above
+        elif tip.Height <= below then Below
+        elif above >= below then Above
+        else Below
+
 type private CompletionItem(item: Completion, look: Palette.Look, typed: Typed) =
     let content =
         lazy
@@ -177,17 +221,17 @@ type private CompletionItem(item: Completion, look: Palette.Look, typed: Typed) 
 
              let glyph =
                  Border(
-                     Width = 16.0,
-                     Height = 16.0,
-                     CornerRadius = CornerRadius 3.0,
+                     Width = Tokens.Height.icon,
+                     Height = Tokens.Height.icon,
+                     CornerRadius = CornerRadius Tokens.Radius.sm,
                      BorderBrush = colour,
-                     BorderThickness = Thickness 1.0,
-                     Margin = Thickness(0.0, 0.0, 6.0, 0.0),
+                     BorderThickness = Thickness Tokens.border,
+                     Margin = Thickness(0.0, 0.0, Tokens.Space.s2, 0.0),
                      Child =
                          TextBlock(
                              Text = mark,
                              Foreground = colour,
-                             FontSize = 10.0,
+                             FontSize = Tokens.Type.mark,
                              FontWeight = FontWeight.Bold,
                              HorizontalAlignment = HorizontalAlignment.Center,
                              VerticalAlignment = VerticalAlignment.Center
@@ -415,7 +459,7 @@ type ScriptEditor() as this =
     inherit UserControl()
 
     let editor =
-        TextEditor(ShowLineNumbers = true, FontFamily = Shown.code, FontSize = 14.0)
+        TextEditor(ShowLineNumbers = true, FontFamily = Palette.codeFor Preferences.Live.Current.Ligatures, FontSize = Preferences.Live.Current.EditorSize)
 
     let registry = RegistryOptions ThemeName.LightPlus
     let marks = Marks(fun () -> editor.Document)
@@ -424,6 +468,7 @@ type ScriptEditor() as this =
     /// The grammar's colouring, while the editor is in a window: TextMate's tokenizer holds a
     /// thread-pool thread for as long as it is installed, so a closed tab's editor gives it back.
     let mutable textMate: TextMate.Installation = null
+    let mutable sized: IDisposable = { new IDisposable with member _.Dispose() = () }
 
     /// The UI thread's dispatcher when the editor was made. A reply posted after it is gone (a
     /// headless test's application torn down) goes nowhere, rather than reading
@@ -542,7 +587,7 @@ type ScriptEditor() as this =
 
     /// A name's signature in its colours, and its documentation below it.
     let describedView (h: Hovered) : Control =
-        let panel = StackPanel(Spacing = 6.0)
+        let panel = StackPanel(Spacing = Tokens.Space.s2)
 
         panel.Children.Add(
             TextBlock(Inlines = Shown.signature look h.Text, FontFamily = Shown.code, TextWrapping = TextWrapping.Wrap)
@@ -560,8 +605,8 @@ type ScriptEditor() as this =
             Border(
                 Background = SolidColorBrush look.Background,
                 BorderBrush = SolidColorBrush look.Line,
-                BorderThickness = Thickness(1.0),
-                Padding = Thickness(10.0, 8.0),
+                BorderThickness = Thickness(Tokens.border),
+                Padding = Thickness(Tokens.Space.s3, Tokens.Space.s2),
                 Width = 400.0,
                 MaxHeight = 320.0,
                 IsVisible = false
@@ -805,7 +850,8 @@ type ScriptEditor() as this =
         | "\r\n" ->
             e.Handled <- true
             apply (Typing.enter editor.Text s t)
-        | input when not (isNull input) ->
+        // Closers put in as an opener is typed, unless the user turned that off.
+        | input when not (isNull input) && Preferences.Live.Current.AutoClose ->
             match Typing.typed editor.Text s t input isInserted with
             | Some c ->
                 e.Handled <- true
@@ -825,7 +871,7 @@ type ScriptEditor() as this =
             s.StartOffset <= offset && offset < s.EndOffset)
 
     let tipView (problems: Diagnostic[]) (hovered: Hovered option) : Control =
-        let panel = StackPanel(Spacing = 6.0, MaxWidth = 640.0)
+        let panel = StackPanel(Spacing = Tokens.Space.s2, MaxWidth = 640.0)
         let texts = ResizeArray<string>()
 
         for p in problems do
@@ -943,7 +989,9 @@ type ScriptEditor() as this =
         applyLook ()
 
         // On the hovered word, as an editor's hover is: above its line and starting where it
-        // starts, or below the line where there is no room above.
+        // starts, or below the line where there is room only there (`Tip.side`). Avalonia's own
+        // flip keeps a tip that fits on neither side where it was, off the window's edge; the side
+        // is chosen here against the window, where Linux draws popups.
         ToolTip.SetPlacement(editor, PlacementMode.Custom)
 
         ToolTip.SetCustomPopupPlacementCallback(
@@ -951,13 +999,25 @@ type ScriptEditor() as this =
             Primitives.PopupPositioning.CustomPopupPlacementCallback(fun p ->
                 // The rectangle Avalonia offers is the editor's own bounds in the window's
                 // coordinates; the word's box is in the editor's.
-                p.AnchorRectangle <- hovered.Translate(Vector(p.AnchorRectangle.X, p.AnchorRectangle.Y))
-                p.Anchor <- Primitives.PopupPositioning.PopupAnchor.TopLeft
-                p.Gravity <- Primitives.PopupPositioning.PopupGravity.TopRight
+                let word = hovered.Translate(Vector(p.AnchorRectangle.X, p.AnchorRectangle.Y))
+                p.AnchorRectangle <- word
+
+                let window =
+                    match TopLevel.GetTopLevel editor with
+                    | null -> Rect(p.PopupSize)
+                    | top -> Rect(top.ClientSize)
+
+                match Tip.side word p.PopupSize window with
+                | Tip.Above ->
+                    p.Anchor <- Primitives.PopupPositioning.PopupAnchor.TopLeft
+                    p.Gravity <- Primitives.PopupPositioning.PopupGravity.TopRight
+                | Tip.Below ->
+                    p.Anchor <- Primitives.PopupPositioning.PopupAnchor.BottomLeft
+                    p.Gravity <- Primitives.PopupPositioning.PopupGravity.BottomRight
                 // Not the tooltip's own 20 px below the pointer.
                 p.Offset <- Point()
                 p.ConstraintAdjustment <-
-                    Primitives.PopupPositioning.PopupPositionerConstraintAdjustment.FlipY
+                    Primitives.PopupPositioning.PopupPositionerConstraintAdjustment.SlideY
                     ||| Primitives.PopupPositioning.PopupPositionerConstraintAdjustment.SlideX)
         )
         this.ActualThemeVariantChanged.Add(fun _ -> applyLook ())
@@ -1096,10 +1156,20 @@ type ScriptEditor() as this =
     override _.OnAttachedToVisualTree(e: VisualTreeAttachmentEventArgs) =
         base.OnAttachedToVisualTree e
         install ()
+        // The type size and ligatures as the preferences have them, now and as they change while
+        // shown.
+        let follow (p: Preferences.Preferences) =
+            editor.FontSize <- p.EditorSize
+            let family = Palette.codeFor p.Ligatures
+            if editor.FontFamily <> family then editor.FontFamily <- family
+
+        follow Preferences.Live.Current
+        sized <- Preferences.Live.Changed.Subscribe follow
 
     override _.OnDetachedFromVisualTree(e: VisualTreeAttachmentEventArgs) =
         base.OnDetachedFromVisualTree e
         uninstall ()
+        sized.Dispose()
 
     member _.Editor = editor
 

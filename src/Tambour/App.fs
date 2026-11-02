@@ -59,6 +59,29 @@ type App() =
         fluent.Palettes.[ThemeVariant.Light] <- Palette.fluent Palette.light
         fluent.Palettes.[ThemeVariant.Dark] <- Palette.fluent Palette.dark
         this.Styles.Add fluent
+        // Fluent's sizes from the design tokens: its controls at the UI's type size and the
+        // tokens' heights and radii rather than its own larger ones.
+        let inside height = (height - Tokens.Type.uiLine - 2.0 * Tokens.border) / 2.0
+        let sizes: (string * obj) list =
+            [ "ControlContentThemeFontSize", box Tokens.Type.ui
+              "ToolTipContentThemeFontSize", box Tokens.Type.ui
+              "TabItemHeaderFontSize", box Tokens.Type.title
+              "TabItemMinHeight", box Tokens.Height.paneHeader
+              "ControlCornerRadius", box (CornerRadius Tokens.Radius.sm)
+              "OverlayCornerRadius", box (CornerRadius Tokens.Radius.md)
+              "TextControlThemeMinHeight", box Tokens.Height.control
+              "ComboBoxMinHeight", box Tokens.Height.control
+              "ButtonPadding", box (Thickness(Tokens.Space.s3, inside Tokens.Height.control))
+              "TextControlThemePadding", box (Thickness(Tokens.Space.s2, inside Tokens.Height.control))
+              "ComboBoxPadding", box (Thickness(Tokens.Space.s2, inside Tokens.Height.control, 0.0, inside Tokens.Height.control))
+              "MenuBarItemPadding", box (Thickness(Tokens.Space.s2, 0.0))
+              "MenuFlyoutItemThemePadding", box (Thickness(Tokens.Space.s3, (Tokens.Height.row - Tokens.Type.uiLine) / 2.0)) ]
+        for key, value in sizes do
+            this.Resources.[key] <- value
+        // A pane draws its own header over a tab control of class `bare`, whose own strip goes.
+        let bare = Style(fun x -> x.OfType<TabControl>().Class("bare").Template().OfType<Avalonia.Controls.Presenters.ItemsPresenter>())
+        bare.Setters.Add(Setter(Visual.IsVisibleProperty, false))
+        this.Styles.Add bare
         // AvaloniaEdit's control template.
         this.Styles.Add(Avalonia.Markup.Xaml.Styling.StyleInclude(Uri "avares://Tambour", Source = Uri "avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml"))
         this.RequestedThemeVariant <- App.VariantOf App.Theme

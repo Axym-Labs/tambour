@@ -206,6 +206,25 @@ let ``opening takes an untouched tab, and finds a tab already showing the file``
     Assert.Equal(Some a, window.Active.Path)
     closeAll window
 
+/// A closed window's tabs stop with it, their file watchers with them: a message posted to one
+/// afterwards reaches neither it nor the closed window.
+[<AvaloniaFact>]
+let ``a closed window's tabs take nothing more`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-closed").FullName
+    let a = Path.Combine(dir, "a.fsx")
+    File.WriteAllText(a, "let a = 1\n")
+    let window = new Shell.MainWindow("")
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    window.Post(Shell.OpenTab a)
+    pumpUntil 10.0 "a in the tab" (fun () -> window.Active.Path = Some a)
+    let tab = window.Active
+    closeAll window
+
+    tab.Post(Shell.Renamed(Path.Combine(dir, "b.fsx")))
+    Dispatcher.UIThread.RunJobs()
+    Assert.Equal(Some a, tab.Path)
+
 let private trial (name: string) (column: string) : Tambour.Data.Table =
     { Name = name
       Columns = [ { Name = column; Unit = null; Values = Tambour.Data.Floats [| 1.0; 2.0 |] } ] }
@@ -288,6 +307,44 @@ let ``two tabs each compile against their own tables only`` () =
         Assert.Contains(found, fun p -> p.Message.Contains other)
         press window Key.Tab RawInputModifiers.Control
 
+    closeAll window
+
+/// A table copied from another tab: the other tabs' tables offered, the one picked added to this
+/// workspace as one step that an undo takes back, and the tab it came from left as it was.
+[<AvaloniaFact>]
+let ``a table is copied from another tab into this one`` () =
+    let workspace (name: string) (table: Tambour.Data.Table) =
+        let dir = Path.Combine((Directory.CreateTempSubdirectory "tambour-copy").FullName, name)
+        Directory.CreateDirectory dir |> ignore
+        Project.makeWorkspace dir
+        Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", table.Name + ".csv")) table
+        File.WriteAllText(Path.Combine(dir, "figure.fsx"), "let n = 1\n")
+        dir
+
+    let a = workspace "a" (trial "alpha" "x")
+    let b = workspace "b" (trial "beta" "y")
+    let window = new Shell.MainWindow("", Some a)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    pumpUntil 10.0 "the first tab's table" (fun () -> window.Active.Tables |> List.exists (fun t -> t.Name = "alpha"))
+    window.Post(Shell.OpenTab b)
+    pumpUntil 10.0 "the second tab" (fun () -> window.Workspaces.Length = 2 && window.Active.Tables |> List.exists (fun t -> t.Name = "beta"))
+    let first = window.Workspaces.[0]
+
+    let mutable offered = []
+    window.PickTable <- fun choices ->
+        offered <- [ for _, t in choices -> t.Name ]
+        Task.FromResult(choices |> List.tryPick (fun (_, t) -> if t.Name = "alpha" then Some t else None))
+
+    window.Post Shell.ChooseCopyTable
+    pumpUntil 5.0 "the copy" (fun () -> window.Active.Tables |> List.exists (fun t -> t.Name = "alpha"))
+    Assert.Equal<string list>([ "alpha" ], offered)
+    let copy = window.Active.Tables |> List.find (fun t -> t.Name = "alpha")
+    Assert.Equal<Tambour.Data.Column list>((first.Tables |> List.find (fun t -> t.Name = "alpha")).Columns, copy.Columns)
+    Assert.Equal<string list>([ "alpha" ], [ for t in first.Tables -> t.Name ])
+
+    window.Post Shell.Undo
+    pumpUntil 5.0 "the copy undone" (fun () -> window.Active.Tables |> List.forall (fun t -> t.Name <> "alpha"))
     closeAll window
 
 /// Gate 15 (b): fifteen open tabs hold no workers until one runs, and then only that one; workers
@@ -756,3 +813,200 @@ let ``deleting a workspace's only script names its tables, settings and prelude`
 
     Assert.True(File.Exists(Path.Combine(dir, "tables", "runs.csv")))
     closeAll window
+
+/// Gate 16 (b), kept: a table's column layout is written to its workspace and back at the next
+/// start; and the full view gives the right side the whole window until Escape.
+[<AvaloniaFact>]
+let ``a table's columns as laid out come back at the next start, and the full view leaves on Escape`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-layout").FullName
+    Project.makeWorkspace dir
+    Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", "runs.csv")) (trial "runs" "auc")
+    File.WriteAllText(Path.Combine(dir, "figure.fsx"), "let n = runs.Length\n")
+    let laid: GridLayout = { Widths = Map.ofList [ "auc", 150.0 ]; Hidden = Set.empty; Collapsed = set [ "auc" ] }
+
+    let window = new Shell.MainWindow("", Some dir)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    pumpUntil 10.0 "the script" (fun () -> (editorOf window).Text.Contains "runs.Length")
+    window.Post(Shell.SelectTab 1)
+    window.Post(Shell.LaidOut("runs", laid))
+    pumpUntil 5.0 "the layout written" (fun () -> File.ReadAllText(Path.Combine(dir, Project.WorkspaceFile)).Contains "Collapsed")
+
+    // The full view: the editor gets no width, and Escape gives it back.
+    let editor = editorOf window
+    window.Post Shell.ToggleFullView
+    pumpUntil 5.0 "the full view" (fun () -> window.CaptureRenderedFrame().Dispose(); editor.Bounds.Width = 0.0)
+    // The editor itself stays: hidden, not made anew.
+    Assert.Same(editor, editorOf window)
+    // Escape from the table's grid, where the focus is in the full view.
+    (window.Active.GetVisualDescendants().OfType<TableGrid>() |> Seq.head).Focus() |> ignore
+    // Escape cancels a run first; with none running it leaves the full view.
+    pumpUntil 30.0 "the first run's end" (fun () ->
+        window.Active.GetVisualDescendants().OfType<TextBlock>() |> Seq.exists (fun b -> not (isNull b.Text) && b.Text.StartsWith "ran in"))
+    press window Key.Escape RawInputModifiers.None
+    pumpUntil 5.0 "the full view left" (fun () -> window.CaptureRenderedFrame().Dispose(); editor.Bounds.Width > 0.0)
+    closeAll window
+
+    let again = new Shell.MainWindow("", Some dir)
+    again.Show()
+    pumpUntil 60.0 "the workers' start again" (fun () -> again.Started.IsCompleted)
+    again.Post(Shell.SelectTab 1)
+    pumpUntil 10.0 "the grid with its layout" (fun () ->
+        again.Active.GetVisualDescendants().OfType<TableGrid>() |> Seq.exists (fun g -> g.Layout = laid))
+    closeAll again
+
+/// A table renamed keeps its column layout under the new name, in the grid and the workspace,
+/// and an undo takes it back to the old name with the table.
+[<AvaloniaFact>]
+let ``a table's rename carries its column layout, and an undo brings it back`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-layout-rename").FullName
+    Project.makeWorkspace dir
+    Tambour.Data.Csv.writeFile (Path.Combine(dir, "tables", "runs.csv")) (trial "runs" "auc")
+    File.WriteAllText(Path.Combine(dir, "figure.fsx"), "let n = 1\n")
+    let laid: GridLayout = { Widths = Map.ofList [ "auc", 150.0 ]; Hidden = Set.empty; Collapsed = set [ "auc" ] }
+    let workspace () = File.ReadAllText(Path.Combine(dir, Project.WorkspaceFile))
+
+    let window = new Shell.MainWindow("", Some dir)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    pumpUntil 10.0 "the script" (fun () -> (editorOf window).Text.Contains "let n")
+    window.Post(Shell.SelectTab 1)
+    window.Post(Shell.LaidOut("runs", laid))
+    pumpUntil 5.0 "the layout written" (fun () -> workspace().Contains "Collapsed")
+
+    let grid () = window.Active.GetVisualDescendants().OfType<TableGrid>() |> Seq.tryHead
+    window.Post(Shell.RenameTableNow("runs", "trials", false))
+    pumpUntil 5.0 "the layout under the new name" (fun () -> workspace().Contains "\"trials\"" && not (workspace().Contains "\"runs\""))
+    pumpUntil 5.0 "the grid with its layout" (fun () -> grid () |> Option.exists (fun g -> g.Layout = laid))
+
+    window.Post Shell.Undo
+    pumpUntil 5.0 "the layout back under the old name" (fun () -> workspace().Contains "\"runs\"" && not (workspace().Contains "\"trials\""))
+    pumpUntil 5.0 "the grid with its layout again" (fun () -> grid () |> Option.exists (fun g -> g.Layout = laid))
+    closeAll window
+
+/// The window's place and size, and which panes are open, are kept in the settings and back at
+/// the next start; a pane closed in one tab is closed in the next one opened.
+[<AvaloniaFact>]
+let ``the window's place, size and open panes come back at the next start`` () =
+    let before = App.SettingsDirectory
+    let settings = (Directory.CreateTempSubdirectory "tambour-place").FullName
+    App.SettingsDirectory <- settings
+
+    try
+        let window = Shell.MainWindow.Start None
+        window.Show()
+        window.Width <- 900.0
+        window.Height <- 600.0
+        window.Position <- Avalonia.PixelPoint(120, 90)
+        Dispatcher.UIThread.RunJobs()
+
+        // The panel under the script closed in a tab: closed in the next tab too.
+        press window Key.N RawInputModifiers.Control
+        pumpUntil 5.0 "a tab" (fun () -> window.Workspaces.Length = 1)
+        window.Post Shell.ToggleBottom
+        Dispatcher.UIThread.RunJobs()
+        Assert.False((Preferences.read settings).BottomOpen)
+        press window Key.N RawInputModifiers.Control
+        pumpUntil 5.0 "a second tab" (fun () -> window.Workspaces.Length = 2)
+        let bottom () = window.Active.GetVisualDescendants().OfType<TabControl>() |> Seq.tryFind (fun t -> t.Items.OfType<TabItem>().Any(fun i -> string i.Header = "Output"))
+        pumpUntil 5.0 "the second tab's panes" (fun () -> (bottom ()).IsSome)
+        Assert.False((bottom ()).Value.IsVisible, "the panel closed in one tab is open in the next")
+        closeAll window
+
+        Assert.Equal(Some({ X = 120; Y = 90; Width = 900.0; Height = 600.0; Maximized = false }: Preferences.Placement), (Preferences.read settings).Window)
+
+        let again = Shell.MainWindow.Start None
+        again.Show()
+        Dispatcher.UIThread.RunJobs()
+        Assert.Equal((900.0, 600.0), (again.Width, again.Height))
+        Assert.Equal(Avalonia.PixelPoint(120, 90), again.Position)
+        again.Close()
+    finally
+        App.SettingsDirectory <- before
+
+/// The dividers between the panes are rules of one pixel, and still taken by a drag a little to
+/// either side of the rule.
+[<AvaloniaFact>]
+let ``a divider is a one-pixel rule that a drag beside it still moves`` () =
+    let window = new Shell.MainWindow("let x = 1\n")
+    window.Show()
+    window.Width <- 1200.0
+    window.Height <- 800.0
+    editorOf window |> ignore
+    Dispatcher.UIThread.RunJobs()
+
+    let splitter =
+        window.Active.GetVisualDescendants().OfType<GridSplitter>()
+        |> Seq.find (fun s -> Grid.GetColumn s = 1 && s.IsVisible)
+
+    let grid = splitter.Parent :?> Grid
+    Assert.Equal(1.0, grid.ColumnDefinitions.[1].ActualWidth)
+    let before = grid.ColumnDefinitions.[0].ActualWidth
+
+    // Three pixels left of the rule: inside the grab, outside the line.
+    let at = (Avalonia.VisualExtensions.TranslatePoint(splitter, Avalonia.Point(1.0, splitter.Bounds.Height / 2.0), window)).Value
+    Assert.True(splitter.Bounds.Width > 4.0, $"the grab is {splitter.Bounds.Width} px wide")
+    window.MouseMove at
+    window.MouseDown(at, MouseButton.Left, RawInputModifiers.None)
+    window.MouseMove(at + Avalonia.Point(100.0, 0.0), RawInputModifiers.LeftMouseButton)
+    window.MouseUp(at + Avalonia.Point(100.0, 0.0), MouseButton.Left, RawInputModifiers.None)
+    Dispatcher.UIThread.RunJobs()
+    Assert.InRange(grid.ColumnDefinitions.[0].ActualWidth - before, 90.0, 110.0)
+    Assert.Equal(1.0, grid.ColumnDefinitions.[1].ActualWidth)
+
+    window.Ask <- fun _ -> Task.FromResult Discard
+    window.Close()
+
+/// The start view has the menus that need no tab: File with the recent list, Edit with the
+/// preferences, and Help; its items and keys do what the tabs' do.
+[<AvaloniaFact>]
+let ``the start view has a menu bar of what needs no tab`` () =
+    let window = Shell.MainWindow.Start None
+    window.Show()
+    Dispatcher.UIThread.RunJobs()
+    Assert.True(window.Starting)
+
+    let menu = window.GetVisualDescendants().OfType<Menu>() |> Seq.exactlyOne
+    let rec leaves (items: obj seq) = [ for i in items do match i with :? MenuItem as m -> yield m; yield! leaves (m.Items |> Seq.cast) | _ -> () ]
+    let headers = menu.Items |> Seq.cast<MenuItem> |> Seq.map (fun m -> string m.Header) |> List.ofSeq
+    Assert.Equal<string list>([ "_File"; "_Edit"; "_Help" ], headers)
+    let named = leaves (menu.Items |> Seq.cast) |> List.map (fun m -> string m.Header)
+    for h in [ "_New script"; "_Open…"; "Open _folder…"; "Open _recent"; "_Quit"; "_Preferences…"; "_About Tambour" ] do
+        Assert.Contains(h, named)
+    let preferences = leaves (menu.Items |> Seq.cast) |> List.find (fun m -> string m.Header = "_Preferences…")
+    Assert.Equal("Ctrl+OemComma", string preferences.InputGesture)
+
+    // Ctrl+, opens the preferences over the start view.
+    press window Key.OemComma RawInputModifiers.Control
+    pumpUntil 5.0 "the preferences" (fun () -> window.OwnedWindows.Count = 1)
+    window.OwnedWindows.[0].Close()
+    Dispatcher.UIThread.RunJobs()
+
+    // New script from the menu: a tab, and the start view gone.
+    let fresh = leaves (menu.Items |> Seq.cast) |> List.find (fun m -> string m.Header = "_New script")
+    fresh.RaiseEvent(Avalonia.Interactivity.RoutedEventArgs MenuItem.ClickEvent)
+    pumpUntil 5.0 "a tab" (fun () -> window.Workspaces.Length = 1)
+    Assert.False(window.Starting)
+    closeAll window
+
+/// A window kept larger than its screen now allows (its scaling grown since) comes back fitted
+/// into the screen's working area.
+[<AvaloniaFact>]
+let ``a kept window larger than its screen comes back fitted to it`` () =
+    let before = App.SettingsDirectory
+    let settings = (Directory.CreateTempSubdirectory "tambour-fit").FullName
+    App.SettingsDirectory <- settings
+
+    try
+        Preferences.write settings { Preferences.defaults with Window = Some { X = 0; Y = 0; Width = 20000.0; Height = 15000.0; Maximized = false } }
+        let window = Shell.MainWindow.Start None
+        window.Show()
+        Dispatcher.UIThread.RunJobs()
+        let screen = window.Screens.ScreenFromWindow window
+        Assert.NotNull screen
+        let area = screen.WorkingArea
+        Assert.InRange(window.Width * screen.Scaling, 1.0, float area.Width)
+        Assert.InRange(window.Height * screen.Scaling, 1.0, float area.Height)
+        window.Close()
+    finally
+        App.SettingsDirectory <- before

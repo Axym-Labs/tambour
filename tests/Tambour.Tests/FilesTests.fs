@@ -93,6 +93,43 @@ let ``a project opens, saves, takes a change from disk back, and exports what re
     Assert.Equal(0, worst)
     window.Close()
 
+/// An export shows that it is under way and is cancelled like a run: Cancel ends it, nothing is
+/// written, and the next export is.
+[<AvaloniaFact>]
+let ``an export shows its progress and Cancel ends it`` () =
+    let dir = (Directory.CreateTempSubdirectory "tambour-export-cancel").FullName
+    let script = Path.Combine(dir, "decay.fsx")
+    File.WriteAllText(script, decay)
+
+    let window = new Shell.MainWindow("", Some dir)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    let pane = window.GetVisualDescendants().OfType<FigurePane>().Single()
+    pumpUntil 30.0 "the figure" (fun () -> not (isNull pane.Picture))
+    let status (text: string) = window.GetVisualDescendants().OfType<TextBlock>().Any(fun t -> not (isNull t.Text) && t.Text = text)
+    let busy () = window.GetVisualDescendants().OfType<ProgressBar>().Any(fun b -> b.IsVisible && b.IsIndeterminate)
+
+    // Cancel straight after: no reply can have been taken yet, as they come on this thread.
+    let cancelled = Path.Combine(dir, "cancelled.png")
+    window.Post(Shell.ExportTo(cancelled, "png", 640.0, 400.0))
+    Assert.True(status "exporting cancelled.png…", "no word of the export under way")
+    Assert.True(busy (), "no sign of the export under way")
+    window.Post Shell.Cancel
+    Assert.True(status "export cancelled")
+    Assert.False(busy ())
+    // Its reply, if it was already on the way, is let go.
+    pumpUntil 30.0 "the figure again" (fun () -> not (isNull pane.Picture))
+    Thread.Sleep 500
+    Dispatcher.UIThread.RunJobs()
+    Assert.False(File.Exists cancelled)
+
+    // The worker is back for the next one, which is written.
+    let after = Path.Combine(dir, "after.png")
+    window.Post(Shell.ExportTo(after, "png", 640.0, 400.0))
+    pumpUntil 30.0 "the next export" (fun () -> File.Exists after && (try File.ReadAllBytes(after).Length > 0 with _ -> false))
+    pumpUntil 5.0 "the status" (fun () -> status "exported after.png" && not (busy ()))
+    window.Close()
+
 /// The tabs on the right: the figure's, then one per table.
 let private sheets (window: #Window) =
     window.GetVisualDescendants().OfType<TabControl>().Single(fun t -> t.Name = "sheets")

@@ -34,7 +34,7 @@ let private within (t: Table) (a: float, b: float, c: float, d: float) : GridCom
     let pick (f: float) n = min (n - 1) (int (f * float n))
     let c0, c1 = pick a t.Columns.Length, pick b t.Columns.Length
     let r0, r1 = pick c t.Rows, pick d t.Rows
-    { C0 = min c0 c1; C1 = max c0 c1; R0 = min r0 r1; R1 = max r0 r1 }
+    { C0 = min c0 c1; C1 = max c0 c1; R0 = min r0 r1; R1 = max r0 r1; Hidden = Set.empty }
 
 /// The kinds of selection the gate names: some cells, whole rows, whole columns.
 let private selections (t: Table) (fractions: float * float * float * float) (shape: int) =
@@ -147,7 +147,7 @@ let ``cells and rows copied and pasted come back as they were`` () =
 [<Fact>]
 let ``a paste a column cannot read is refused whole`` () =
     let t = { Name = "t"; Columns = [ { Name = "n"; Unit = null; Values = Ints [| 1; 2 |] }; { Name = "x"; Unit = "m"; Values = Floats [| 1.0; 2.0 |] } ] }
-    let s: GridCommand.Selection = { C0 = 0; C1 = 1; R0 = 0; R1 = 0 }
+    let s: GridCommand.Selection = { C0 = 0; C1 = 1; R0 = 0; R1 = 0; Hidden = Set.empty }
 
     match GridCommand.paste t s [| [| "3"; "not a number" |] |] with
     | Error why -> Assert.StartsWith("x:", why)
@@ -156,3 +156,30 @@ let ``a paste a column cannot read is refused whole`` () =
     match GridCommand.pasteRows t s [| [| "half"; "1.5" |] |] with
     | Error why -> Assert.StartsWith("n:", why)
     | Ok edits -> failwithf "pasted rows: %A" edits
+
+/// A hidden column inside a selected range is left alone: copied, cleared, filled, pasted into and
+/// deleted only where the columns are shown.
+[<Fact>]
+let ``a selection's commands pass over the hidden columns inside it`` () =
+    let column name values = { Name = name; Unit = null; Values = Ints values }
+    let t = { Name = "t"; Columns = [ column "a" [| 1; 2 |]; column "b" [| 3; 4 |]; column "c" [| 5; 6 |]; column "d" [| 7; 8 |] ] }
+    let s: GridCommand.Selection = { C0 = 0; C1 = 2; R0 = 0; R1 = 1; Hidden = set [ 1 ] }
+    let after edits = (edits |> List.fold TableEdit.apply (Map.ofList [ t.Name, t ])).[t.Name]
+    let cells (t: Table) = [ for c in t.Columns -> c.Name, [ for r in 0 .. t.Rows - 1 -> CellText.exact c.Values r ] ]
+
+    Assert.Equal("1\t5\n2\t6", (GridCommand.copyCells t s).TrimEnd('\n').Replace("\r\n", "\n"))
+    Assert.Equal<(string * string list) list>(
+        [ "a", [ "0"; "0" ]; "b", [ "3"; "4" ]; "c", [ "0"; "0" ]; "d", [ "7"; "8" ] ],
+        cells (after (GridCommand.clear t s)))
+    Assert.Equal<(string * string list) list>(
+        [ "a", [ "1"; "1" ]; "b", [ "3"; "4" ]; "c", [ "5"; "5" ]; "d", [ "7"; "8" ] ],
+        cells (after (GridCommand.fillDown t s)))
+
+    match GridCommand.paste t s [| [| "10"; "11"; "12" |] |] with
+    | Ok edits ->
+        Assert.Equal<(string * string list) list>(
+            [ "a", [ "10"; "2" ]; "b", [ "3"; "4" ]; "c", [ "11"; "6" ]; "d", [ "12"; "8" ] ],
+            cells (after edits))
+    | Error why -> failwith why
+
+    Assert.Equal<string list>([ "b"; "d" ], [ for c in (after (GridCommand.deleteColumns t s)).Columns -> c.Name ])

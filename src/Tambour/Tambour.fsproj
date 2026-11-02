@@ -8,7 +8,9 @@
 
   <ItemGroup>
     <Compile Include="Paths.fs" />
+    <Compile Include="Scaling.fs" />
     <Compile Include="Preferences.fs" />
+    <Compile Include="Tokens.fs" />
     <Compile Include="Palette.fs" />
     <Compile Include="Markdown.fs" />
     <Compile Include="Evaluation.fs" />
@@ -21,6 +23,7 @@
     <Compile Include="Typing.fs" />
     <Compile Include="ScriptEditor.fs" />
     <Compile Include="App.fs" />
+    <Compile Include="PreferencesView.fs" />
     <Compile Include="Project.fs" />
     <Compile Include="Tables.fs" />
     <Compile Include="Plotting.fs" />

@@ -74,6 +74,29 @@ let ``a module's name and where it is from are drawn as a namespace, not a funct
         coloured "val f: System.String"
     )
 
+/// A computation expression's custom operation, as the checker describes it: the two words that
+/// say what it is as keywords, its name as the editor draws the operation, its argument's type as a
+/// type; and the method it calls, the type before the dot and the method after it, "Calls" as text.
+[<Fact>]
+let ``a custom operation and the method it calls are drawn in their kinds' colours`` () =
+    let colour kind = Palette.colourOf Palette.light kind
+    let ink = Palette.light.Foreground
+
+    Assert.Equal<(string * Color) list>(
+        [ "custom", colour "keyword"
+          "operation", colour "keyword"
+          ":", ink
+          "layer", colour "keyword"
+          "(", ink
+          "Geom", colour "type"
+          ")", ink
+          "Calls", ink
+          "PlotBuilderBase", colour "type"
+          ".", ink
+          "Layer", colour "method" ],
+        coloured "custom operation: layer (Geom)\n\nCalls PlotBuilderBase.Layer"
+    )
+
 /// Marey's own documentation of `Chart`, as a hover shows it: a code block and headings, not
 /// Markdown's marks. Saved in both looks where TAMBOUR_CHECK_OUT names a directory.
 [<Avalonia.Headless.XUnit.AvaloniaFact>]
