@@ -12,8 +12,8 @@ source, and the source runs unchanged in plain `dotnet fsi`.
 
 ## Status
 
-Not released yet. The first release runs on Marey 1.0.0-rc.2, on Linux and Windows, with no .NET
-installed.
+0.1.0 is the first release, on Marey 1.0.0-rc.2, for Linux and Windows, with no .NET installed.
+Its packages are on the Releases page.
 
 ## What it does
 
