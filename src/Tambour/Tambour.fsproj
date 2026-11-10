@@ -45,6 +45,20 @@
     <AvaloniaResource Include="../../assets/tambour.png" Link="Assets/tambour.png" />
   </ItemGroup>
 
+  <!-- Marey's and FSharp.Core's sources, at the commits their packages were built from, for go to
+       definition: fetched once by tools/sources.fsx and carried inside the app. -->
+  <PropertyGroup>
+    <SourcesZip>$(BaseIntermediateOutputPath)sources.zip</SourcesZip>
+  </PropertyGroup>
+
+  <Target Name="FetchSources" BeforeTargets="PrepareResources" Inputs="../../Directory.Packages.props;../../tools/sources.fsx" Outputs="$(SourcesZip)">
+    <Exec Command="dotnet fsi &quot;$(MSBuildProjectDirectory)/../../tools/sources.fsx&quot; &quot;$(SourcesZip)&quot; &quot;$(NuGetPackageRoot.TrimEnd('/\'))&quot; $(MareyVersion) $(FSharpCoreVersion)" />
+  </Target>
+
+  <ItemGroup>
+    <EmbeddedResource Include="$(SourcesZip)" LogicalName="Tambour.sources.zip" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="../Tambour.Protocol/Tambour.Protocol.fsproj" />
     <ProjectReference Include="../Tambour.Edits/Tambour.Edits.fsproj" />
