@@ -305,3 +305,77 @@ let ``the fixes' key is the one the preferences give it, and the tooltip says so
     finally
         Preferences.Live.Set before
         window.Close()
+
+/// Ctrl+click on a library's name opens its source read-only in a tab above the script, at the
+/// line it is defined on; F12 goes to the script's own bindings, Alt+Left comes back, and a name
+/// with no source carried says so.
+[<AvaloniaFact>]
+let ``go to definition opens a library's source above the script, and comes back`` () =
+    let script = "let xs = List.map string [ 1; 2 ]\nlet ys = xs\nlet m = System.Math.Max(1.0, 2.0)\n"
+    let window = new Shell.MainWindow(script)
+    window.Show()
+    pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
+    let editor = window.GetVisualDescendants().OfType<ScriptEditor>().Single()
+    pumpUntil 30.0 "the first check" (fun () -> editor.Classified.Length > 0)
+
+    let pointAt (offset: int) =
+        let view = editor.Editor.TextArea.TextView
+        let location = editor.Editor.Document.GetLocation offset
+
+        let p =
+            view.GetVisualPosition(AvaloniaEdit.TextViewPosition(location), AvaloniaEdit.Rendering.VisualYPosition.LineMiddle)
+            - view.ScrollOffset
+
+        (Avalonia.VisualExtensions.TranslatePoint(view, p + Avalonia.Point(2.0, 0.0), window)).Value
+
+    // With Ctrl held the name under the pointer is underlined, and a click goes to it.
+    let map = script.IndexOf "map"
+    window.MouseMove(pointAt map, RawInputModifiers.Control)
+    Dispatcher.UIThread.RunJobs()
+    Assert.Equal(Some(map, map + 3), editor.Link)
+    window.MouseDown(pointAt map, MouseButton.Left, RawInputModifiers.Control)
+    window.MouseUp(pointAt map, MouseButton.Left, RawInputModifiers.Control)
+
+    let source () =
+        window.GetVisualDescendants().OfType<ScriptEditor>() |> Seq.tryFind (fun e -> e.ReadOnly && e.IsEffectivelyVisible)
+
+    pumpUntil 30.0 "the source's tab" (fun () -> (source ()).IsSome)
+    let shown = (source ()).Value
+    Assert.Contains("val map:", shown.Text)
+    let line = shown.Editor.Document.GetLineByOffset shown.Editor.CaretOffset
+    Assert.Contains("map", shown.Editor.Document.GetText line)
+    let view = shown.Editor.TextArea.TextView
+
+    pumpUntil 5.0 "map's line in view" (fun () ->
+        view.VisualLinesValid && view.VisualLines |> Seq.exists (fun v -> v.FirstDocumentLine.LineNumber = line.LineNumber))
+    Assert.False(editor.IsEffectivelyVisible, "the script's editor stayed in view")
+    Assert.True(window.GetVisualDescendants().OfType<TextBlock>().Any(fun t -> t.Text = "list.fsi"), "no tab names list.fsi")
+    save window "definition-source.png"
+
+    // Alt+Left comes back to the script, where the click was.
+    window.KeyPress(Key.Left, RawInputModifiers.Alt, PhysicalKey.ArrowLeft, null)
+    Dispatcher.UIThread.RunJobs()
+    Assert.True(editor.IsEffectivelyVisible, "Alt+Left left the source in view")
+
+    // F12 on a binding of the script's moves the caret to it.
+    editor.Editor.CaretOffset <- script.IndexOf "xs\nlet m"
+    editor.Editor.TextArea.Focus() |> ignore
+    window.KeyPress(Key.F12, RawInputModifiers.None, PhysicalKey.F12, null)
+    pumpUntil 30.0 "the caret at xs" (fun () -> editor.Editor.CaretOffset = script.IndexOf "xs")
+
+    // .NET's own names have no source here: the status bar says so.
+    editor.Editor.CaretOffset <- script.IndexOf "Max"
+    window.KeyPress(Key.F12, RawInputModifiers.None, PhysicalKey.F12, null)
+
+    pumpUntil 30.0 "the note on Max" (fun () ->
+        window.GetVisualDescendants().OfType<TextBlock>().Any(fun t -> not (isNull t.Text) && t.Text.StartsWith "no source for System.Math.Max"))
+
+    // Closing the source's tab takes the tabs away with it.
+    window.GetVisualDescendants().OfType<TextBlock>().First(fun t -> t.Text = "list.fsi").FindAncestorOfType<Button>().RaiseEvent(Avalonia.Interactivity.RoutedEventArgs Button.ClickEvent)
+    Dispatcher.UIThread.RunJobs()
+    let close = window.GetVisualDescendants().OfType<Button>().Single(fun b -> string (ToolTip.GetTip b) = "Close this source")
+    close.RaiseEvent(Avalonia.Interactivity.RoutedEventArgs Button.ClickEvent)
+    Dispatcher.UIThread.RunJobs()
+    Assert.True((source ()).IsNone)
+    Assert.True(editor.IsEffectivelyVisible)
+    window.Close()

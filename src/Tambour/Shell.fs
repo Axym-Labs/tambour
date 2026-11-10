@@ -128,6 +128,16 @@ module Editor =
     let onProblemsChanged f = subscription "ProblemsChanged" (fun e -> e.ProblemsChanged) f
     let onCaretMoved f = subscription "CaretMoved" (fun e -> e.CaretMoved) f
     let onFixed f = subscription "Fixed" (fun e -> e.Fixed) f
+    let onDefined f = subscription "Defined" (fun e -> e.Defined) f
+
+    let readOnly (value: bool) : IAttr<ScriptEditor> =
+        AttrBuilder<ScriptEditor>.CreateProperty<bool>(
+            "ReadOnly",
+            value,
+            ValueSome(fun (v: ScriptEditor) -> v.ReadOnly),
+            ValueSome(fun (v: ScriptEditor, r) -> v.ReadOnly <- r),
+            ValueNone
+        )
 
 /// The table grid in FuncUI's terms.
 module Sheet =
@@ -248,6 +258,22 @@ let private topOf (env: Env) : TopLevel = TopLevel.GetTopLevel env.Host
 [<Literal>]
 let private MaxOutput = 200_000
 
+/// A library's source, or a file beside the script, opened read-only by go to definition: where
+/// it is (in the sources the app carries, or on disk), its tab's name and tip, its text, and the
+/// line last gone to in it.
+type Opened =
+    { File: string
+      Name: string
+      Tip: string
+      Text: string
+      Line: int }
+
+/// A place go to definition left, to come back to: in the script (no file) or in an opened source.
+type Place =
+    { File: string option
+      Line: int
+      Column: int }
+
 type Model =
     { Script: string
       Figures: FigureInfo[]
@@ -333,7 +359,15 @@ type Model =
       Files: string list
       FilesOpen: bool
       /// The scripts open in the window's tabs, and whether each has unsaved work.
-      OpenTabs: Map<string, bool> }
+      OpenTabs: Map<string, bool>
+      /// The sources go to definition opened, in the tabs above the script after its own.
+      Sources: Opened list
+      /// The tab above the script shown: 0 the script's own, then each source's.
+      Shown: int
+      /// Where go to definition left from, the latest first.
+      Back: Place list
+      /// A place to move the source shown to, with a serial as `GoTo` has.
+      SourceGoTo: (int * int * int) option }
 
 type Msg =
     | Edited of History.TextEdit * string
@@ -349,6 +383,13 @@ type Msg =
     | Tick of seconds: float
     | Problems of Diagnostic[]
     | GoTo of line: int * column: int
+    /// Where go to definition found a name defined.
+    | Define of Defined
+    /// Shows a tab above the script: 0 its own, then each source's.
+    | ShowSource of int
+    | CloseSource of int
+    /// Back to where the last go to definition left from.
+    | GoBack
     | ActionsLoaded of script: string * ActionsFor
     | Typed of field: string * text: string
     | Act of ActionSpec
@@ -519,7 +560,11 @@ let init (script: string) () : Model * Cmd<Msg> =
       Recent = []
       Files = []
       FilesOpen = panes.FilesOpen
-      OpenTabs = Map.empty },
+      OpenTabs = Map.empty
+      Sources = []
+      Shown = 0
+      Back = []
+      SourceGoTo = None },
     Cmd.none
 
 let private send (env: Env) (request: Request) : Cmd<Msg> =
@@ -856,7 +901,18 @@ let private addShown (env: Env) (table: Tambour.Data.Table) (model: Model) : Mod
     | Some i -> { next with Tab = i + 1; Header = None }, cmd
     | None -> next, cmd
 
-let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
+/// Shows a source in its tab above the script, opening one where none has it, at a line.
+let private openSource (model: Model) (file: string) (line: int) (column: int) (make: unit -> Opened) =
+    let sources, index =
+        match model.Sources |> List.tryFindIndex (fun o -> o.File = file) with
+        | Some i -> model.Sources |> List.updateAt i { model.Sources.[i] with Line = line }, i
+        | None -> model.Sources @ [ { make () with Line = line } ], model.Sources.Length
+
+    let serial = match model.SourceGoTo with Some(s, _, _) -> s + 1 | None -> 0
+
+    { model with Sources = sources; Shown = index + 1; SourceGoTo = Some(serial, line, column) }, Cmd.none
+
+let rec update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
     | Edited(edit, text) ->
         { model with
@@ -1021,7 +1077,65 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | Problems problems -> { model with Problems = problems }, Cmd.none
     | GoTo(line, column) ->
         let serial = match model.GoTo with Some(s, _, _) -> s + 1 | None -> 0
-        { model with GoTo = Some(serial, line, column) }, Cmd.none
+        { model with GoTo = Some(serial, line, column); Shown = 0 }, Cmd.none
+    | Define d ->
+        // Where the window is now, to come back to.
+        let here =
+            if model.Shown = 0 then
+                { File = None; Line = fst model.Caret; Column = snd model.Caret - 1 }
+            else
+                let o = model.Sources.[model.Shown - 1]
+                { File = Some o.File; Line = o.Line; Column = 0 }
+
+        let away = { model with Back = here :: model.Back }
+
+        match d.Kind with
+        | "script" -> update env (GoTo(d.Line, d.Column)) away
+        | "source"
+        | "file" ->
+            let text =
+                if d.Kind = "source" then
+                    Sources.read d.File
+                else
+                    try Some(File.ReadAllText d.File) with _ -> None
+
+            match text with
+            | Some text -> openSource away d.File d.Line d.Column (fun () ->
+                if d.Kind = "source" then
+                    { File = d.File; Name = Sources.nameOf d.File; Tip = Sources.describe d.File; Text = text; Line = d.Line }
+                else
+                    { File = d.File; Name = Path.GetFileName d.File; Tip = d.File + " (read-only)"; Text = text; Line = d.Line })
+            | None -> { model with Status = $"{d.File} could not be read" }, Cmd.none
+        | _ when d.Name = "" -> model, Cmd.none
+        | _ when d.Assembly = "" -> { model with Status = $"no source for {d.Name}" }, Cmd.none
+        | _ -> { model with Status = $"no source for {d.Name}, in {d.Assembly}" }, Cmd.none
+    | ShowSource i when i >= 0 && i <= model.Sources.Length -> { model with Shown = i }, Cmd.none
+    | ShowSource _ -> model, Cmd.none
+    | CloseSource i when i >= 1 && i <= model.Sources.Length ->
+        let closed = model.Sources.[i - 1].File
+        let sources = model.Sources |> List.removeAt (i - 1)
+
+        let shown =
+            if model.Shown = i then min i sources.Length
+            elif model.Shown > i then model.Shown - 1
+            else model.Shown
+
+        // Places in a closed source are not come back to.
+        { model with Sources = sources; Shown = (if sources.IsEmpty then 0 else shown); Back = model.Back |> List.filter (fun p -> p.File <> Some closed) },
+        Cmd.none
+    | CloseSource _ -> model, Cmd.none
+    | GoBack ->
+        match model.Back with
+        | [] -> model, Cmd.none
+        | place :: rest ->
+            let model = { model with Back = rest }
+
+            match place.File with
+            | None -> update env (GoTo(place.Line, place.Column)) model
+            | Some file ->
+                match model.Sources |> List.tryFindIndex (fun o -> o.File = file) with
+                | Some i -> openSource model file place.Line place.Column (fun () -> model.Sources.[i])
+                | None -> model, Cmd.none
     | ActionsLoaded(script, a) when script = model.Script -> { model with Actions = a.Outcomes; Columns = a.Columns }, Cmd.none
     | ActionsLoaded _ -> model, Cmd.none
     | Typed(field, text) -> { model with Inputs = model.Inputs.Add(field, text) }, Cmd.none
@@ -1445,7 +1559,8 @@ let update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         env.Host.GetVisualDescendants() |> Seq.tryPick (function :? TableGrid as g -> Some g | _ -> None) |> Option.iter (fun g -> g.Run kind)
         model, Cmd.none
     | AtCaret command ->
-        env.Host.GetVisualDescendants() |> Seq.tryPick (function :? ScriptEditor as e -> Some e | _ -> None) |> Option.iter (fun e -> e.Run command)
+        // The script's editor, not a source's beside it.
+        env.Host.GetVisualDescendants() |> Seq.tryPick (function :? ScriptEditor as e when not e.ReadOnly -> Some e | _ -> None) |> Option.iter (fun e -> e.Run command)
         model, Cmd.none
     | Resized(split, bottom) ->
         let next = { model with Split = split; Bottom = bottom }
@@ -2305,6 +2420,8 @@ let commands: Command list =
       { c "_Edit" "_Complete" "Ctrl+Space" [] (AtCaret EditorCommand.Complete) always with InEditor = true }
       { c "_Edit" "Re_name symbol…" "F2" [] (AtCaret EditorCommand.Rename) always with InEditor = true }
       { c "_Edit" "Show _fixes" "Ctrl+OemPeriod" [] (AtCaret EditorCommand.ShowFixes) always with InEditor = true }
+      { c "_Edit" "Go to _definition" "F12" [] (AtCaret EditorCommand.GoToDefinition) (fun m -> m.Shown = 0) with InEditor = true }
+      c "_Edit" "Go _back" "Alt+Left" [] GoBack (fun m -> not m.Back.IsEmpty)
       c "_Edit" "_Preferences…" "Ctrl+OemComma" [] OpenPreferences always
       c "_Run" "_Run" "F5" [ "Ctrl+Enter" ] Run always
       c "_Run" "_Cancel" "Escape" [] Cancel (fun m -> m.Running || m.Exporting.IsSome || m.FullView)
@@ -2748,6 +2865,20 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
 
     let tableGlyph = "M2.5,3 H13.5 V13 H2.5 Z M2.5,6.5 H13.5 M6.5,6.5 V13"
 
+    let sourcesHeader =
+        paneHeader
+            [ paneTab (scriptName model) None None (model.Shown = 0) (fun () -> dispatch (ShowSource 0))
+              for i, o in List.indexed model.Sources do
+                  Panel.create [
+                      ToolTip.tip o.Tip
+                      Panel.children [ paneTab o.Name None None (model.Shown = i + 1) (fun () -> dispatch (ShowSource(i + 1))) ]
+                  ] ]
+            []
+            [ if not model.Back.IsEmpty then
+                  paneAction "M9.5,4 L5.5,8 L9.5,12" "Go back (Alt+Left)" false (fun () -> dispatch GoBack)
+              if model.Shown > 0 then
+                  paneAction "M4.5,4.5 L11.5,11.5 M11.5,4.5 L4.5,11.5" "Close this source" false (fun () -> dispatch (CloseSource model.Shown)) ]
+
     let bottomHeader =
         paneHeader
             [ paneTab "Problems" None (Some model.Problems.Length) (model.BottomTab = 0) (fun () -> dispatch (ShowBottom 0))
@@ -3032,16 +3163,41 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                         Grid.column 0
                         Grid.rowDefinitions (if model.BottomOpen then $"*,{Tokens.border},{inv model.Bottom}" else "*,0,0")
                         Grid.children [
-                            Editor.create [
+                            DockPanel.create [
                                 Grid.row 0
-                                Editor.text model.Script
-                                Editor.path (scriptPath model)
-                                Editor.language env.Language
-                                Editor.goTo model.GoTo
-                                Editor.onEdited (Edited >> dispatch)
-                                Editor.onProblemsChanged (Problems >> dispatch)
-                                Editor.onCaretMoved (Caret >> dispatch)
-                                Editor.onFixed (Fixed >> dispatch)
+                                DockPanel.children [
+                                    // The tabs above the script, while go to definition has opened a source.
+                                    Border.create [
+                                        DockPanel.dock Dock.Top
+                                        Border.isVisible (not model.Sources.IsEmpty)
+                                        Border.child sourcesHeader
+                                    ]
+                                    Grid.create [
+                                        Grid.children [
+                                            Editor.create [
+                                                Visual.isVisible (model.Shown = 0)
+                                                Editor.text model.Script
+                                                Editor.path (scriptPath model)
+                                                Editor.language env.Language
+                                                Editor.goTo model.GoTo
+                                                Editor.onEdited (Edited >> dispatch)
+                                                Editor.onProblemsChanged (Problems >> dispatch)
+                                                Editor.onCaretMoved (Caret >> dispatch)
+                                                Editor.onFixed (Fixed >> dispatch)
+                                                Editor.onDefined (Define >> dispatch)
+                                            ]
+                                            // The source shown, read-only, while any is open. Last,
+                                            // so leaving it out moves nothing before it.
+                                            if not model.Sources.IsEmpty then
+                                                Editor.create [
+                                                    Visual.isVisible (model.Shown > 0)
+                                                    Editor.readOnly true
+                                                    Editor.text (if model.Shown > 0 then model.Sources.[model.Shown - 1].Text else "")
+                                                    Editor.goTo model.SourceGoTo
+                                                ]
+                                        ]
+                                    ]
+                                ]
                             ]
                             Border.create [ Grid.row 1; Border.background (brush look.Line) ]
                             GridSplitter.create [

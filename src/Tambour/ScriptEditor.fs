@@ -303,6 +303,7 @@ type private Marks(document: unit -> TextDocument) =
     let mutable problems: Diagnostic[] = [||]
     let mutable uses: Span[] = [||]
     let mutable brackets: (int * int) option = None
+    let mutable link: (int * int) option = None
 
     member val Look = Palette.light with get, set
 
@@ -316,6 +317,12 @@ type private Marks(document: unit -> TextDocument) =
     member _.Brackets
         with get () = brackets
         and set v = brackets <- v
+
+    /// The name under the pointer while Ctrl is held, from an offset to another: underlined, as
+    /// a click goes to its definition.
+    member _.Link
+        with get () = link
+        and set v = link <- v
 
     interface IBackgroundRenderer with
         member _.Layer = KnownLayer.Selection
@@ -338,6 +345,14 @@ type private Marks(document: unit -> TextDocument) =
                     for o in [ a; b ] do
                         for r in BackgroundGeometryBuilder.GetRectsForSegment(view, TextSegment(StartOffset = o, Length = 1), false) do
                             dc.FillRectangle(bracketBrush, r)
+                | _ -> ()
+
+                match link with
+                | Some(a, b) when b <= doc.TextLength && b > a ->
+                    let pen = Pen(SolidColorBrush look.Foreground, 1.0)
+
+                    for r in BackgroundGeometryBuilder.GetRectsForSegment(view, TextSegment(StartOffset = a, Length = b - a), false) do
+                        dc.DrawLine(pen, Point(r.Left, r.Bottom - 0.5), Point(r.Right, r.Bottom - 0.5))
                 | _ -> ()
 
                 for p in problems do
@@ -460,6 +475,8 @@ type EditorCommand =
     | Rename
     /// The menu of Marey's fixes for the call at the caret.
     | ShowFixes
+    /// Where the name at the caret is defined, as a Ctrl+click on it goes.
+    | GoToDefinition
 
 /// The script editor: AvaloniaEdit with F# highlighting, the grammar's and the compiler's, in the
 /// colours of the app's light or dark theme, and what the language service says about the script.
@@ -494,6 +511,7 @@ type ScriptEditor() as this =
     let problemsChanged = Event<Diagnostic[]>()
     let caretMoved = Event<int * int>()
     let fixedBy = Event<string * string>()
+    let defined = Event<Defined>()
 
     let mutable language: LanguageService = Unchecked.defaultof<_>
     let mutable path: string = null
@@ -999,6 +1017,47 @@ type ScriptEditor() as this =
             if hover = hovers && (problems.Length > 0 || found.Length > 0 || not (String.IsNullOrWhiteSpace h.Text)) then
                 showTip (tipView problems found (Some h)))
 
+    // ---- Definitions -----------------------------------------------------------------------------
+
+    /// The name at an offset, or just before it, as the offsets it starts and ends at.
+    let nameAt (offset: int) =
+        let doc = editor.Document
+        let inWord i = i >= 0 && i < doc.TextLength && (let c = doc.GetCharAt i in Char.IsLetterOrDigit c || c = '_' || c = '\'')
+        let mutable first = offset
+        let mutable last = offset
+
+        while inWord (first - 1) do
+            first <- first - 1
+
+        while inWord last do
+            last <- last + 1
+
+        if last > first && not (Char.IsDigit(doc.GetCharAt first)) then Some(first, last) else None
+
+    /// Asks where the name at an offset is defined, and says so through `Defined`.
+    let definitionAt (offset: int) =
+        let location = editor.Document.GetLocation offset
+        let text = editor.Text
+        ask (fun l -> l.DefinitionAsync(text, path, location.Line, location.Column - 1)) defined.Trigger
+
+    /// The document offset under the pointer, if it is over text.
+    let pointedAt (e: PointerEventArgs) =
+        let view = editor.TextArea.TextView
+
+        view.GetPositionFloor(e.GetPosition view + view.ScrollOffset)
+        |> Option.ofNullable
+        |> Option.map (fun p -> editor.Document.GetOffset p.Location)
+
+    let hand = lazy (new Cursor(StandardCursorType.Hand))
+
+    /// Underlines the name under the pointer while Ctrl is held, and takes the underline away
+    /// otherwise; only where the language service can say where it is defined.
+    let showLink (target: (int * int) option) =
+        if marks.Link <> target then
+            marks.Link <- target
+            editor.TextArea.TextView.Cursor <- (if target.IsSome then hand.Value else null)
+            redraw ()
+
     // ---- Fixes -----------------------------------------------------------------------------------
 
     /// Replaces only what differs from `value`, as one edit, not reported as typed.
@@ -1202,6 +1261,35 @@ type ScriptEditor() as this =
             | Some p -> hoverAt (editor.Document.GetOffset(p.Location))
             | None -> ())
 
+        // Ctrl+click on a name goes to its definition; with Ctrl held the name under the pointer
+        // is underlined, as a link is.
+        let linking (m: KeyModifiers) = m.HasFlag KeyModifiers.Control && not (obj.ReferenceEquals(language, null))
+
+        editor.TextArea.AddHandler(
+            InputElement.PointerMovedEvent,
+            EventHandler<PointerEventArgs>(fun _ e ->
+                showLink (if linking e.KeyModifiers then pointedAt e |> Option.bind nameAt else None)),
+            RoutingStrategies.Tunnel,
+            true
+        )
+
+        editor.TextArea.AddHandler(
+            InputElement.PointerPressedEvent,
+            EventHandler<PointerPressedEventArgs>(fun _ e ->
+                if linking e.KeyModifiers && e.GetCurrentPoint(editor.TextArea).Properties.IsLeftButtonPressed then
+                    match pointedAt e |> Option.bind (fun o -> nameAt o |> Option.map (fun _ -> o)) with
+                    | Some offset ->
+                        e.Handled <- true
+                        showLink None
+                        editor.CaretOffset <- offset
+                        definitionAt offset
+                    | None -> ()),
+            RoutingStrategies.Tunnel
+        )
+
+        editor.TextArea.AddHandler(InputElement.KeyUpEvent, EventHandler<KeyEventArgs>(fun _ e -> if not (linking e.KeyModifiers) then showLink None), RoutingStrategies.Tunnel, true)
+        editor.TextArea.PointerExited.Add(fun _ -> showLink None)
+
         editor.PointerHoverStopped.Add(fun _ ->
             hovers <- hovers + 1
             ToolTip.SetIsOpen(editor, false))
@@ -1243,6 +1331,7 @@ type ScriptEditor() as this =
         | EditorCommand.Complete -> complete false
         | EditorCommand.Rename -> rename ()
         | EditorCommand.ShowFixes -> openFixes editor.CaretOffset false |> ignore
+        | EditorCommand.GoToDefinition -> definitionAt editor.CaretOffset
 
     /// The key that shows the fixes, as a tooltip names it; empty where none does. The window
     /// sets it from its commands, whose keys the preferences change.
@@ -1310,12 +1399,54 @@ type ScriptEditor() as this =
     /// The text of the tooltip last shown: the problems' messages, the signature, its documentation.
     member _.TipText = tipText
 
+    /// Asks where the name at an offset is defined, as Ctrl+click on it does.
+    member _.DefinitionAt(offset: int) = definitionAt offset
+
+    /// The name underlined for Ctrl+click, as offsets; none while none is.
+    member _.Link = marks.Link
+
+    /// Whether the text can only be read, as a library's source is shown.
+    member _.ReadOnly
+        with get () = editor.IsReadOnly
+        and set (value: bool) = editor.IsReadOnly <- value
+
     /// Moves the caret to a line and column (from 1 and 0) and brings it into view.
     member _.GoTo(line: int, column: int) =
         let doc = editor.Document
         let l = doc.GetLineByNumber(max 1 (min doc.LineCount line))
         editor.CaretOffset <- l.Offset + max 0 (min l.Length column)
-        editor.ScrollTo(l.LineNumber, column + 1)
+
+        // A source opened at a definition shows its line a third of the way down; the script
+        // scrolls only as far as the line needs.
+        let place () =
+            if editor.IsReadOnly then
+                let view = editor.TextArea.TextView
+                let top = view.GetVisualTopByDocumentLine l.LineNumber
+                // TextEditor.ScrollToVerticalOffset leaves the offset where it is; its scroll
+                // viewer's own takes it.
+                match Avalonia.VisualTree.VisualExtensions.GetVisualDescendants editor |> Seq.tryPick (function :? Avalonia.Controls.ScrollViewer as v -> Some v | _ -> None) with
+                | Some v -> v.Offset <- Vector(v.Offset.X, max 0.0 (top - view.Bounds.Height / 3.0))
+                | None -> editor.ScrollTo(l.LineNumber, column + 1)
+            else
+                editor.ScrollTo(l.LineNumber, column + 1)
+
+        place ()
+
+        // A view just shown, or given its text just now, scrolls once it is laid out: until then
+        // its extent is the old text's, and the offset is held to it.
+        if editor.IsReadOnly then
+            let mutable tries = 0
+            let mutable handler: EventHandler = null
+
+            handler <-
+                EventHandler(fun _ _ ->
+                    tries <- tries + 1
+                    place ()
+
+                    if editor.VerticalOffset > 0.0 || tries > 10 then
+                        editor.LayoutUpdated.RemoveHandler handler)
+
+            editor.LayoutUpdated.AddHandler handler
         editor.Focus() |> ignore
 
     /// Each change typed into the document, and the text after it. A change made through `Text`
@@ -1334,3 +1465,7 @@ type ScriptEditor() as this =
     /// Where the caret is, as a line and a column from 1, each time it moves.
     [<CLIEvent>]
     member _.CaretMoved = caretMoved.Publish
+
+    /// Where a name is defined, as go to definition found it.
+    [<CLIEvent>]
+    member _.Defined = defined.Publish
