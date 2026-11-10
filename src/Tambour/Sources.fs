@@ -75,3 +75,77 @@ let describe (path: string) : string =
 
 /// A carried file's name, as its tab shows it.
 let nameOf (path: string) = Path.GetFileName path
+
+/// Whether a path is one of the carried files' (`marey/src/...`), not one on disk.
+let isCarried (path: string) =
+    not (String.IsNullOrEmpty path) && not (Path.IsPathRooted path) && (path.StartsWith "marey/" || path.StartsWith "fsharp-core/")
+
+/// Where carried files are written to be checked: FCS reads a project's files from disk. Under the
+/// cache, by the commit carried, so a new one never meets an old one's files.
+let private extracted =
+    lazy
+        (let commit =
+            match read "sources.json" with
+            | Some json ->
+                try
+                    JsonDocument.Parse(json).RootElement.GetProperty("marey").GetProperty("commit").GetString()
+                with _ ->
+                    ""
+            | None -> ""
+
+         Path.Combine(Paths.cacheDirectory (), "sources", (if commit = "" then "unknown" else commit)))
+
+/// A carried file on disk, written there first where it is not yet.
+let private onDisk (path: string) =
+    let file = Path.Combine(extracted.Value, path.Replace('/', Path.DirectorySeparatorChar))
+
+    if not (File.Exists file) then
+        match read path with
+        | Some text ->
+            Directory.CreateDirectory(Path.GetDirectoryName file) |> ignore
+            let part = file + "." + string Environment.ProcessId + ".part"
+            File.WriteAllText(part, text)
+            File.Move(part, file, true)
+        | None -> ()
+
+    file
+
+/// A Marey project a carried file is compiled in, to check it as Marey's build does: the
+/// project's files on disk in compile order, the file's own place among them, and the assembly
+/// the project makes. None for FSharp.Core's files, which need its own build, and for a file no
+/// project compiles.
+let projectOf (path: string) : (string[] * string * string) option =
+    if not (path.StartsWith "marey/src/") then
+        None
+    else
+        let directory = path.Substring(0, path.LastIndexOf '/' + 1)
+
+        let project =
+            entries.Value
+            |> Seq.tryFind (fun e -> e.StartsWith directory && e.EndsWith ".fsproj" && e.IndexOf('/', directory.Length) < 0)
+
+        match project |> Option.bind (fun p -> read p |> Option.map (fun text -> p, text)) with
+        | None -> None
+        | Some(project, text) ->
+            let compiled =
+                Text.RegularExpressions.Regex.Matches(text, "<Compile\\s+Include=\"([^\"$]+)\"")
+                |> Seq.map (fun m -> directory + m.Groups.[1].Value.Replace('\\', '/'))
+                |> Array.ofSeq
+
+            let assembly =
+                let m = Text.RegularExpressions.Regex.Match(text, "<AssemblyName>([^<]+)</AssemblyName>")
+                if m.Success then m.Groups.[1].Value else Path.GetFileNameWithoutExtension project
+
+            if compiled |> Array.contains path then
+                let files = compiled |> Array.map onDisk
+                Some(files, files.[Array.IndexOf(compiled, path)], assembly)
+            else
+                None
+
+/// The carried path of a file `projectOf` wrote to disk; none for any other.
+let carriedOf (file: string) : string option =
+    let root = extracted.Value + string Path.DirectorySeparatorChar
+
+    match (try Path.GetFullPath file with _ -> file) with
+    | full when full.StartsWith(root, StringComparison.Ordinal) -> Some(full.Substring(root.Length).Replace(Path.DirectorySeparatorChar, '/'))
+    | _ -> None

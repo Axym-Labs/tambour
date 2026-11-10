@@ -1559,8 +1559,8 @@ let rec update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         env.Host.GetVisualDescendants() |> Seq.tryPick (function :? TableGrid as g -> Some g | _ -> None) |> Option.iter (fun g -> g.Run kind)
         model, Cmd.none
     | AtCaret command ->
-        // The script's editor, not a source's beside it.
-        env.Host.GetVisualDescendants() |> Seq.tryPick (function :? ScriptEditor as e when not e.ReadOnly -> Some e | _ -> None) |> Option.iter (fun e -> e.Run command)
+        // The editor in view: the script's, or a source's above it.
+        env.Host.GetVisualDescendants() |> Seq.tryPick (function :? ScriptEditor as e when e.IsEffectivelyVisible -> Some e | _ -> None) |> Option.iter (fun e -> e.Run command)
         model, Cmd.none
     | Resized(split, bottom) ->
         let next = { model with Split = split; Bottom = bottom }
@@ -2420,7 +2420,7 @@ let commands: Command list =
       { c "_Edit" "_Complete" "Ctrl+Space" [] (AtCaret EditorCommand.Complete) always with InEditor = true }
       { c "_Edit" "Re_name symbol…" "F2" [] (AtCaret EditorCommand.Rename) always with InEditor = true }
       { c "_Edit" "Show _fixes" "Ctrl+OemPeriod" [] (AtCaret EditorCommand.ShowFixes) always with InEditor = true }
-      { c "_Edit" "Go to _definition" "F12" [] (AtCaret EditorCommand.GoToDefinition) (fun m -> m.Shown = 0) with InEditor = true }
+      { c "_Edit" "Go to _definition" "F12" [] (AtCaret EditorCommand.GoToDefinition) always with InEditor = true }
       c "_Edit" "Go _back" "Alt+Left" [] GoBack (fun m -> not m.Back.IsEmpty)
       c "_Edit" "_Preferences…" "Ctrl+OemComma" [] OpenPreferences always
       c "_Run" "_Run" "F5" [ "Ctrl+Enter" ] Run always
@@ -3192,8 +3192,13 @@ let view (env: Env) (model: Model) (dispatch: Msg -> unit) : IView =
                                                 Editor.create [
                                                     Visual.isVisible (model.Shown > 0)
                                                     Editor.readOnly true
+                                                    // Its path before its text: the language service
+                                                    // checks it by its path, Marey's in its project.
+                                                    Editor.path (if model.Shown > 0 then model.Sources.[model.Shown - 1].File else null)
                                                     Editor.text (if model.Shown > 0 then model.Sources.[model.Shown - 1].Text else "")
+                                                    Editor.language env.Language
                                                     Editor.goTo model.SourceGoTo
+                                                    Editor.onDefined (Define >> dispatch)
                                                 ]
                                         ]
                                     ]

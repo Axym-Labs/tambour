@@ -440,16 +440,61 @@ type Service(init: AnalysisInit) =
         else
             "\n" + prelude + "\n"
 
-    let check (path: string) (script: string) =
-        let full = before path script + script
-        let path = pathOf path
+    /// The options for a carried Marey file's project, made once per project: its files in
+    /// order, against the app's assemblies but the project's own, named as its own so the
+    /// assemblies it is a friend of let it see their internals.
+    let carriedOptions = Collections.Generic.Dictionary<string, FSharpProjectOptions>()
+
+    let optionsOfProject (files: string[]) (assembly: string) =
+        match carriedOptions.TryGetValue assembly with
+        | true, o -> o
+        | _ ->
+            let own = assembly + ".dll"
+
+            let references =
+                [| yield! referencesFor [||] |> Array.filter (fun r -> not (String.Equals(Path.GetFileName r, own, StringComparison.OrdinalIgnoreCase)))
+                   // The one third-party library a Marey project uses, as the app ships it.
+                   for pattern in [ "SkiaSharp*.dll"; "HarfBuzzSharp*.dll" ] do
+                       yield! Directory.GetFiles(AppContext.BaseDirectory, pattern) |]
+                |> Array.distinct
+                |> Array.map (fun r -> "-r:" + r)
+
+            let argv =
+                [| "--noframework"
+                   "--targetprofile:netcore"
+                   "--target:library"
+                   $"--out:{own}"
+                   "--nowarn:FS0044;FS0057;FS3370"
+                   yield! references
+                   yield! files |]
+
+            let project = Path.Combine(Path.GetDirectoryName files.[0], assembly + ".fsproj")
+            let o = checker.GetProjectOptionsFromCommandLineArgs(project, argv)
+            carriedOptions.[assembly] <- o
+            o
+
+    /// The lines before what the editor shows: the prelude's for a script, none for a carried file.
+    let offsetOf (path: string) = if Sources.isCarried path then 0 else offset
+
+    let checkWith (path: string) (full: string) (options: FSharpProjectOptions) =
         let parse, answer =
-            checker.ParseAndCheckFileInProject(path, full.GetHashCode(), SourceText.ofString full, optionsFor path full)
+            checker.ParseAndCheckFileInProject(path, full.GetHashCode(), SourceText.ofString full, options)
             |> Async.RunSynchronously
 
         match answer with
         | FSharpCheckFileAnswer.Succeeded results -> path, full, parse, results
         | FSharpCheckFileAnswer.Aborted -> failwith "the check was aborted"
+
+    /// A script checked with what goes before it; a carried file of Marey's in its project.
+    let check (path: string) (script: string) =
+        if Sources.isCarried path then
+            match Sources.projectOf path with
+            | Some(files, file, assembly) -> checkWith file script (optionsOfProject files assembly)
+            | None -> failwith $"{path} is not in a project the app can check"
+        else
+            let full = before path script + script
+            let path = pathOf path
+            checkWith path full (optionsFor path full)
 
     let lineOf (full: string) (line: int) =
         let lines = full.Split('\n')
@@ -464,6 +509,8 @@ type Service(init: AnalysisInit) =
     member _.Offset = offset
 
     member _.Check(source: Source) : Checked =
+        let carried = Sources.isCarried source.Path
+        let offset = offsetOf source.Path
         let path, _, parse, results = check source.Path source.Text
 
         let diagnostics =
@@ -485,11 +532,13 @@ type Service(init: AnalysisInit) =
                   EndColumn = (if inPrelude then 0 else d.EndColumn) })
 
         { Id = source.Id
-          Diagnostics = diagnostics
-          Findings = findingsOf offset (Marey.Witnesses.Findings.ofFile parse results)
+          // Marey's own source is shown, not edited: its problems and fixes are not the reader's.
+          Diagnostics = (if carried then [||] else diagnostics)
+          Findings = (if carried then [||] else findingsOf offset (Marey.Witnesses.Findings.ofFile parse results))
           Tokens = tokensOf offset (results.GetSemanticClassification None) }
 
     member _.Complete(at: At) : Completions =
+        let offset = offsetOf at.Path
         let _, full, parse, results = check at.Path at.Text
         let line = at.Line + offset
         let lineText = lineOf full line
@@ -506,6 +555,7 @@ type Service(init: AnalysisInit) =
                   Glyph = glyphOf i.Glyph }) }
 
     member _.Hover(at: At) : Hovered =
+        let offset = offsetOf at.Path
         let _, full, _, results = check at.Path at.Text
         let line = at.Line + offset
         let lineText = lineOf full line
@@ -522,6 +572,7 @@ type Service(init: AnalysisInit) =
     /// A completion list's entry as its tooltip shows it: the entry of that name in the list at the
     /// place, nothing where there is none.
     member _.Describe(entry: Entry) : Hovered =
+        let offset = offsetOf entry.Path
         let _, full, parse, results = check entry.Path entry.Text
         let line = entry.Line + offset
         let lineText = lineOf full line
@@ -535,6 +586,7 @@ type Service(init: AnalysisInit) =
         | None -> { Id = entry.Id; Text = ""; Doc = "" }
 
     member _.Signature(at: At) : Signatures =
+        let offset = offsetOf at.Path
         let _, full, _, results = check at.Path at.Text
         let line = at.Line + offset
         let lineText = lineOf full line
@@ -583,6 +635,7 @@ type Service(init: AnalysisInit) =
               Parameter = commas }
 
     member _.Uses(at: At) : Used =
+        let offset = offsetOf at.Path
         let path, full, _, results = check at.Path at.Text
         let line = at.Line + offset
         let lineText = lineOf full line
@@ -627,6 +680,7 @@ type Service(init: AnalysisInit) =
     /// Where the symbol at a place is defined: in the script, in a file beside it, or in the source
     /// the app carries of Marey or FSharp.Core; nowhere it can show for the rest (.NET's own).
     member _.Definition(at: At) : Defined =
+        let offset = offsetOf at.Path
         let path, full, _, results = check at.Path at.Text
         let line = at.Line + offset
         let lineText = lineOf full line
@@ -650,6 +704,8 @@ type Service(init: AnalysisInit) =
 
             match symbol.DeclarationLocation with
             | None -> none ()
+            // In a carried file of Marey's, checked from where it is written on disk.
+            | Some r when (Sources.carriedOf r.FileName).IsSome -> found "source" (Sources.carriedOf r.FileName).Value r.StartLine r.StartColumn name assembly
             | Some r when String.Equals(Path.GetFullPath r.FileName, Path.GetFullPath path, StringComparison.Ordinal) ->
                 // Before the script are only the prelude's opens, which define nothing to go to.
                 if r.StartLine > offset then found "script" "" (r.StartLine - offset) r.StartColumn name assembly else none ()

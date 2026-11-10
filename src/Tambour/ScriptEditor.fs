@@ -1328,6 +1328,8 @@ type ScriptEditor() as this =
         editor.TextArea.Focus() |> ignore
 
         match command with
+        // A source shown read-only only goes on to definitions.
+        | _ when editor.IsReadOnly && command <> EditorCommand.GoToDefinition -> ()
         | EditorCommand.Complete -> complete false
         | EditorCommand.Rename -> rename ()
         | EditorCommand.ShowFixes -> openFixes editor.CaretOffset false |> ignore

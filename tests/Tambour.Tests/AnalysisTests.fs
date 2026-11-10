@@ -166,6 +166,34 @@ let ``go to definition names what it cannot show, .NET's own`` () =
     let nothing = service.Value.Definition(at text 1 1)
     Assert.Equal("none", nothing.Kind)
 
+[<Fact>]
+let ``a carried Marey file is checked in its project: its names are classified, hovered and gone to`` () =
+    let path = "marey/src/Marey.Plot/UnitsOfMeasure.fs"
+    let text = (Sources.read path).Value
+    let lines = text.Split('\n')
+    let line = (lines |> Array.findIndex (fun l -> l.Contains "let scatterIn")) + 1
+    let clock = Stopwatch.StartNew()
+    let checkedFile = service.Value.Check { Id = 3; Text = text; Path = path }
+    let elapsed = clock.Elapsed.TotalSeconds
+    Assert.Empty checkedFile.Diagnostics
+
+    // `U` in `(ux: U<'ux>)` is a type, as the script's editor draws a Marey type.
+    let u = lines.[line - 1].IndexOf "U<'ux>"
+    let kindAt column = checkedFile.Tokens |> Array.tryFind (fun t -> t.Line = line && t.StartColumn <= column && column < t.EndColumn) |> Option.map (fun t -> t.Kind)
+    Assert.True((kindAt u).IsSome, $"U has no class (checked in {elapsed:F1} s)")
+    Assert.NotEqual(Some "variable", kindAt u)
+
+    let hovered = service.Value.Hover { Id = 4; Text = text; Path = path; Line = line; Column = u + 1 }
+    Assert.Contains("U", hovered.Text)
+
+    // `Marey.Chart.scatter` on the next lines goes to Chart.fs, carried too.
+    let call = (lines |> Array.findIndex (fun l -> l.Contains "Marey.Chart.scatter ux")) + 1
+    let column = lines.[call - 1].IndexOf "scatter ux" + 2
+    let defined = service.Value.Definition { Id = 5; Text = text; Path = path; Line = call; Column = column }
+    Assert.Equal("source", defined.Kind)
+    Assert.Equal("marey/src/Marey.Plot/Chart.fs", defined.File)
+    Assert.Contains("scatter", carriedLine defined)
+
 /// A shared runner is held to three times the limit, as the timed tests are.
 let private limit (seconds: float) =
     if Environment.GetEnvironmentVariable "GITHUB_ACTIONS" = "true" then 3.0 * seconds else seconds

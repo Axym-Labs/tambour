@@ -311,7 +311,7 @@ let ``the fixes' key is the one the preferences give it, and the tooltip says so
 /// with no source carried says so.
 [<AvaloniaFact>]
 let ``go to definition opens a library's source above the script, and comes back`` () =
-    let script = "let xs = List.map string [ 1; 2 ]\nlet ys = xs\nlet m = System.Math.Max(1.0, 2.0)\n"
+    let script = "let xs = List.map string [ 1; 2 ]\nlet ys = xs\nlet m = System.Math.Max(1.0, 2.0)\nlet unit = U.second\n"
     let window = new Shell.MainWindow(script)
     window.Show()
     pumpUntil 60.0 "the workers' start" (fun () -> window.Started.IsCompleted)
@@ -378,4 +378,14 @@ let ``go to definition opens a library's source above the script, and comes back
     Dispatcher.UIThread.RunJobs()
     Assert.True((source ()).IsNone)
     Assert.True(editor.IsEffectivelyVisible)
+
+    // Marey's source is checked in its own project: drawn in the compiler's colours as the
+    // script is, and F12 in it goes on.
+    editor.Editor.CaretOffset <- script.IndexOf "second"
+    editor.Editor.TextArea.Focus() |> ignore
+    window.KeyPress(Key.F12, RawInputModifiers.None, PhysicalKey.F12, null)
+    pumpUntil 30.0 "Marey's source" (fun () -> (source ()).IsSome)
+    let marey = (source ()).Value
+    Assert.StartsWith("marey/src/", marey.Path)
+    pumpUntil 60.0 "Marey's source in the compiler's colours" (fun () -> marey.Classified.Length > 0)
     window.Close()
