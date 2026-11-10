@@ -194,6 +194,13 @@ let ``a carried Marey file is checked in its project: its names are classified, 
     Assert.Equal("marey/src/Marey.Plot/Chart.fs", defined.File)
     Assert.Contains("scatter", carriedLine defined)
 
+[<Fact>]
+let ``an attribute's name is drawn whole as its type`` () =
+    let text = "[<Literal>]\nlet private MaxStreak = 10_000\n"
+    let checkedScript = service.Value.Check { Id = 9; Text = text; Path = null }
+    let first = checkedScript.Tokens |> Array.filter (fun t -> t.Line = 1)
+    Assert.Equal<(int * int * string) list>([ 2, 9, "class" ], first |> Array.map (fun t -> t.StartColumn, t.EndColumn, t.Kind) |> List.ofArray)
+
 /// A shared runner is held to three times the limit, as the timed tests are.
 let private limit (seconds: float) =
     if Environment.GetEnvironmentVariable "GITHUB_ACTIONS" = "true" then 3.0 * seconds else seconds

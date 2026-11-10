@@ -100,6 +100,15 @@ let tokensOf (offset: int) (items: SemanticClassificationItem[]) : Token[] =
     |> Array.groupBy (fun (line, _, _, _) -> line)
     |> Array.sortBy fst
     |> Array.iter (fun (line, spans) ->
+        // An attribute's constructor comes as a method one column into its type's name and ending
+        // with it (`[<Literal>]`); the name is the type's, drawn whole.
+        let isType (kind: string) = kind = "class" || kind = "struct" || kind = "type"
+
+        let spans =
+            spans
+            |> Array.filter (fun (_, s, e, (kind, _)) ->
+                not (kind = "method" && spans |> Array.exists (fun (_, s', e', (k, _)) -> isType k && e' = e && s' < s)))
+
         let width = spans |> Array.map (fun (_, _, e, _) -> e) |> Array.max
         let cells: (string * bool) option[] = Array.create width None
 
