@@ -624,6 +624,41 @@ type Service(init: AnalysisInit) =
                   Spans = spans
                   Renamable = renamable }
 
+    /// Where the symbol at a place is defined: in the script, in a file beside it, or in the source
+    /// the app carries of Marey or FSharp.Core; nowhere it can show for the rest (.NET's own).
+    member _.Definition(at: At) : Defined =
+        let path, full, _, results = check at.Path at.Text
+        let line = at.Line + offset
+        let lineText = lineOf full line
+
+        let found kind file line column name assembly =
+            { Id = at.Id
+              Kind = kind
+              File = file
+              Line = line
+              Column = column
+              Name = name
+              Assembly = assembly }
+
+        match island lineText at.Column |> Option.bind (fun (names, columnEnd) -> results.GetSymbolUseAtLocation(line, columnEnd, lineText, names)) with
+        | None -> found "none" "" 0 0 "" ""
+        | Some u ->
+            let symbol = u.Symbol
+            let assembly = try symbol.Assembly.SimpleName with _ -> ""
+            let name = try symbol.FullName with _ -> symbol.DisplayName
+            let none () = found "none" "" 0 0 name assembly
+
+            match symbol.DeclarationLocation with
+            | None -> none ()
+            | Some r when String.Equals(Path.GetFullPath r.FileName, Path.GetFullPath path, StringComparison.Ordinal) ->
+                // Before the script are only the prelude's opens, which define nothing to go to.
+                if r.StartLine > offset then found "script" "" (r.StartLine - offset) r.StartColumn name assembly else none ()
+            | Some r ->
+                match Sources.locate assembly r.FileName with
+                | Some file -> found "source" file r.StartLine r.StartColumn name assembly
+                | None when File.Exists r.FileName -> found "file" (Path.GetFullPath r.FileName) r.StartLine r.StartColumn name assembly
+                | None -> none ()
+
     /// What each action would come to for a figure, and the columns its rows have.
     member _.Actions(f: FigureIn) : ActionsFor =
         let outcomes =
@@ -674,7 +709,8 @@ let run (socketPath: string) (app: int) : int =
         | AnalysisRequest.Complete a
         | AnalysisRequest.Hover a
         | AnalysisRequest.Signature a
-        | AnalysisRequest.Uses a -> a.Id
+        | AnalysisRequest.Uses a
+        | AnalysisRequest.Definition a -> a.Id
         | AnalysisRequest.Actions f -> f.Id
         | AnalysisRequest.Act a -> a.Id
         | AnalysisRequest.Plotted f -> f.Id
@@ -695,6 +731,7 @@ let run (socketPath: string) (app: int) : int =
         | AnalysisRequest.Describe e, Some service -> send (AnalysisReply.Hovered(service.Describe e))
         | AnalysisRequest.Signature a, Some service -> send (AnalysisReply.Signatures(service.Signature a))
         | AnalysisRequest.Uses a, Some service -> send (AnalysisReply.Used(service.Uses a))
+        | AnalysisRequest.Definition a, Some service -> send (AnalysisReply.Defined(service.Definition a))
         | AnalysisRequest.Actions f, Some service -> send (AnalysisReply.Actions(service.Actions f))
         | AnalysisRequest.Act a, Some service -> send (AnalysisReply.Acted(service.Act a))
         | AnalysisRequest.Plotted f, Some _ ->

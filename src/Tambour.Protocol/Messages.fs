@@ -277,6 +277,8 @@ type AnalysisRequest =
     | Describe of Entry
     | Signature of At
     | Uses of At
+    /// Where the symbol at a place is defined.
+    | Definition of At
     /// What each action would come to for this figure, and the columns its rows have.
     | Actions of FigureIn
     | Act of ActionOn
@@ -347,6 +349,20 @@ type Used =
       Spans: Span[]
       Renamable: bool }
 
+/// Where the symbol at a place is defined. `Kind` is `script` (in the script, `Line` and `Column`
+/// counted as `At` counts them), `file` (in another file on disk, such as the prelude of a
+/// workspace's tables: `File` is its path), `source` (in a library whose source the app carries:
+/// `File` is its path there, as `Sources` reads it) or `none` (nowhere the app can show; `Name` and
+/// `Assembly` say what and where). Lines count from 1, columns from 0.
+type Defined =
+    { Id: int
+      Kind: string
+      File: string
+      Line: int
+      Column: int
+      Name: string
+      Assembly: string }
+
 /// What an action came to: `structural` (done in a shape the app recognises), `fallback` (done
 /// after an expression it does not) or `refused`, and a sentence saying so.
 type ActionOutcome = { Kind: string; Outcome: string; Note: string }
@@ -378,6 +394,7 @@ type AnalysisReply =
     | Hovered of Hovered
     | Signatures of Signatures
     | Used of Used
+    | Defined of Defined
     | Actions of ActionsFor
     | Acted of Acted
     | Plotted of PlottedFields

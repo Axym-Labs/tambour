@@ -125,6 +125,47 @@ let ``uses of a binding the script makes are found, and it can be renamed; a lib
     Assert.Equal("second", library.Name)
     Assert.False library.Renamable
 
+/// The line a definition is on in the source the app carries, which must name it there.
+let private carriedLine (d: Defined) =
+    let text = Sources.read d.File |> Option.defaultWith (fun () -> failwith $"{d.File} is not carried")
+    text.Split('\n').[d.Line - 1]
+
+[<Fact>]
+let ``go to definition finds a binding the script makes in the script`` () =
+    let line, column = find unitError "plot trials" 6
+    let defined = service.Value.Definition(at unitError line column)
+    Assert.Equal("script", defined.Kind)
+    let definedLine, definedColumn = find unitError "let trials" 4
+    Assert.Equal(definedLine, defined.Line)
+    Assert.Equal(definedColumn, defined.Column)
+
+[<Fact>]
+let ``go to definition finds Marey's names in the source the app carries`` () =
+    let line, column = find unitError "U.second" 3
+    let defined = service.Value.Definition(at unitError line column)
+    Assert.Equal("source", defined.Kind)
+    Assert.StartsWith("marey/src/", defined.File)
+    Assert.Contains("second", carriedLine defined)
+
+[<Fact>]
+let ``go to definition finds FSharp.Core's names in the source the app carries`` () =
+    let text = "let xs = List.map string [ 1; 2 ]\n"
+    let defined = service.Value.Definition(at text 1 (text.IndexOf "map" + 1))
+    Assert.Equal("source", defined.Kind)
+    Assert.Equal("fsharp-core/src/FSharp.Core/list.fsi", defined.File)
+    Assert.Contains("map", carriedLine defined)
+    Assert.Contains("FSharp.Core", Sources.describe defined.File)
+
+[<Fact>]
+let ``go to definition names what it cannot show, .NET's own`` () =
+    let text = "let m = System.Math.Max(1.0, 2.0)\n"
+    let defined = service.Value.Definition(at text 1 (text.IndexOf "Max" + 1))
+    Assert.Equal("none", defined.Kind)
+    Assert.Contains("Max", defined.Name)
+    Assert.NotEmpty defined.Assembly
+    let nothing = service.Value.Definition(at text 1 1)
+    Assert.Equal("none", nothing.Kind)
+
 /// A shared runner is held to three times the limit, as the timed tests are.
 let private limit (seconds: float) =
     if Environment.GetEnvironmentVariable "GITHUB_ACTIONS" = "true" then 3.0 * seconds else seconds
