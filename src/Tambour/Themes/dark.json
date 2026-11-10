@@ -542,6 +542,26 @@
    "settings": {
     "foreground": "#C8C8C8"
    }
+  },
+  {
+   "scope": [
+    "comment markup.bold",
+    "comment markup.heading"
+   ],
+   "settings": {
+    "fontStyle": "bold",
+    "foreground": "#6A9955"
+   }
+  },
+  {
+   "scope": [
+    "comment markup.italic",
+    "comment markup.inline.raw",
+    "comment markup.underline"
+   ],
+   "settings": {
+    "foreground": "#6A9955"
+   }
   }
  ]
 }

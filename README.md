@@ -27,7 +27,9 @@ and renaming. A column plotted under the wrong unit is a compile error, underlin
 happens. Where Marey can tell what a call is missing, such as `Chart.lineIn t x` without the
 witnesses of its units, Ctrl+. or the right button on the call offers the fix. Ctrl+., Ctrl+Space
 (completion) and F2 (renaming) are Edit menu commands like any other, so their keys can be changed
-in Preferences → Keyboard shortcuts.
+in Preferences → Keyboard shortcuts. Ctrl+click or F12 on a name goes to its definition: in the
+script, or for Marey and FSharp.Core in their source, which the app carries at the commit it was
+built from and opens read-only in a tab above the script. Alt+Left goes back.
 
 **GUI actions** (title, labels, log axis, domain, theme, legend, colour, facet, fit, a layer)
 edit the script rather than the figure. An action, a fix and typed text share one history, so

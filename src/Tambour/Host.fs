@@ -677,6 +677,7 @@ type LanguageService(command: Command, init: AnalysisInit) =
                                     | AnalysisReply.Hovered r -> r.Id
                                     | AnalysisReply.Signatures r -> r.Id
                                     | AnalysisReply.Used r -> r.Id
+                                    | AnalysisReply.Defined r -> r.Id
                                     | AnalysisReply.Actions r -> r.Id
                                     | AnalysisReply.Acted r -> r.Id
                                     | AnalysisReply.Plotted r -> r.Id
@@ -767,6 +768,13 @@ type LanguageService(command: Command, init: AnalysisInit) =
             match! this.AskAsync(fun id -> AnalysisRequest.Uses { Id = id; Text = text; Path = path; Line = line; Column = column }) with
             | AnalysisReply.Used u -> return u
             | other -> return failwith $"uses answered with {other}"
+        }
+
+    member this.DefinitionAsync(text: string, path: string, line: int, column: int) : Task<Defined> =
+        task {
+            match! this.AskAsync(fun id -> AnalysisRequest.Definition { Id = id; Text = text; Path = path; Line = line; Column = column }) with
+            | AnalysisReply.Defined d -> return d
+            | other -> return failwith $"go to definition answered with {other}"
         }
 
     member this.ActionsAsync(text: string, path: string, figure: string) : Task<ActionsFor> =

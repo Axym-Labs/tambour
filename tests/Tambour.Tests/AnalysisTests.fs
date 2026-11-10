@@ -125,6 +125,82 @@ let ``uses of a binding the script makes are found, and it can be renamed; a lib
     Assert.Equal("second", library.Name)
     Assert.False library.Renamable
 
+/// The line a definition is on in the source the app carries, which must name it there.
+let private carriedLine (d: Defined) =
+    let text = Sources.read d.File |> Option.defaultWith (fun () -> failwith $"{d.File} is not carried")
+    text.Split('\n').[d.Line - 1]
+
+[<Fact>]
+let ``go to definition finds a binding the script makes in the script`` () =
+    let line, column = find unitError "plot trials" 6
+    let defined = service.Value.Definition(at unitError line column)
+    Assert.Equal("script", defined.Kind)
+    let definedLine, definedColumn = find unitError "let trials" 4
+    Assert.Equal(definedLine, defined.Line)
+    Assert.Equal(definedColumn, defined.Column)
+
+[<Fact>]
+let ``go to definition finds Marey's names in the source the app carries`` () =
+    let line, column = find unitError "U.second" 3
+    let defined = service.Value.Definition(at unitError line column)
+    Assert.Equal("source", defined.Kind)
+    Assert.StartsWith("marey/src/", defined.File)
+    Assert.Contains("second", carriedLine defined)
+
+[<Fact>]
+let ``go to definition finds FSharp.Core's names in the source the app carries`` () =
+    let text = "let xs = List.map string [ 1; 2 ]\n"
+    let defined = service.Value.Definition(at text 1 (text.IndexOf "map" + 1))
+    Assert.Equal("source", defined.Kind)
+    Assert.Equal("fsharp-core/src/FSharp.Core/list.fsi", defined.File)
+    Assert.Contains("map", carriedLine defined)
+    Assert.Contains("FSharp.Core", Sources.describe defined.File)
+
+[<Fact>]
+let ``go to definition names what it cannot show, .NET's own`` () =
+    let text = "let m = System.Math.Max(1.0, 2.0)\n"
+    let defined = service.Value.Definition(at text 1 (text.IndexOf "Max" + 1))
+    Assert.Equal("none", defined.Kind)
+    Assert.Contains("Max", defined.Name)
+    Assert.NotEmpty defined.Assembly
+    let nothing = service.Value.Definition(at text 1 1)
+    Assert.Equal("none", nothing.Kind)
+
+[<Fact>]
+let ``a carried Marey file is checked in its project: its names are classified, hovered and gone to`` () =
+    let path = "marey/src/Marey.Plot/UnitsOfMeasure.fs"
+    let text = (Sources.read path).Value
+    let lines = text.Split('\n')
+    let line = (lines |> Array.findIndex (fun l -> l.Contains "let scatterIn")) + 1
+    let clock = Stopwatch.StartNew()
+    let checkedFile = service.Value.Check { Id = 3; Text = text; Path = path }
+    let elapsed = clock.Elapsed.TotalSeconds
+    Assert.Empty checkedFile.Diagnostics
+
+    // `U` in `(ux: U<'ux>)` is a type, as the script's editor draws a Marey type.
+    let u = lines.[line - 1].IndexOf "U<'ux>"
+    let kindAt column = checkedFile.Tokens |> Array.tryFind (fun t -> t.Line = line && t.StartColumn <= column && column < t.EndColumn) |> Option.map (fun t -> t.Kind)
+    Assert.True((kindAt u).IsSome, $"U has no class (checked in {elapsed:F1} s)")
+    Assert.NotEqual(Some "variable", kindAt u)
+
+    let hovered = service.Value.Hover { Id = 4; Text = text; Path = path; Line = line; Column = u + 1 }
+    Assert.Contains("U", hovered.Text)
+
+    // `Marey.Chart.scatter` on the next lines goes to Chart.fs, carried too.
+    let call = (lines |> Array.findIndex (fun l -> l.Contains "Marey.Chart.scatter ux")) + 1
+    let column = lines.[call - 1].IndexOf "scatter ux" + 2
+    let defined = service.Value.Definition { Id = 5; Text = text; Path = path; Line = call; Column = column }
+    Assert.Equal("source", defined.Kind)
+    Assert.Equal("marey/src/Marey.Plot/Chart.fs", defined.File)
+    Assert.Contains("scatter", carriedLine defined)
+
+[<Fact>]
+let ``an attribute's name is drawn whole as its type`` () =
+    let text = "[<Literal>]\nlet private MaxStreak = 10_000\n"
+    let checkedScript = service.Value.Check { Id = 9; Text = text; Path = null }
+    let first = checkedScript.Tokens |> Array.filter (fun t -> t.Line = 1)
+    Assert.Equal<(int * int * string) list>([ 2, 9, "class" ], first |> Array.map (fun t -> t.StartColumn, t.EndColumn, t.Kind) |> List.ofArray)
+
 /// A shared runner is held to three times the limit, as the timed tests are.
 let private limit (seconds: float) =
     if Environment.GetEnvironmentVariable "GITHUB_ACTIONS" = "true" then 3.0 * seconds else seconds

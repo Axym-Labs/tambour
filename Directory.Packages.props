@@ -6,6 +6,7 @@
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <MareyVersion>1.0.0-rc.2</MareyVersion>
     <MareyCommit>8686bccb4ef017299fd3d30e71c3461751b3b103</MareyCommit>
+    <FSharpCoreVersion>10.1.202</FSharpCoreVersion>
     <AvaloniaVersion>12.1.4</AvaloniaVersion>
   </PropertyGroup>
 
@@ -22,7 +23,7 @@
 
     <!-- The worker's and the language service's F#: FCS states the FSharp.Core it was built with
          exactly, so the whole app runs on that one. -->
-    <PackageVersion Include="FSharp.Core" Version="[10.1.202]" />
+    <PackageVersion Include="FSharp.Core" Version="[$(FSharpCoreVersion)]" />
     <PackageVersion Include="FSharp.Compiler.Service" Version="[43.12.202]" />
 
     <PackageVersion Include="Avalonia" Version="[$(AvaloniaVersion)]" />
