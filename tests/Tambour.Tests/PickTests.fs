@@ -51,6 +51,8 @@ let ``the plot block for two columns compiles under their witnesses, and an unty
     Assert.Equal(Some "U.second", Prelude.witness "s")
     Assert.Equal(Some "U.metre", Prelude.witness "km")
     Assert.Equal(Some "(U.div U.volt U.metre)", Prelude.witness "V/m")
+    Assert.Equal(Some "(U.cube U.metre)", Prelude.witness "mL")
+    Assert.Equal(Some "(U.div (U.cube U.metre) U.second)", Prelude.witness "mL/s")
     Assert.Equal(Some "(U.div (U.mul U.kilogram U.metre) (U.square U.second))", Prelude.witness "kg m s-2")
     Assert.Equal(None, Prelude.witness "ppm")
 

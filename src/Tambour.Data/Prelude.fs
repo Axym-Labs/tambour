@@ -271,7 +271,8 @@ let private witnesses =
         [ "m", "U.metre"; "g", "U.kilogram"; "s", "U.second"; "A", "U.ampere"; "K", "U.kelvin"; "mol", "U.mole"; "cd", "U.candela"
           "Hz", "U.hertz"; "N", "U.newton"; "Pa", "U.pascal"; "J", "U.joule"; "W", "U.watt"; "C", "U.coulomb"; "V", "U.volt"
           "F", "U.farad"; "Ω", "U.ohm"; "S", "U.siemens"; "Wb", "U.weber"; "T", "U.tesla"; "H", "U.henry"; "lm", "U.lumen"
-          "lx", "U.lux"; "Bq", "U.becquerel"; "Gy", "U.gray"; "Sv", "U.sievert"; "kat", "U.katal" ]
+          "lx", "U.lux"; "Bq", "U.becquerel"; "Gy", "U.gray"; "Sv", "U.sievert"; "kat", "U.katal"
+          "L", "(U.cube U.metre)" ]
 
 let private prefixes =
     [ "da"; "Q"; "R"; "Y"; "Z"; "E"; "P"; "T"; "G"; "M"; "k"; "h"; "d"; "c"; "m"; "µ"; "μ"; "u"; "n"; "p"; "f"; "a"; "z"; "y"; "r"; "q" ]

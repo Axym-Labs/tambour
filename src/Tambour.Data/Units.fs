@@ -15,11 +15,14 @@ type Typing =
 
 module Units =
 
-    /// The SI units FSharp.Core spells, by the symbol Marey reads them with.
+    /// The SI units FSharp.Core spells, by the symbol Marey reads them with, and the litre, which
+    /// is exactly a cubic decimetre, so a column in `mL` is `float<m^3>` (times 10^-6). Marey spells
+    /// it `L` whether a header writes `L` or `l`.
     let private si =
         set
             [ "m"; "g"; "s"; "A"; "K"; "mol"; "cd"
-              "Hz"; "N"; "Pa"; "J"; "W"; "C"; "V"; "F"; "Ω"; "S"; "Wb"; "T"; "H"; "lm"; "lx"; "Bq"; "Gy"; "Sv"; "kat" ]
+              "Hz"; "N"; "Pa"; "J"; "W"; "C"; "V"; "F"; "Ω"; "S"; "Wb"; "T"; "H"; "lm"; "lx"; "Bq"; "Gy"; "Sv"; "kat"
+              "L" ]
 
     let private prefixes =
         [ "da"; "Q"; "R"; "Y"; "Z"; "E"; "P"; "T"; "G"; "M"; "k"; "h"; "d"; "c"; "m"; "µ"; "μ"; "u"; "n"; "p"; "f"; "a"; "z"; "y"; "r"; "q" ]
