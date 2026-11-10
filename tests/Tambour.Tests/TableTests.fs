@@ -18,6 +18,10 @@ let ``a unit SI composes is typed in SI base units; anything else is a plain flo
     Assert.Equal(Typed("m^-1 kg s^-2", 1000.0), Units.typing "kPa")
     Assert.Equal(Typed("kg", 0.001), Units.typing "g")
     Assert.Equal(Typed("s^-1", 1.0), Units.typing "1/s")
+    Assert.Equal(Typed("m^3", 1e-6), Units.typing "mL")
+    Assert.Equal(Typed("m^3", 1e-6), Units.typing "ml")
+    Assert.Equal(Typed("m^3", 1e-3), Units.typing "L")
+    Assert.Equal(Typed("m^3 s^-1", 1e-6), Units.typing "mL/s")
 
     for outside in [ "degC"; "eV"; "ppm"; "km/h"; "min"; "furlong" ] do
         match Units.typing outside with
