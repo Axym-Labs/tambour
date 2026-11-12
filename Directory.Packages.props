@@ -4,8 +4,8 @@
        release was built from; CI checks the GUI actions against its examples there. -->
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-    <MareyVersion>1.0.0-rc.2</MareyVersion>
-    <MareyCommit>8686bccb4ef017299fd3d30e71c3461751b3b103</MareyCommit>
+    <MareyVersion>1.0.0-rc.3</MareyVersion>
+    <MareyCommit>4df9e2a2f6f0c8e1841783d639c5883f519e6aa3</MareyCommit>
     <FSharpCoreVersion>10.1.202</FSharpCoreVersion>
     <AvaloniaVersion>12.1.4</AvaloniaVersion>
   </PropertyGroup>
