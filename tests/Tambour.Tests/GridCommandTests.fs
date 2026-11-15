@@ -26,7 +26,7 @@ let private tables =
         let! width = Gen.choose (1, 5)
         let! rows = Gen.choose (1, 12)
         let! columns = Gen.listOfLength width (values rows)
-        return { Name = "trial"; Columns = columns |> List.mapi (fun i v -> { Name = $"c{i}"; Unit = null; Values = v }) }
+        return { Name = "trial"; Columns = columns |> List.mapi (fun i v -> { Name = $"c{i}"; Unit = null; Values = v; Uncertainty = None }) }
     }
 
 /// A selection in a table, from fractions of its width and length.
@@ -146,7 +146,7 @@ let ``cells and rows copied and pasted come back as they were`` () =
 /// A paste refused for a cell its column cannot read changes nothing and says which column.
 [<Fact>]
 let ``a paste a column cannot read is refused whole`` () =
-    let t = { Name = "t"; Columns = [ { Name = "n"; Unit = null; Values = Ints [| 1; 2 |] }; { Name = "x"; Unit = "m"; Values = Floats [| 1.0; 2.0 |] } ] }
+    let t = { Name = "t"; Columns = [ { Name = "n"; Unit = null; Values = Ints [| 1; 2 |]; Uncertainty = None }; { Name = "x"; Unit = "m"; Values = Floats [| 1.0; 2.0 |]; Uncertainty = None } ] }
     let s: GridCommand.Selection = { C0 = 0; C1 = 1; R0 = 0; R1 = 0; Hidden = Set.empty }
 
     match GridCommand.paste t s [| [| "3"; "not a number" |] |] with
@@ -161,7 +161,7 @@ let ``a paste a column cannot read is refused whole`` () =
 /// deleted only where the columns are shown.
 [<Fact>]
 let ``a selection's commands pass over the hidden columns inside it`` () =
-    let column name values = { Name = name; Unit = null; Values = Ints values }
+    let column name values = { Name = name; Unit = null; Values = Ints values; Uncertainty = None }
     let t = { Name = "t"; Columns = [ column "a" [| 1; 2 |]; column "b" [| 3; 4 |]; column "c" [| 5; 6 |]; column "d" [| 7; 8 |] ] }
     let s: GridCommand.Selection = { C0 = 0; C1 = 2; R0 = 0; R1 = 1; Hidden = set [ 1 ] }
     let after edits = (edits |> List.fold TableEdit.apply (Map.ofList [ t.Name, t ])).[t.Name]

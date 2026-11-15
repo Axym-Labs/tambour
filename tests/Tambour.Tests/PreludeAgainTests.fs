@@ -17,7 +17,7 @@ let ``a prelude changed and changed back runs the script again`` () : Task =
     task {
         let dir = (Directory.CreateTempSubdirectory "tambour-again").FullName
         let t = Array.init 10 float
-        let a = { Name = "trials"; Columns = [ { Name = "Time"; Unit = "s"; Values = Floats t }; { Name = "Displacement"; Unit = "m"; Values = Floats t } ] }
+        let a = { Name = "trials"; Columns = [ { Name = "Time"; Unit = "s"; Values = Floats t; Uncertainty = None }; { Name = "Displacement"; Unit = "m"; Values = Floats t; Uncertainty = None } ] }
         let b = { a with Columns = [ a.Columns.[0]; { a.Columns.[1] with Name = "Height" } ] }
         let script = "#load \"prelude.fsx\"\nopen Prelude\nlet fig = plot trials { x U.second (fun r -> r.Time); y U.metre (fun r -> r.Displacement); layer GeomPoint }\n"
         let path = Path.Combine(dir, "figure.fsx")

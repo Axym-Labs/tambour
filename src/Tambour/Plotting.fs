@@ -6,13 +6,16 @@ open System
 open System.Text.RegularExpressions
 open Tambour.Data
 
-/// A column's accessor in a plot block's `x` or `y`: under its witness where the script sees it
-/// typed, and otherwise as a plain float, on an axis with no unit; a column that is not a number
-/// cannot be an axis.
+/// A column's accessor in a plot block's `x` or `y`: `xUncertain` where the column has an
+/// uncertainty, so its error bars come with it; under its witness where the script sees it typed;
+/// and otherwise as a plain float, on an axis with no unit. A column that is not a number cannot
+/// be an axis.
 let private axis (name: string) (c: Column) : Result<string, string> =
     let field = $"r.{Prelude.identifier c.Name}"
 
     match c.Values with
+    // Uncertain values carry their unit and their error bars.
+    | Floats _ when Prelude.isUncertain c -> Ok $"{name}Uncertain (fun r -> {field})"
     | Floats _ ->
         match Prelude.witness c.Unit with
         | Some w -> Ok $"{name} {w} (fun r -> {field})"

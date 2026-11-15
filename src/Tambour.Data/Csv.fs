@@ -155,11 +155,11 @@ let private column (name: string) (mark: string option) (cells: string[]) : Resu
     let filled = cells |> Array.filter (fun c -> c <> "")
     let hasEmpty = filled.Length < cells.Length
 
-    let asText () = Ok { Name = name; Unit = null; Values = Texts cells }
+    let asText () = Ok { Name = name; Unit = null; Values = Texts cells; Uncertainty = None }
 
     let asFloats (unit: string) =
         match floats cells with
-        | Some v -> Ok { Name = name; Unit = unit; Values = Floats v }
+        | Some v -> Ok { Name = name; Unit = unit; Values = Floats v; Uncertainty = None }
         | None -> Error $"column {name} is marked as numbers, and holds a cell that is not one"
 
     match mark with
@@ -167,28 +167,28 @@ let private column (name: string) (mark: string option) (cells: string[]) : Resu
     | Some "#int" when hasEmpty -> asFloats null
     | Some "#int" ->
         match all parseInt cells with
-        | Some v -> Ok { Name = name; Unit = null; Values = Ints v }
+        | Some v -> Ok { Name = name; Unit = null; Values = Ints v; Uncertainty = None }
         | None -> asFloats null
     | Some "#bool" ->
         match (if hasEmpty then None else all parseBool cells) with
-        | Some v -> Ok { Name = name; Unit = null; Values = Bools v }
+        | Some v -> Ok { Name = name; Unit = null; Values = Bools v; Uncertainty = None }
         | None -> asText ()
     | Some "#date" ->
         match (if hasEmpty then None else all parseDate cells) with
-        | Some v -> Ok { Name = name; Unit = null; Values = Dates v }
+        | Some v -> Ok { Name = name; Unit = null; Values = Dates v; Uncertainty = None }
         | None -> asText ()
     | Some m when m.StartsWith "#" -> Error $"column {name} is marked {m}, which is no type"
     | Some unit -> asFloats (if unit = "" then null else unit)
     | None ->
         // No unit row: the type the cells show.
         if filled.Length > 0 && not hasEmpty && (all parseInt filled).IsSome then
-            Ok { Name = name; Unit = null; Values = Ints(cells |> Array.map (parseInt >> Option.get)) }
+            Ok { Name = name; Unit = null; Values = Ints(cells |> Array.map (parseInt >> Option.get)); Uncertainty = None }
         elif (floats cells).IsSome && filled.Length > 0 then
             asFloats null
         elif filled.Length > 0 && not hasEmpty && (all parseBool filled).IsSome then
-            Ok { Name = name; Unit = null; Values = Bools(cells |> Array.map (parseBool >> Option.get)) }
+            Ok { Name = name; Unit = null; Values = Bools(cells |> Array.map (parseBool >> Option.get)); Uncertainty = None }
         elif filled.Length > 0 && not hasEmpty && (all parseDate filled).IsSome then
-            Ok { Name = name; Unit = null; Values = Dates(cells |> Array.map (parseDate >> Option.get)) }
+            Ok { Name = name; Unit = null; Values = Dates(cells |> Array.map (parseDate >> Option.get)); Uncertainty = None }
         else
             asText ()
 

@@ -27,12 +27,48 @@ module CellText =
         | Bools a -> if a.[row] then "true" else "false"
         | Dates a -> a.[row].ToString("yyyy-MM-dd HH:mm:ss.FFFFFF", invariant)
 
+    /// A row's own uncertainty in a column whose declaration states one, as stated (in the
+    /// column's unit and the declaration's spread), and that spread; None where it has none.
+    let ownUncertainty (t: Table) (j: int) (row: int) : (float * Spread) option =
+        let c = t.Columns.[j]
+
+        match c.Values, c.Uncertainty with
+        | Floats _, Some { PerReading = Some p } when Uncertainty.fromColumn p ->
+            match Uncertainty.companionIn t c with
+            | Some(_, { Values = Floats us }) when row < us.Length && not (Double.IsNaN us.[row]) -> Some(us.[row], p.Spread)
+            | _ -> None
+        | Floats _, Some { PerReading = Some p } -> Some(p.Value, p.Spread)
+        | _ -> None
+
+    /// The text the grid shows for a cell of a table: a value with its own uncertainty as the
+    /// preference writes it, where its column states one. A spread other than a standard
+    /// uncertainty is written with ±, since the concise form means a standard uncertainty.
+    let shownIn (t: Table) (j: int) (row: int) =
+        match t.Columns.[j].Values, ownUncertainty t j row with
+        | Floats a, Some(u, spread) when not (Double.IsNaN a.[row]) ->
+            let form =
+                if spread = Spread.Standard && Preferences.Live.Current.UncertaintyForm = "concise" then Uncertainty.Concise
+                else Uncertainty.PlusMinus
+
+            Uncertainty.format form a.[row] u
+        | v, _ -> shown v row
+
     /// The text a cell is edited and copied as: every digit a float holds.
     let exact (values: Values) (row: int) =
         match values with
         | Floats a -> if Double.IsNaN a.[row] then "" else a.[row].ToString("R", invariant)
         | Dates a -> a.[row].ToString("o", invariant)
         | v -> shown v row
+
+    /// The text a cell of a table is edited as: a value with its own uncertainty, every digit of
+    /// each, where its column takes each row's from `u(name)`.
+    let exactIn (t: Table) (j: int) (row: int) =
+        match t.Columns.[j].Values, t.Columns.[j].Uncertainty with
+        | Floats a, Some { PerReading = Some p } when Uncertainty.fromColumn p && not (Double.IsNaN a.[row]) ->
+            match ownUncertainty t j row with
+            | Some(u, _) -> a.[row].ToString("R", invariant) + " ± " + u.ToString("R", invariant)
+            | None -> exact t.Columns.[j].Values row
+        | v, _ -> exact v row
 
     /// Typed text as one value of a column's type, or why it is not one.
     let parse (kind: string) (text: string) : Result<Values, string> =
@@ -144,6 +180,8 @@ module GridCommand =
         | FillDown
         | InsertColumn
         | RenameColumn
+        | DeclareUncertainty
+        | CombineReadings
         | DeleteColumns
 
     /// Each command's name in the menus and its key while the grid has the focus, in the menus'
@@ -161,6 +199,8 @@ module GridCommand =
           DeleteRows, "D_elete rows", "Ctrl+OemMinus"
           InsertColumn, "_Insert column", ""
           RenameColumn, "Re_name column", ""
+          DeclareUncertainty, "_Uncertainty…", ""
+          CombineReadings, "Co_mbine as readings", ""
           DeleteColumns, "Delete co_lumns", "" ]
 
     /// Where the menus draw a line: before the rows' commands and before the columns'.
@@ -285,7 +325,12 @@ module GridCommand =
         | CopyRows
         | PasteRows
         | InsertColumn
-        | RenameColumn -> []
+        | RenameColumn
+        | DeclareUncertainty
+        | CombineReadings -> []
+
+    /// The selected columns on screen, left to right.
+    let columnsOf (s: Selection) = shown s
 
 /// A cell of the grid, by column and row.
 [<Struct>]
@@ -335,6 +380,7 @@ type TableGrid() as this =
     let refused = Event<string>()
     let header = Event<int>()
     let insertColumn = Event<int>()
+    let uncertainty = Event<int>()
 
     let mutable table: Table option = None
     let mutable top = 0
@@ -638,7 +684,9 @@ type TableGrid() as this =
         | Some t when j >= 0 && j < t.Columns.Length ->
             let c = t.Columns.[j]
             let collapsed = if isCollapsed j then " (collapsed: a click opens it)" else ""
-            (if String.IsNullOrEmpty c.Unit then $"{c.Name} ({kindOf c})" else $"{c.Name} [{c.Unit}]") + collapsed
+            (if String.IsNullOrEmpty c.Unit then $"{c.Name} ({kindOf c})" else $"{c.Name} [{c.Unit}]")
+            + collapsed
+            + (match c.Uncertainty with Some u -> "\n" + Uncertainty.explain c.Name u | None -> "")
         | _ -> null
 
     let bringIntoView (c: CellRef) =
@@ -742,6 +790,15 @@ type TableGrid() as this =
         | Some c, Some t when commit ->
             let column = t.Columns.[c.Column]
 
+            match (match column.Values with Floats _ -> Uncertainty.parse editor.Text | _ -> None) with
+            | Some(value, u) ->
+                editing <- None
+                editor.IsVisible <- false
+                edited.Trigger(TableEdit.setMeasured t c.Column c.Row value u)
+                this.Focus() |> ignore
+                moveTo { c with Row = c.Row + 1 } false
+            | None ->
+
             match CellText.parse column.Values.Kind editor.Text with
             | Ok value ->
                 editing <- None
@@ -767,7 +824,7 @@ type TableGrid() as this =
         | Some t when columns () > 0 && rows () > 0 ->
             bringIntoView focus
             editing <- Some focus
-            editor.Text <- (match initial with Some s -> s | None -> CellText.exact t.Columns.[focus.Column].Values focus.Row)
+            editor.Text <- (match initial with Some s -> s | None -> CellText.exactIn t focus.Column focus.Row)
             editor.BorderBrush <- SolidColorBrush (Palette.forVariant this.ActualThemeVariant).Accent
             ToolTip.SetTip(editor, null)
             editor.IsVisible <- true
@@ -862,6 +919,8 @@ type TableGrid() as this =
             | GridCommand.PasteRows -> withPasted (fun block -> report (GridCommand.pasteRows t (selection ()) block))
             | GridCommand.InsertColumn -> insertColumn.Trigger s.C0
             | GridCommand.RenameColumn -> header.Trigger s.C0
+            | GridCommand.DeclareUncertainty -> uncertainty.Trigger focus.Column
+            | GridCommand.CombineReadings -> report (TableEdit.combineReadings t (GridCommand.columnsOf s))
             | GridCommand.InsertRowAbove
             | GridCommand.InsertRowBelow -> report (Ok(GridCommand.edits kind t s))
             | _ when any -> report (Ok(GridCommand.edits kind t s))
@@ -961,6 +1020,10 @@ type TableGrid() as this =
     /// Insert column taken: where the new column goes.
     [<CLIEvent>]
     member _.InsertColumnAt = insertColumn.Publish
+
+    /// Uncertainty… taken: the column whose uncertainty is to be declared.
+    [<CLIEvent>]
+    member _.UncertaintyOf = uncertainty.Publish
 
     /// Takes a command on the selection, as its menu entry or its key does.
     member _.Run(kind: GridCommand.Kind) = run kind
@@ -1118,7 +1181,7 @@ type TableGrid() as this =
                 else
                     let inner = columnWidth - 2.0 * Tokens.Space.s2
                     dc.DrawText(trimmed column.Name bold Tokens.Type.ui inner (SolidColorBrush look.Text), Point(x + Tokens.Space.s2, Tokens.Space.s1))
-                    dc.DrawText(trimmed (kindOf column) typeface Tokens.Type.small inner dim, Point(x + Tokens.Space.s2, headerHeight - Tokens.Space.s1 - Tokens.Type.smallLine))
+                    dc.DrawText(trimmed (kindOf column + Uncertainty.mark column) typeface Tokens.Type.small inner dim, Point(x + Tokens.Space.s2, headerHeight - Tokens.Space.s1 - Tokens.Type.smallLine))
 
                     // The column's cells in view, clipped to it.
                     use _ = dc.PushClip(Rect(x + Tokens.border, headerHeight, columnWidth - 2.0 * Tokens.border, bounds.Height - headerHeight))
@@ -1130,7 +1193,7 @@ type TableGrid() as this =
                         | _ -> false
 
                     for i in 0 .. shownRows - 1 do
-                        let shown = (CellText.shown column.Values (top + i)).Replace('\n', '⏎').Replace('\r', '⏎')
+                        let shown = (CellText.shownIn t j (top + i)).Replace('\n', '⏎').Replace('\r', '⏎')
 
                         if shown <> "" then
                             let y = headerHeight + float i * rowHeight + textTop
@@ -1193,8 +1256,20 @@ type TableGrid() as this =
             this.Cursor <- (if (edgeAt p).IsSome then resizeCursor.Value else null)
 
             let tip =
-                match hit p with
-                | Some(OnColumnHeader c) -> fullName c
+                match hit p, table with
+                | Some(OnColumnHeader c), _ -> fullName c
+                // A value with its uncertainty: every digit of each, and what the uncertainty is.
+                | Some(OnCell cell), Some t when cell.Column < t.Columns.Length && t.Columns.[cell.Column].Uncertainty.IsSome && cell.Row < t.Rows ->
+                    let c = t.Columns.[cell.Column]
+                    let value = CellText.exact c.Values cell.Row
+
+                    match CellText.ownUncertainty t cell.Column cell.Row with
+                    | Some(u, spread) when value <> "" ->
+                        let standard = Uncertainty.standard spread u
+                        let unit = if String.IsNullOrEmpty c.Unit then "" else " " + c.Unit
+                        let stated = if spread = Spread.Standard then "" else $" ({Uncertainty.describe spread}: {u.ToString(CultureInfo.InvariantCulture)})"
+                        $"{value} ± {standard.ToString(CultureInfo.InvariantCulture)}{unit}, a standard uncertainty{stated}"
+                    | _ -> if value = "" then null else value
                 | _ -> null
 
             if not (Object.Equals(ToolTip.GetTip this, tip)) then ToolTip.SetTip(this, tip)

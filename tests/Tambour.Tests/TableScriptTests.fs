@@ -38,10 +38,10 @@ let private project (rows: int) =
     let t = Array.init rows (fun i -> float i * 0.001)
 
     let columns =
-        [ { Name = "Time"; Unit = "s"; Values = Floats t }
-          { Name = "Displacement"; Unit = "m"; Values = Floats(t |> Array.map (fun t -> 4.905 * t * t)) }
+        [ { Name = "Time"; Unit = "s"; Values = Floats t; Uncertainty = None }
+          { Name = "Displacement"; Unit = "m"; Values = Floats(t |> Array.map (fun t -> 4.905 * t * t)); Uncertainty = None }
           if rows <= Arrow.Threshold then
-              { Name = "Sample"; Unit = null; Values = Texts(Array.init rows (fun i -> $"S{i % 3}")) } ]
+              { Name = "Sample"; Unit = null; Values = Texts(Array.init rows (fun i -> $"S{i % 3}")); Uncertainty = None } ]
 
     let table = { Name = "trials"; Columns = columns }
     let file = if rows > Arrow.Threshold then "trials.arrow" else "trials.csv"

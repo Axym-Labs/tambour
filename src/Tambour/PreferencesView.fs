@@ -88,6 +88,7 @@ type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit, proje
                                                 Ligatures = next.Ligatures
                                                 RunOnSave = next.RunOnSave
                                                 ExportFormat = next.ExportFormat
+                                                UncertaintyForm = next.UncertaintyForm
                                                 RecentKeep = next.RecentKeep
                                                 Keys = next.Keys
                                                 Theme = next.Theme }
@@ -161,7 +162,14 @@ type PreferencesWindow(shortcuts: Shortcut list, openFile: string -> unit, proje
 
             row.Children.Add b
 
-        section "Appearance" [ "Theme", row ]
+        let forms = [ "concise", "1.234(5)"; "plusminus", "1.234 ± 0.005" ]
+        let form = ComboBox(Name = "uncertainty form", ItemsSource = (forms |> List.map snd), SelectedItem = (forms |> List.tryFind (fst >> (=) (current ()).UncertaintyForm) |> Option.map snd |> Option.defaultValue "1.234(5)"), Width = 160.0)
+        form.SelectionChanged.Add(fun _ -> match forms |> List.tryFind (fun (_, shown) -> Object.Equals(form.SelectedItem, shown)) with Some(f, _) -> apply (fun p -> { p with UncertaintyForm = f }) | None -> ())
+        let formRow = StackPanel(Orientation = Orientation.Horizontal, Spacing = Tokens.Space.s2)
+        formRow.Children.Add form
+        formRow.Children.Add(text "a value with its uncertainty, in the grid" (look ()).Dim)
+
+        section "Appearance" [ "Theme", row; "Uncertainty", formRow ]
 
     and editor () : Control =
         let p = current ()

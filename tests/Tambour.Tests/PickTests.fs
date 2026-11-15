@@ -56,7 +56,7 @@ let ``the plot block for two columns compiles under their witnesses, and an unty
     Assert.Equal(Some "(U.div (U.mul U.kilogram U.metre) (U.square U.second))", Prelude.witness "kg m s-2")
     Assert.Equal(None, Prelude.witness "ppm")
 
-    let table = { Name = "trials"; Columns = [ { Name = "Time"; Unit = "s"; Values = Floats [| 0.0 |] }; { Name = "conc"; Unit = "ppm"; Values = Floats [| 1.0 |] }; { Name = "Run"; Unit = null; Values = Texts [| "a" |] } ] }
+    let table = { Name = "trials"; Columns = [ { Name = "Time"; Unit = "s"; Values = Floats [| 0.0 |]; Uncertainty = None }; { Name = "conc"; Unit = "ppm"; Values = Floats [| 1.0 |]; Uncertainty = None }; { Name = "Run"; Unit = null; Values = Texts [| "a" |]; Uncertainty = None } ] }
 
     match Plotting.plotColumns "let fig = 1\n" table [ 0; 1; 2 ] with
     | Ok(text, name) ->
@@ -74,7 +74,7 @@ let ``a pick at each marker's centre names its row, on a scatter of ten thousand
         let random = Random 11
         let xs = Array.init (n * n) (fun k -> float (k % n) + 0.2 * random.NextDouble())
         let ys = Array.init (n * n) (fun k -> float (k / n) * 0.01 + 0.002 * random.NextDouble())
-        let table = { Name = "lattice"; Columns = [ { Name = "X"; Unit = "s"; Values = Floats xs }; { Name = "Y"; Unit = "km"; Values = Floats ys } ] }
+        let table = { Name = "lattice"; Columns = [ { Name = "X"; Unit = "s"; Values = Floats xs; Uncertainty = None }; { Name = "Y"; Unit = "km"; Values = Floats ys; Uncertainty = None } ] }
         let dir = (Directory.CreateTempSubdirectory "tambour-pick").FullName
         Tables.writePrelude dir [ { Table = table; File = "lattice.csv" } ] |> ignore
         let text, name = Plotting.plotColumns "" table [ 0; 1 ] |> Result.defaultWith failwith

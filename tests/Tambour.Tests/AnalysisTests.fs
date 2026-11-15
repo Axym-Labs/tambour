@@ -267,8 +267,8 @@ let ``the project's prelude is checked as its own module, without problems`` () 
     let table: Tambour.Data.Table =
         { Name = "trial"
           Columns =
-            [ { Name = "t"; Unit = "s"; Values = Tambour.Data.Floats [| 0.0; 1.0 |] }
-              { Name = "test_results.AUC"; Unit = null; Values = Tambour.Data.Floats [| 0.9; 0.95 |] } ] }
+            [ { Name = "t"; Unit = "s"; Values = Tambour.Data.Floats [| 0.0; 1.0 |]; Uncertainty = None }
+              { Name = "test_results.AUC"; Unit = null; Values = Tambour.Data.Floats [| 0.9; 0.95 |]; Uncertainty = None } ] }
 
     let prelude = Tambour.Data.Prelude.generate [ { Tambour.Data.Prelude.Table = table; Tambour.Data.Prelude.File = "trial.csv" } ]
     Assert.True(Analysis.ownsModule prelude)
@@ -289,7 +289,7 @@ let ``a script beside the prelude completes a table's name, whether it loads it 
 
     let table: Tambour.Data.Table =
         { Name = "pretrained"
-          Columns = [ { Name = "soma_rmse_mv"; Unit = null; Values = Tambour.Data.Floats [| 3.2; 3.5 |] } ] }
+          Columns = [ { Name = "soma_rmse_mv"; Unit = null; Values = Tambour.Data.Floats [| 3.2; 3.5 |]; Uncertainty = None } ] }
 
     File.WriteAllText(Path.Combine(dir, "prelude.fsx"), Tambour.Data.Prelude.generate [ { Tambour.Data.Prelude.Table = table; Tambour.Data.Prelude.File = "pretrained.csv" } ])
     let path = Path.Combine(dir, "figure.fsx")
@@ -410,8 +410,8 @@ let ``a call on a table's columns is found on the script's line, and fixed`` (lo
     let table: Tambour.Data.Table =
         { Name = "runs"
           Columns =
-            [ { Name = "time"; Unit = "s"; Values = Tambour.Data.Floats [| 0.0; 1.0 |] }
-              { Name = "height"; Unit = "m"; Values = Tambour.Data.Floats [| 2.0; 3.0 |] } ] }
+            [ { Name = "time"; Unit = "s"; Values = Tambour.Data.Floats [| 0.0; 1.0 |]; Uncertainty = None }
+              { Name = "height"; Unit = "m"; Values = Tambour.Data.Floats [| 2.0; 3.0 |]; Uncertainty = None } ] }
 
     File.WriteAllText(Path.Combine(dir, "prelude.fsx"), Tambour.Data.Prelude.generate [ { Tambour.Data.Prelude.Table = table; Tambour.Data.Prelude.File = "runs.csv" } ])
     let path = Path.Combine(dir, "figure.fsx")
