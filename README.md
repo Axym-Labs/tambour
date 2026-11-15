@@ -41,6 +41,14 @@ at once; on whole rows already empty, Delete removes them. Selecting two columns
 them into the script; a point picked in the figure marks its row in the grid. Edits to a table
 run the figure again and are undone like the script's.
 
+**Uncertainties.** A float column's *Uncertainty…* (its menu) states what each reading's own is
+(a resolution, a ± per reading, a standard uncertainty, a certificate's U and k) and what is
+shared by every reading (a calibration, a zero offset), in the lab's words. Typing `1.234 ± 0.005`
+or `1.234(5)` in a cell keeps each row's own in a column `u(name)` beside it, so the CSV reads
+anywhere. *Combine as readings* turns repeated readings into their means with s/√n. The script
+sees such a column as `Uncertain<m>` (Marey.Uncertainty), plotted with its error bars, and a
+value with its uncertainty that a script binds is shown beside the figures as its budget.
+
 **Workspaces.** Each tab is a workspace with its own scripts, tables, history and worker; nothing
 is shared between tabs. A new workspace saves as a single `.tambour` file: a zip holding the
 scripts, the tables, the workspace's settings and the figure last shown, which serves as its

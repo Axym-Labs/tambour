@@ -17,6 +17,9 @@ let Threshold = 100_000
 [<Literal>]
 let private UnitKey = "tambour.unit"
 
+[<Literal>]
+let private UncertaintyKey = "tambour.uncertainty"
+
 let private timestamp = TimestampType(TimeUnit.Microsecond, "UTC")
 
 let private arrayOf (values: Values) : IArrowArray * IArrowType =
@@ -42,9 +45,15 @@ let write (stream: Stream) (table: Tambour.Data.Table) =
     let fields =
         arrays
         |> List.map (fun (c, (_, t)) ->
+            let entries =
+                [ if not (String.IsNullOrEmpty c.Unit) then UnitKey, c.Unit
+                  match c.Uncertainty with
+                  | Some u -> UncertaintyKey, Uncertainty.toJson u
+                  | None -> () ]
+
             let metadata =
-                if String.IsNullOrEmpty c.Unit then null
-                else Collections.Generic.Dictionary(dict [ UnitKey, c.Unit ]) :> Collections.Generic.IReadOnlyDictionary<string, string>
+                if entries.IsEmpty then null
+                else Collections.Generic.Dictionary(dict entries) :> Collections.Generic.IReadOnlyDictionary<string, string>
 
             Field(c.Name, t, false, metadata))
 
@@ -108,9 +117,18 @@ let read (name: string) (stream: Stream) : Result<Tambour.Data.Table, string> =
                           | true, u -> u
                           | _ -> null
 
+                  let uncertainty =
+                      match field.Metadata with
+                      | null -> None
+                      | m ->
+                          match m.TryGetValue UncertaintyKey with
+                          | true, u -> Uncertainty.ofJson u
+                          | _ -> None
+
                   { Name = field.Name
                     Unit = unit
-                    Values = valuesOf field [ for b in batches -> b.Column j ] } ]
+                    Values = valuesOf field [ for b in batches -> b.Column j ]
+                    Uncertainty = uncertainty } ]
 
         Tambour.Data.Table.create name columns
     with e ->

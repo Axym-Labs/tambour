@@ -46,12 +46,54 @@ type Values =
 
     override this.GetHashCode() = hash (this.Kind, this.Length)
 
+/// How a stated uncertainty is given, as a lab's instrument or certificate gives it.
+[<RequireQualifiedAccess>]
+type Spread =
+    /// A standard uncertainty, u itself.
+    | Standard
+    /// The half-width a of a rectangular distribution: u = a/√3.
+    | Rectangular
+    /// The half-width a of a triangular distribution: u = a/√6.
+    | Triangular
+    /// The step of the last digit read: a rectangular half-width of step/2, u = step/√12.
+    | Resolution
+    /// An expanded uncertainty U at a coverage factor k: u = U/k.
+    | Expanded of k: float
+
+/// One part of a column's uncertainty: how it is given, its value in the column's unit, and what
+/// it is in the lab's words ("ruler resolution"). Two parts are equal when each row's own value
+/// (nan) is on both.
+[<CustomEquality; NoComparison>]
+type Part =
+    { Spread: Spread
+      /// In the column's unit; nan where each row has its own, in the column `u(name)`.
+      Value: float
+      Source: string }
+
+    override this.Equals(other) =
+        match other with
+        | :? Part as p -> p.Spread = this.Spread && p.Source = this.Source && (p.Value = this.Value || (Double.IsNaN p.Value && Double.IsNaN this.Value))
+        | _ -> false
+
+    override this.GetHashCode() = hash (this.Spread, this.Source)
+
+/// What a float column's uncertainty is, as declared. A reading's own part is a new independent
+/// input for every row; a shared part is one input for the whole column, so it cancels in a
+/// difference and does not average down.
+type Uncertainty =
+    { PerReading: Part option
+      Shared: Part option
+      /// The degrees of freedom of each reading's own part: infinity for one stated (type B),
+      /// n − 1 for a mean of n readings.
+      Dof: float }
+
 /// A column: its name, the unit its values are in (a float column's only; null or empty for
-/// none), and its values.
+/// none), its values, and the uncertainty declared for them (a float column's only).
 type Column =
     { Name: string
       Unit: string
-      Values: Values }
+      Values: Values
+      Uncertainty: Uncertainty option }
 
 /// A table: its name and its columns, every one the same length.
 type Table =
@@ -81,6 +123,8 @@ module Table =
             Error "two columns have the same name"
         elif columns |> List.exists (fun c -> not (String.IsNullOrEmpty c.Unit) && c.Values.Kind <> "float") then
             Error "only a float column carries a unit"
+        elif columns |> List.exists (fun c -> c.Uncertainty.IsSome && c.Values.Kind <> "float") then
+            Error "only a float column carries an uncertainty"
         elif columns |> List.exists (fun c -> not (isNull c.Unit) && c.Unit.StartsWith "#") then
             Error "a unit does not start with #, which marks a column's type in the file"
         elif

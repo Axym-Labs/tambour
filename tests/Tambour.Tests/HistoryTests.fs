@@ -252,9 +252,9 @@ let private tableSteps =
 let private trials =
     { Tambour.Data.Table.Name = "trials"
       Tambour.Data.Table.Columns =
-        [ { Name = "Time"; Unit = "s"; Values = Tambour.Data.Floats(Array.init 20 (fun i -> float i * 0.1)) }
-          { Name = "Displacement"; Unit = "m"; Values = Tambour.Data.Floats(Array.init 20 (fun i -> float (i * i))) }
-          { Name = "Sample"; Unit = null; Values = Tambour.Data.Texts(Array.init 20 (fun i -> $"S{i % 3}")) } ] }
+        [ { Name = "Time"; Unit = "s"; Values = Tambour.Data.Floats(Array.init 20 (fun i -> float i * 0.1)); Uncertainty = None }
+          { Name = "Displacement"; Unit = "m"; Values = Tambour.Data.Floats(Array.init 20 (fun i -> float (i * i))); Uncertainty = None }
+          { Name = "Sample"; Unit = null; Values = Tambour.Data.Texts(Array.init 20 (fun i -> $"S{i % 3}")); Uncertainty = None } ] }
 
 /// A value of a column's type from a seed.
 let private valueOf (kind: string) (seed: int) =

@@ -185,6 +185,7 @@ module Sheet =
     let onRefused f = subscription "Refused" (fun g -> g.Refused) f
     let onHeaderActivated f = subscription "HeaderActivated" (fun g -> g.HeaderActivated) f
     let onInsertColumnAt f = subscription "InsertColumnAt" (fun g -> g.InsertColumnAt) f
+    let onUncertaintyOf f = subscription "UncertaintyOf" (fun g -> g.UncertaintyOf) f
 
 /// The script the window opens with.
 let example =
@@ -327,6 +328,8 @@ type Model =
       /// The column whose header is being edited, by table and place; a new column as -1 - the
       /// place it goes.
       Header: (string * int) option
+      /// The column whose uncertainty is being declared, by table and place.
+      Declaring: (string * int) option
       /// The columns selected in a table's grid.
       TableSelection: (string * int list) option
       /// A figure to show once a run binds it, as one just written for the selected columns.
@@ -411,6 +414,10 @@ type Msg =
     | EditHeader of table: string * column: int
     | ApplyHeader
     | CloseHeader
+    /// The form for a float column's uncertainty, opened, applied and closed.
+    | DeclareUncertainty of table: string * column: int
+    | ApplyUncertainty
+    | CloseUncertainty
     | NewTable
     | ChooseImport
     | Import of string
@@ -542,6 +549,7 @@ let init (script: string) () : Model * Cmd<Msg> =
       TableFiles = []
       Tab = 0
       Header = None
+      Declaring = None
       TableSelection = None
       ShowFigure = None
       Picking = None
@@ -644,8 +652,59 @@ let private writeProject (model: Model) =
                            { Table = name
                              Widths = [| for KeyValue(c, w) in l.Widths -> { Column = c; Width = w } |]
                              Hidden = Array.ofSeq l.Hidden
-                             Collapsed = Array.ofSeq l.Collapsed } : Project.TableColumns |] }
+                             Collapsed = Array.ofSeq l.Collapsed } : Project.TableColumns |]
+                // As the tables were saved: a declaration not saved yet waits for its table's file.
+                Uncertainty = Project.uncertaintiesOf model.SavedTables.Values }
     | _ -> ()
+
+/// A declaration from the uncertainty form's fields: each part none, or stated with its spread,
+/// its value (or each row's own, in `u(name)`) and its source; or why it is not one.
+let private declarationOf (inputs: Map<string, string>) : Result<Tambour.Data.Uncertainty option, string> =
+    let field f = inputs.TryFind f |> Option.defaultValue ""
+    let invariant = Globalization.CultureInfo.InvariantCulture
+
+    let number (what: string) (text: string) =
+        match Double.TryParse(text.Trim(), Globalization.NumberStyles.Float, invariant) with
+        | true, v when v >= 0.0 && Double.IsFinite v -> Ok v
+        | _ -> Error $"{what} is a number, zero or more, and this is \"{text}\""
+
+    let part (prefix: string) (what: string) : Result<Tambour.Data.Part option, string> =
+        match field prefix with
+        | "none" | "" -> Ok None
+        | kind ->
+            let spread =
+                match field (prefix + " spread") with
+                | "rectangular" -> Ok Tambour.Data.Spread.Rectangular
+                | "triangular" -> Ok Tambour.Data.Spread.Triangular
+                | "resolution" -> Ok Tambour.Data.Spread.Resolution
+                | "expanded" ->
+                    number $"{what}'s coverage factor k" (field (prefix + " k"))
+                    |> Result.bind (fun k -> if k > 0.0 then Ok(Tambour.Data.Spread.Expanded k) else Error "a coverage factor k is more than zero")
+                | _ -> Ok Tambour.Data.Spread.Standard
+
+            let value = if kind = "column" then Ok nan else number $"{what}'s value" (field (prefix + " value"))
+
+            match spread, value with
+            | Error why, _
+            | _, Error why -> Error why
+            | Ok spread, Ok value -> Ok(Some { Tambour.Data.Part.Spread = spread; Value = value; Source = (field (prefix + " source")).Trim() })
+
+    let dof =
+        match (field "u dof").Trim() with
+        | "" | "∞" | "inf" -> Ok infinity
+        | text ->
+            match Double.TryParse(text, Globalization.NumberStyles.Float, invariant) with
+            | true, v when v > 0.0 -> Ok v
+            | _ -> Error $"degrees of freedom are a number more than zero, or blank for infinitely many, and this is \"{text}\""
+
+    match part "u own" "each reading's own", part "u shared" "the shared part", dof with
+    | Error why, _, _
+    | _, Error why, _
+    | _, _, Error why -> Error why
+    | Ok None, Ok None, _ -> Ok None
+    | Ok own, Ok shared, Ok dof ->
+        let declared: Tambour.Data.Uncertainty = { PerReading = own; Shared = shared; Dof = dof }
+        Ok(Some declared)
 
 /// The tables by name, as the history holds them.
 let private tablesOf (model: Model) =
@@ -1192,6 +1251,7 @@ let rec update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 match opened.Project with
                 | Some dir ->
                     let tables, unread = Tables.load dir
+                    let tables = tables |> List.map (fun s -> { s with Table = Project.declare opened.Settings s.Table })
                     if not tables.IsEmpty then Tables.writePrelude dir tables |> ignore
                     tables, unread
                 | None -> [], []
@@ -1270,8 +1330,8 @@ let rec update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                         model
 
                 File.WriteAllText(path, model.Script)
-                writeProject model
                 let model = saveTables model
+                writeProject model
 
                 match model.Bundle, model.Project with
                 | Some file, Some dir ->
@@ -1397,19 +1457,71 @@ let rec update (env: Env) (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     Ok(Tambour.Data.TableEdit.addColumn t (min (-1 - i) t.Columns.Length) (field "header name") kind unit)
                 else
                     retype t.Columns.[i].Values kind
-                    |> Result.map (fun v -> Tambour.Data.TableEdit.changeColumn t i { Name = field "header name"; Unit = unit; Values = v })
+                    |> Result.map (fun v -> Tambour.Data.TableEdit.changeColumn t i { Name = field "header name"; Unit = unit; Values = v; Uncertainty = (if kind = "float" then t.Columns.[i].Uncertainty else None) })
 
-            match edit with
+            // A renamed column's `u(name)` goes with it, where its declaration reads it.
+            let edits =
+                edit
+                |> Result.map (fun e ->
+                    match i >= 0, (if i >= 0 then Tambour.Data.Uncertainty.companionIn t t.Columns.[i] else None) with
+                    | true, Some(j, companion) when field "header name" <> t.Columns.[i].Name && Tambour.Data.Uncertainty.usesCompanion t.Columns.[i] ->
+                        [ e; Tambour.Data.TableEdit.changeColumn t j { companion with Name = Tambour.Data.Uncertainty.companion (field "header name") } ]
+                    | _ -> [ e ])
+
+            match edits with
             | Error why -> { model with ActionNote = $"not done: {why}" }, Cmd.none
-            | Ok e ->
-                let after = (Tambour.Data.TableEdit.apply (Map.ofList [ t.Name, t ]) e).[t.Name]
+            | Ok es ->
+                let after = (es |> List.fold Tambour.Data.TableEdit.apply (Map.ofList [ t.Name, t ])).[t.Name]
 
                 match Tambour.Data.Table.create after.Name after.Columns with
                 | Error why -> { model with ActionNote = $"not done: {why}" }, Cmd.none
-                | Ok _ -> { model with Header = None }, Cmd.ofMsg (TableEdited [ e ])
+                | Ok _ -> { model with Header = None }, Cmd.ofMsg (TableEdited es)
+    | DeclareUncertainty(table, column) ->
+        match model.Tables |> List.tryFind (fun s -> s.Table.Name = table) |> Option.bind (fun s -> List.tryItem column s.Table.Columns) with
+        | Some c when c.Values.Kind = "float" ->
+            let text (x: float) = if Double.IsNaN x then "" else x.ToString(Globalization.CultureInfo.InvariantCulture)
+
+            let part (prefix: string) (p: Tambour.Data.Part option) (kind: Tambour.Data.Part -> string) (inputs: Map<string, string>) =
+                match p with
+                | None -> inputs.Add(prefix, "none").Add(prefix + " spread", "standard").Add(prefix + " value", "").Add(prefix + " k", "2").Add(prefix + " source", "")
+                | Some p ->
+                    let spread, k =
+                        match p.Spread with
+                        | Tambour.Data.Spread.Standard -> "standard", "2"
+                        | Tambour.Data.Spread.Rectangular -> "rectangular", "2"
+                        | Tambour.Data.Spread.Triangular -> "triangular", "2"
+                        | Tambour.Data.Spread.Resolution -> "resolution", "2"
+                        | Tambour.Data.Spread.Expanded k -> "expanded", text k
+
+                    inputs.Add(prefix, kind p).Add(prefix + " spread", spread).Add(prefix + " value", text p.Value).Add(prefix + " k", k).Add(prefix + " source", p.Source)
+
+            let u = c.Uncertainty
+            let inputs =
+                model.Inputs
+                |> part "u own" (u |> Option.bind (fun u -> u.PerReading)) (fun p -> if Tambour.Data.Uncertainty.fromColumn p then "column" else "value")
+                |> part "u shared" (u |> Option.bind (fun u -> u.Shared)) (fun _ -> "value")
+                |> fun i -> i.Add("u dof", (match u with Some u when Double.IsFinite u.Dof -> text u.Dof | _ -> ""))
+
+            { model with Declaring = Some(table, column); Header = None; Inputs = inputs }, Cmd.none
+        | Some c -> { model with ActionNote = $"not done: {c.Name} holds {c.Values.Kind}s, and only a float column has an uncertainty" }, Cmd.none
+        | None -> model, Cmd.none
+    | CloseUncertainty -> { model with Declaring = None }, Cmd.none
+    | ApplyUncertainty ->
+        match model.Declaring |> Option.bind (fun (name, i) -> model.Tables |> List.tryFind (fun s -> s.Table.Name = name) |> Option.map (fun s -> s.Table, i)) with
+        | None -> { model with Declaring = None }, Cmd.none
+        | Some(t, i) ->
+            match declarationOf model.Inputs with
+            | Error why -> { model with ActionNote = $"not done: {why}" }, Cmd.none
+            | Ok declaration ->
+                let edits = Tambour.Data.TableEdit.declare t i declaration
+                let after = edits |> List.fold Tambour.Data.TableEdit.apply (Map.ofList [ t.Name, t ])
+
+                match Tambour.Data.Table.create t.Name after.[t.Name].Columns with
+                | Error why -> { model with ActionNote = $"not done: {why}" }, Cmd.none
+                | Ok _ -> { model with Declaring = None }, (if edits.IsEmpty then Cmd.none else Cmd.ofMsg (TableEdited edits))
     | NewTable ->
         let blank = Tambour.Data.Values.blank "float" 10
-        let t: Tambour.Data.Table = { Name = freshName model "table"; Columns = [ { Name = "x"; Unit = null; Values = blank }; { Name = "y"; Unit = null; Values = blank } ] }
+        let t: Tambour.Data.Table = { Name = freshName model "table"; Columns = [ { Name = "x"; Unit = null; Values = blank; Uncertainty = None }; { Name = "y"; Unit = null; Values = blank; Uncertainty = None } ] }
         addShown env t model
     | ChooseImport ->
         let pick () =
@@ -2098,6 +2210,79 @@ let rec private headerView (model: Model) (dispatch: Msg -> unit) (column: int) 
         ]
     ]
 
+/// The form for a float column's uncertainty: each reading's own part and a part shared by every
+/// reading, each stated or not, so which applies is a choice and not a default.
+and private uncertaintyView (model: Model) (dispatch: Msg -> unit) (c: Tambour.Data.Column) (shown: bool) : IView =
+    let field f = model.Inputs.TryFind f |> Option.defaultValue ""
+    let unit = if String.IsNullOrEmpty c.Unit then "" else $" [{c.Unit}]"
+
+    let input name (watermark: string) (width: float) : IView =
+        TextBox.create [
+            TextBox.placeHolderText watermark
+            TextBox.width width
+            TextBox.text (field name)
+            TextBox.onTextChanged ((fun t -> if t <> field name then dispatch (Typed(name, t))), SubPatchOptions.Always)
+        ]
+
+    let choice name (items: (string * string) list) : IView =
+        ComboBox.create [
+            ComboBox.dataItems (items |> List.map snd)
+            ComboBox.selectedIndex (items |> List.tryFindIndex (fst >> (=) (field name)) |> Option.defaultValue 0)
+            ComboBox.onSelectedIndexChanged ((fun i -> if i >= 0 && fst items.[i] <> field name then dispatch (Typed(name, fst items.[i]))), SubPatchOptions.Always)
+        ]
+
+    let spreads =
+        [ "standard", "standard uncertainty u"
+          "resolution", "resolution: the last digit's step"
+          "rectangular", "half-width a, rectangular"
+          "triangular", "half-width a, triangular"
+          "expanded", "expanded U at a factor k" ]
+
+    let part (prefix: string) (title: string) (kinds: (string * string) list) (tip: string) : IView =
+        StackPanel.create [
+            StackPanel.orientation Orientation.Horizontal
+            StackPanel.spacing Tokens.Space.s2
+            StackPanel.children [
+                TextBlock.create [ TextBlock.text title; TextBlock.width 190.0; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.tip tip ]
+                choice prefix kinds
+                if field prefix <> "none" && field prefix <> "" then
+                    choice (prefix + " spread") spreads
+                    if field prefix = "value" then input (prefix + " value") $"value{unit}" 110.0
+                    if field (prefix + " spread") = "expanded" then input (prefix + " k") "k" 50.0
+                    input (prefix + " source") "what it is (ruler, calibration…)" 220.0
+            ]
+        ]
+
+    StackPanel.create [
+        StackPanel.dock Dock.Top
+        StackPanel.isVisible shown
+        StackPanel.spacing Tokens.Space.s1
+        StackPanel.margin (Thickness(Tokens.Space.s2, Tokens.Space.s1))
+        StackPanel.children [
+            TextBlock.create [ TextBlock.text $"Uncertainty of {c.Name}{unit}"; TextBlock.fontWeight FontWeight.SemiBold ]
+            part
+                "u own"
+                "Each reading's own"
+                [ "none", "none"; "value", "the same for every row"; "column", $"each row's, in {Tambour.Data.Uncertainty.companion c.Name}" ]
+                "A new, independent input for every row: a scale's resolution, a meter's ± per reading. It averages down over many readings."
+            part
+                "u shared"
+                "Shared by every reading"
+                [ "none", "none"; "value", "stated" ]
+                "One input for the whole column: a calibration, a zero offset. It cancels in a difference of two readings and does not average down."
+            StackPanel.create [
+                StackPanel.orientation Orientation.Horizontal
+                StackPanel.spacing Tokens.Space.s2
+                StackPanel.children [
+                    TextBlock.create [ TextBlock.text "Degrees of freedom"; TextBlock.width 190.0; TextBlock.verticalAlignment VerticalAlignment.Center; TextBlock.tip "Of each reading's own part: blank for a stated (type B) one, n − 1 for a mean of n readings." ]
+                    input "u dof" "∞" 80.0
+                    Button.create [ Button.content "Apply"; Button.onClick (fun _ -> dispatch ApplyUncertainty) ]
+                    Button.create [ Button.content "Cancel"; Button.onClick (fun _ -> dispatch CloseUncertainty) ]
+                ]
+            ]
+        ]
+    ]
+
 /// A table's tab: what can be done to it, the header's form when one is open, and its grid.
 and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Table) : IView =
     let look = model.Look
@@ -2353,6 +2538,9 @@ and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Ta
             match model.Header with
             | Some(name, column) when name = t.Name -> headerView model dispatch column true
             | _ -> headerView model dispatch -1 false
+            match model.Declaring with
+            | Some(name, column) when name = t.Name && column < t.Columns.Length -> uncertaintyView model dispatch t.Columns.[column] true
+            | _ -> uncertaintyView model dispatch { Name = ""; Unit = null; Values = Tambour.Data.Floats [||]; Uncertainty = None } false
             Sheet.create [
                 Sheet.table t
                 Sheet.marked (match model.Marked with Some(name, rows) when name = t.Name -> rows | _ -> Set.empty)
@@ -2361,6 +2549,7 @@ and private tableView (model: Model) (dispatch: Msg -> unit) (t: Tambour.Data.Ta
                 Sheet.onRefused (fun why -> dispatch (Failed(FormatException why)))
                 Sheet.onHeaderActivated (fun column -> dispatch (EditHeader(t.Name, column)))
                 Sheet.onInsertColumnAt (fun at -> dispatch (EditHeader(t.Name, -1 - at)))
+                Sheet.onUncertaintyOf (fun column -> dispatch (DeclareUncertainty(t.Name, column)))
                 Sheet.layout (model.Layouts.TryFind t.Name |> Option.defaultValue GridLayout.Empty)
                 Sheet.onLayoutChanged (fun l -> dispatch (LaidOut(t.Name, l)))
             ]

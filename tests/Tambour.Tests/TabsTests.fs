@@ -240,7 +240,7 @@ let ``a closed window's tabs take nothing more`` () =
 
 let private trial (name: string) (column: string) : Tambour.Data.Table =
     { Name = name
-      Columns = [ { Name = column; Unit = null; Values = Tambour.Data.Floats [| 1.0; 2.0 |] } ] }
+      Columns = [ { Name = column; Unit = null; Values = Tambour.Data.Floats [| 1.0; 2.0 |]; Uncertainty = None } ] }
 
 /// A workspace's directory: its script, its tables in `tables/`, and `workspace.json`. It opens
 /// with those tables, its prelude reads them from there, and saving keeps them there.

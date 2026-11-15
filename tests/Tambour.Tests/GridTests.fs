@@ -21,9 +21,9 @@ let private limit (ms: float) =
 let private trials =
     { Name = "trials"
       Columns =
-        [ { Name = "Time"; Unit = "s"; Values = Floats [| 0.0; 0.1; 0.2 |] }
-          { Name = "Count"; Unit = null; Values = Ints [| 1; 2; 3 |] }
-          { Name = "Sample"; Unit = null; Values = Texts [| "a"; "b"; "c" |] } ] }
+        [ { Name = "Time"; Unit = "s"; Values = Floats [| 0.0; 0.1; 0.2 |]; Uncertainty = None }
+          { Name = "Count"; Unit = null; Values = Ints [| 1; 2; 3 |]; Uncertainty = None }
+          { Name = "Sample"; Unit = null; Values = Texts [| "a"; "b"; "c" |]; Uncertainty = None } ] }
 
 let private shown (table: Table) =
     let grid = TableGrid(Table = Some table)
@@ -85,7 +85,7 @@ let ``a pasted block runs past the end by adding rows, and Delete blanks the sel
 [<AvaloniaFact>]
 let ``the grid draws a frame over a million rows within 16 ms wherever it is scrolled`` () =
     let rows = 1_000_000
-    let column i unit = { Name = $"c{i}"; Unit = unit; Values = Floats(Array.init rows (fun r -> float r * float (i + 1) / 7.0)) }
+    let column i unit = { Name = $"c{i}"; Unit = unit; Values = Floats(Array.init rows (fun r -> float r * float (i + 1) / 7.0)); Uncertainty = None }
     let table = { Name = "big"; Columns = [ column 0 "s"; column 1 "m"; column 2 "V/m"; column 3 "ppm"; column 4 null ] }
     let grid = TableGrid(Table = Some table)
     let window = Window(Width = 1280.0, Height = 800.0, Content = grid)
@@ -216,7 +216,7 @@ let ``a drag selects a block, Ctrl adds another, and Delete empties them all at 
 /// whole rows are only ever emptied.
 [<AvaloniaFact>]
 let ``Delete on empty whole rows removes them, so a second Delete removes the rows it emptied`` () =
-    let five = { Name = "five"; Columns = [ { Name = "n"; Unit = null; Values = Ints [| 1; 2; 3; 4; 5 |] }; { Name = "s"; Unit = null; Values = Texts [| "a"; "b"; "c"; "d"; "e" |] } ] }
+    let five = { Name = "five"; Columns = [ { Name = "n"; Unit = null; Values = Ints [| 1; 2; 3; 4; 5 |]; Uncertainty = None }; { Name = "s"; Unit = null; Values = Texts [| "a"; "b"; "c"; "d"; "e" |]; Uncertainty = None } ] }
     let grid, window, edits, _ = shown five
     let delete () =
         grid.Focus() |> ignore
@@ -250,7 +250,7 @@ let ``Delete on empty whole rows removes them, so a second Delete removes the ro
 /// A drag down the row numbers selects whole rows, and past the grid's bottom it scrolls on.
 [<AvaloniaFact>]
 let ``a drag over the row numbers selects rows, and scrolls past the grid's edge`` () =
-    let long = { Name = "long"; Columns = [ { Name = "n"; Unit = null; Values = Ints(Array.init 500 id) } ] }
+    let long = { Name = "long"; Columns = [ { Name = "n"; Unit = null; Values = Ints(Array.init 500 id); Uncertainty = None } ] }
     let grid, window, _, _ = shown long
     let header (y: float) = Avalonia.Point(6.0, y)
     let row r = 40.0 + Tokens.Height.gridRow * (float r + 0.5)
@@ -279,9 +279,9 @@ let ``columns fit their content, and an edge dragged or double-clicked changes t
     let wide =
         { Name = "wide"
           Columns =
-            [ { Name = "n"; Unit = null; Values = Ints [| 1; 2; 3 |] }
-              { Name = "a header far longer than any column may be wide, so cut with an ellipsis"; Unit = "m"; Values = Floats [| 1.0; 2.0; 3.0 |] }
-              { Name = "note"; Unit = null; Values = Texts [| "short"; "a somewhat longer note than the others"; "" |] } ] }
+            [ { Name = "n"; Unit = null; Values = Ints [| 1; 2; 3 |]; Uncertainty = None }
+              { Name = "a header far longer than any column may be wide, so cut with an ellipsis"; Unit = "m"; Values = Floats [| 1.0; 2.0; 3.0 |]; Uncertainty = None }
+              { Name = "note"; Unit = null; Values = Texts [| "short"; "a somewhat longer note than the others"; "" |]; Uncertainty = None } ] }
 
     let grid, window, _, _ = shown wide
     let widths () = [ for j in 0..2 -> grid.ColumnWidth j ]
@@ -321,7 +321,7 @@ let ``hidden columns go, collapsed ones keep their place, and the first stays wh
     // Windows' Segoe UI, as they do in Inter.
     let many =
         { Name = "many"
-          Columns = [ for j in 0..23 ->{ Name = $"column {j}"; Unit = "m"; Values = Floats [| float j; 2.0 * float j |] } ] }
+          Columns = [ for j in 0..23 ->{ Name = $"column {j}"; Unit = "m"; Values = Floats [| float j; 2.0 * float j |]; Uncertainty = None } ] }
 
     let grid, window, _, _ = shown many
     let told = ResizeArray<GridLayout>()

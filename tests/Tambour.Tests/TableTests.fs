@@ -64,7 +64,7 @@ let private tables =
                 gen {
                     let! v = values rows
                     let! u = units
-                    return { Name = name; Unit = (match v with Floats _ -> u | _ -> null); Values = v }
+                    return { Name = name; Unit = (match v with Floats _ -> u | _ -> null); Values = v; Uncertainty = None }
                 })
             |> Gen.sequenceToList
 
@@ -129,7 +129,7 @@ let private limit (seconds: float) =
 [<Fact>]
 let ``a million rows of five float columns load from Arrow within a second`` () =
     let rows = 1_000_000
-    let column i = { Name = $"c{i}"; Unit = "m"; Values = Floats(Array.init rows (fun r -> float (r * (i + 1)))) }
+    let column i = { Name = $"c{i}"; Unit = "m"; Values = Floats(Array.init rows (fun r -> float (r * (i + 1)))); Uncertainty = None }
     let table = { Name = "big"; Columns = [ for i in 0..4 -> column i ] }
     let path = Path.Combine(Path.GetTempPath(), $"tambour-{Guid.NewGuid():N}.arrow")
 

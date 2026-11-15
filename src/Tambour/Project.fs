@@ -52,6 +52,13 @@ type TableColumns =
       Hidden: string[]
       Collapsed: string[] }
 
+/// A float column's uncertainty, as `Tambour.Data.Uncertainty.toNode` writes it: kept here for a
+/// table in CSV, which has no place for it, and in the field's metadata for one in Arrow.
+type ColumnUncertainty =
+    { Table: string
+      Column: string
+      Declaration: Nodes.JsonObject }
+
 /// What `project.json` holds.
 type Settings =
     { /// The script that was open, by its name in the directory.
@@ -64,7 +71,10 @@ type Settings =
       /// The height of the panel under the script, in px; 0 for the app's own.
       Bottom: float
       /// How each table's columns are shown; none in a file from before.
-      Columns: TableColumns[] }
+      Columns: TableColumns[]
+      /// The uncertainties declared for the columns of the tables kept as CSV; none in a file from
+      /// before.
+      Uncertainty: ColumnUncertainty[] }
 
 /// The Marey this app runs scripts on.
 let mareyVersion =
@@ -80,7 +90,8 @@ let defaults (script: string) =
       Skia = { Dpi = float Marey.Space.screenDpi; FontFiles = [||] }
       Split = 0.5
       Bottom = 0.0
-      Columns = [||] }
+      Columns = [||]
+      Uncertainty = [||] }
 
 let private json = JsonSerializerOptions(WriteIndented = true)
 
@@ -96,11 +107,37 @@ let read (directory: string) : Settings option =
                 Some
                     { s with
                         Skia = (if isNull (box s.Skia) then (defaults s.Script).Skia else s.Skia)
-                        Columns = (if isNull s.Columns then [||] else s.Columns) }
+                        Columns = (if isNull s.Columns then [||] else s.Columns)
+                        Uncertainty = (if isNull s.Uncertainty then [||] else s.Uncertainty) }
         with _ ->
             None
     else
         None
+
+/// The declarations of the tables' columns kept here, for tables kept as CSV.
+let uncertaintiesOf (tables: Tambour.Data.Table seq) : ColumnUncertainty[] =
+    [| for t in tables do
+           for c in t.Columns do
+               match c.Uncertainty with
+               | Some u -> { Table = t.Name; Column = c.Name; Declaration = Tambour.Data.Uncertainty.toNode u }
+               | None -> () |]
+
+/// A table with the declarations kept for it here put on its columns, where its file has none.
+let declare (settings: Settings option) (table: Tambour.Data.Table) : Tambour.Data.Table =
+    match settings with
+    | Some s when s.Uncertainty.Length > 0 ->
+        { table with
+            Columns =
+                table.Columns
+                |> List.map (fun c ->
+                    match c.Uncertainty, c.Values with
+                    | None, Tambour.Data.Floats _ ->
+                        s.Uncertainty
+                        |> Array.tryFind (fun d -> d.Table = table.Name && d.Column = c.Name)
+                        |> Option.bind (fun d -> Tambour.Data.Uncertainty.ofNode d.Declaration)
+                        |> fun u -> { c with Uncertainty = u }
+                    | _ -> c) }
+    | _ -> table
 
 let write (directory: string) (settings: Settings) =
     File.WriteAllText(settingsPath directory, JsonSerializer.Serialize(settings, json))

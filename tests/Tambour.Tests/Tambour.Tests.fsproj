@@ -31,6 +31,7 @@
     <Compile Include="GridCommandTests.fs" />
     <Compile Include="PreludeAgainTests.fs" />
     <Compile Include="PickTests.fs" />
+    <Compile Include="UncertaintyTests.fs" />
     <Compile Include="ScalingTests.fs" />
   </ItemGroup>
 

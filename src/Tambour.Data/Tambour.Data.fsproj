@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <Compile Include="Table.fs" />
+    <Compile Include="Uncertainty.fs" />
     <Compile Include="Units.fs" />
     <Compile Include="Edit.fs" />
     <Compile Include="Csv.fs" />

@@ -127,19 +127,74 @@ module __TambourWarmup =
         }
 """
 
-/// The value of a binding as a live figure, if it is a figure.
-let private asLive (value: obj) : Live option =
+/// A value with its uncertainty, shown as its budget: the value as reported, the expanded
+/// uncertainty, and a bar per input of its share of the variance, as `Uncertain.budget` has it.
+module Budgets =
+
+    /// Each input's share of the variance, in %, largest first, labelled; and what correlated
+    /// inputs add or take, where there are any.
+    let bars (x: Uncertain<'u>) : (string * float)[] =
+        let b = Uncertain.budget x
+        let seen = Collections.Generic.Dictionary<string, int>()
+
+        // A category per input, so two inputs of one label stay two bars.
+        let unique (label: string) =
+            let label = if String.IsNullOrWhiteSpace label then "unlabelled" else label
+
+            match seen.TryGetValue label with
+            | true, n ->
+                seen.[label] <- n + 1
+                $"{label} ({n + 1})"
+            | _ ->
+                seen.[label] <- 1
+                label
+
+        [| for r in b.Rows do
+               yield unique r.Input.Label, 100.0 * r.Share
+           if abs b.Correlations > 1e-12 then
+               yield "correlations", 100.0 * b.Correlations |]
+
+    /// The expanded uncertainty at 95 %, or why there is none.
+    let expanded (x: Uncertain<'u>) =
+        match Uncertain.dof x with
+        | EffectiveDof.Known _ -> Uncertain.reportExpanded (Uncertain.expanded 0.95 x)
+        | EffectiveDof.Undefined why -> $"No 95 %% interval: {why}"
+
+    /// The budget as a figure, titled with the binding's name and the value; none for a value
+    /// with no input, which has no budget.
+    let figure (name: string) (x: Uncertain<'u>) : Figure option =
+        let bars = bars x
+
+        if bars.Length = 0 then
+            None
+        else
+            Chart.Category.Bar(bars |> Array.map fst, bars |> Array.map snd)
+            |> Chart.withTitle $"{name} = {Uncertain.report x}"
+            |> Chart.withSubtitle (expanded x)
+            |> Chart.withYLabel "share of u², %"
+            |> Some
+
+/// The value of a binding as a live figure, if it is a figure, or a value with its uncertainty,
+/// shown as its budget.
+let private asLive (name: string) (value: obj) : Live option =
     match value with
     | :? Figure as f -> Some(Live.ofControl (Control.constant f))
     | :? Live as l -> Some l
+    // Units of measure are erased, so this is every unit's.
+    | v when not (isNull v) && v.GetType() = typeof<Uncertain<1>> ->
+        Budgets.figure name (unbox<Uncertain<1>> v) |> Option.map (Control.constant >> Live.ofControl)
     | _ -> None
 
 /// A script's `#load "prelude.fsx"`, the project's generated prelude.
 let private preludeLoad = Regex(@"^[ \t]*#load[ \t]+""prelude\.fsx""[ \t]*\r?$", RegexOptions.Multiline)
 
-/// The prelude's bindings of tables: `let mutable <binding>: <Type>[] = Tambour.Data.Bound.rows<Type> "<table>"`.
+/// The prelude's bindings of tables: `let mutable <binding>: <Type>[] = Tambour.Data.Bound.rows<Type> "<table>"`,
+/// or for a table with uncertain columns `… rows<Raw.Type> "<table>" |> Measured.<binding>`.
 let private preludeBinding =
-    Regex(@"^let mutable (?<binding>\S+|``[^`]+``): (?<type>\S+)\[\] = Tambour\.Data\.Bound\.rows<\S+> (?<table>""(?:[^""\\]|\\.)*"")", RegexOptions.Multiline)
+    Regex(
+        @"^let mutable (?<binding>\S+|``[^`]+``): (?<type>\S+)\[\] = Tambour\.Data\.Bound\.rows<(?<raw>\S+)> (?<table>""(?:[^""\\]|\\.)*"")(?: \|> (?<measure>Measured\.(?:``[^`]+``|\S+)))?",
+        RegexOptions.Multiline
+    )
 
 /// An F# interactive session over Marey's assemblies, the table binder and the stated
 /// references, with `TAMBOUR` defined so a project's prelude reads the tables the app sent.
@@ -196,7 +251,11 @@ type Session(references: string seq) =
                 if m.Success then text.Remove(m.Index, m.Length).Insert(m.Index, (if m.Value.EndsWith "\r" then "\r" else ""))
                 else text
             let current = File.ReadAllText file
-            let bindings = [ for b in preludeBinding.Matches current -> b.Groups.["binding"].Value, b.Groups.["type"].Value, b.Groups.["table"].Value ]
+            let bindings =
+                [ for b in preludeBinding.Matches current ->
+                      let raw, table, measure = b.Groups.["raw"].Value, b.Groups.["table"].Value, b.Groups.["measure"]
+                      let read = $"Tambour.Data.Bound.rows<Prelude.{raw}> {table}"
+                      b.Groups.["binding"].Value, (if measure.Success then $"{read} |> Prelude.{measure.Value}" else read), table ]
             let tableOf (literal: string) = Regex.Unescape(literal.Substring(1, literal.Length - 2))
             let versions () = bindings |> List.map (fun (_, _, t) -> t, Tambour.Data.Bound.version (tableOf t)) |> Map.ofList
 
@@ -219,7 +278,7 @@ type Session(references: string seq) =
 
                 let rebind =
                     stale
-                    |> List.map (fun (binding, typ, t) -> $"Prelude.{binding} <- Tambour.Data.Bound.rows<Prelude.{typ}> {t}")
+                    |> List.map (fun (binding, read, _) -> $"Prelude.{binding} <- {read}")
                     |> String.concat "\n"
 
                 if rebind = "" then
@@ -274,7 +333,7 @@ type Session(references: string seq) =
                         && (match before.TryGetValue name with
                             | true, old -> not (obj.ReferenceEquals(old, value))
                             | _ -> true))
-                    |> List.choose (fun (name, value) -> asLive value |> Option.map (fun l -> { Name = name; Live = l }))
+                    |> List.choose (fun (name, value) -> asLive name value |> Option.map (fun l -> { Name = name; Live = l }))
 
                 let it, named = fresh |> List.partition (fun f -> f.Name = "it")
                 named @ it
@@ -303,7 +362,7 @@ type Session(references: string seq) =
 
         match fsi.EvalExpressionNonThrowing "__TambourWarmup.figure" with
         | Choice1Of2(Some v), _ ->
-            match asLive v.ReflectionValue with
+            match asLive "figure" v.ReflectionValue with
             | Some l -> l
             | None -> failwith "the warm-up's figure is not a figure"
         | _ -> failwith "the warm-up bound no figure"

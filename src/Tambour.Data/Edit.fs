@@ -154,7 +154,7 @@ module TableEdit =
         Cells(t.Name, column, row, before, values)
 
     let addColumn (t: Table) (index: int) (name: string) (kind: string) (unit: string) =
-        AddColumn(t.Name, index, { Name = name; Unit = unit; Values = Values.blank kind t.Rows })
+        AddColumn(t.Name, index, { Name = name; Unit = unit; Values = Values.blank kind t.Rows; Uncertainty = None })
 
     let removeColumn (t: Table) (index: int) = RemoveColumn(t.Name, index, t.Columns.[index])
 
@@ -166,3 +166,88 @@ module TableEdit =
 
     let removeRows (t: Table) (row: int) (count: int) =
         RemoveRows(t.Name, row, t.Columns |> List.map (fun c -> Values.slice row count c.Values))
+
+    // ---- Uncertainties ------------------------------------------------------------------------
+
+    /// A column's declaration set, and where it reads each row's own uncertainty from a column
+    /// `u(name)` the table does not have, that column made beside it, filled with the value the
+    /// declaration stated for every row, if any.
+    let declare (t: Table) (column: int) (declaration: Uncertainty option) : TableEdit list =
+        let c = t.Columns.[column]
+        let change = if c.Uncertainty = declaration then [] else [ changeColumn t column { c with Uncertainty = declaration } ]
+
+        let needs =
+            match declaration with
+            | Some { PerReading = Some p } -> Uncertainty.fromColumn p
+            | _ -> false
+
+        match needs, Uncertainty.companionIn t c with
+        | true, None ->
+            let fill =
+                match c.Uncertainty with
+                | Some { PerReading = Some p } when not (Uncertainty.fromColumn p) -> p.Value
+                | _ -> nan
+
+            change
+            @ [ AddColumn(t.Name, column + 1, { Name = Uncertainty.companion c.Name; Unit = c.Unit; Values = Floats(Array.create t.Rows fill); Uncertainty = None }) ]
+        | _ -> change
+
+    /// A value and its own uncertainty set in a row of a float column: the value in the column and
+    /// the uncertainty in `u(name)`, which is made where the table has none, the declaration then
+    /// reading each row's from it (a standard uncertainty, where none was declared).
+    let setMeasured (t: Table) (column: int) (row: int) (value: float) (u: float) : TableEdit list =
+        let c = t.Columns.[column]
+
+        let declaration =
+            match c.Uncertainty with
+            | Some({ PerReading = Some p } as d) when Uncertainty.fromColumn p -> d
+            | Some({ PerReading = Some p } as d) -> { d with PerReading = Some { p with Value = nan } }
+            | Some d -> { d with PerReading = Some { Spread = Spread.Standard; Value = nan; Source = "" } }
+            | None -> Uncertainty.perRow Spread.Standard ""
+
+        let declared = declare t column (Some declaration)
+        let after = declared |> List.fold (fun (m: Map<string, Table>) e -> apply m e) (Map.ofList [ t.Name, t ])
+        let t2 = after.[t.Name]
+
+        match Uncertainty.companionIn t2 t2.Columns.[column] with
+        | Some(j, _) -> declared @ [ setCells t2 column row (Floats [| value |]); setCells t2 j row (Floats [| u |]) ]
+        | None -> declared @ [ setCells t2 column row (Floats [| value |]) ]
+
+    /// Readings of one quantity in float columns of one unit, combined row by row into a column of
+    /// their means and a column `u(name)` of s/√n, after the last of them, the readings kept. Its
+    /// declaration reads each row's from that column with n − 1 degrees of freedom, n the fewest
+    /// readings a row has (the smaller, so the wider interval). Why not, where they cannot be.
+    let combineReadings (t: Table) (columns: int list) : Result<TableEdit list, string> =
+        let cs = columns |> List.distinct |> List.sort |> List.map (fun i -> t.Columns.[i])
+        let units = cs |> List.map (fun c -> if isNull c.Unit then "" else c.Unit) |> List.distinct
+
+        if cs.Length < 2 then
+            Error "select two or more columns of readings"
+        elif cs |> List.exists (fun c -> c.Values.Kind <> "float") then
+            Error "readings are float columns"
+        elif units.Length > 1 then
+            Error $"""readings are in one unit, and these are in {String.Join(", ", units)}"""
+        else
+            let readings = cs |> List.map (fun c -> match c.Values with Floats a -> a | _ -> [||]) |> Array.ofList
+            let means, us, counts = Uncertainty.combine readings
+            let name = Uncertainty.combinedName (cs |> List.map (fun c -> c.Name))
+            let taken = t.Columns |> List.map (fun c -> c.Name) |> Set.ofList
+
+            if taken.Contains name || taken.Contains(Uncertainty.companion name) then
+                Error $"the table has a column {name} or {Uncertainty.companion name} already"
+            else
+                let fewest = counts |> Array.filter (fun n -> n >= 2) |> function [||] -> 0 | ns -> Array.min ns
+
+                if fewest < 2 then
+                    Error "no row has two readings"
+                else
+                    let at = (List.max columns) + 1
+
+                    let declaration =
+                        { PerReading = Some { Spread = Spread.Standard; Value = nan; Source = $"s/√n of {cs.Length} readings" }
+                          Shared = None
+                          Dof = float (fewest - 1) }
+
+                    Ok
+                        [ AddColumn(t.Name, at, { Name = name; Unit = cs.Head.Unit; Values = Floats means; Uncertainty = Some declaration })
+                          AddColumn(t.Name, at + 1, { Name = Uncertainty.companion name; Unit = cs.Head.Unit; Values = Floats us; Uncertainty = None }) ]

@@ -161,8 +161,8 @@ let ``a table's edits run the figure again, rename a column in the prelude, undo
     let trials: Tambour.Data.Table =
         { Name = "trials"
           Columns =
-            [ { Name = "Time"; Unit = "s"; Values = Tambour.Data.Floats t }
-              { Name = "Displacement"; Unit = "m"; Values = Tambour.Data.Floats(t |> Array.map (fun t -> 4.9 * t * t)) } ] }
+            [ { Name = "Time"; Unit = "s"; Values = Tambour.Data.Floats t; Uncertainty = None }
+              { Name = "Displacement"; Unit = "m"; Values = Tambour.Data.Floats(t |> Array.map (fun t -> 4.9 * t * t)); Uncertainty = None } ] }
 
     Tambour.Data.Csv.writeFile (Path.Combine(dir, "trials.csv")) trials
     let script = "#load \"prelude.fsx\"\nopen Prelude\n\nlet fig =\n    plot trials {\n        x U.second (fun r -> r.Time)\n        y U.metre (fun r -> r.Displacement)\n        layer GeomPoint\n    }\n"
@@ -271,8 +271,8 @@ let ``two columns selected are plotted, and a row picked in the figure is marked
     let trials: Tambour.Data.Table =
         { Name = "trials"
           Columns =
-            [ { Name = "Time"; Unit = "s"; Values = Tambour.Data.Floats t }
-              { Name = "Height"; Unit = "m"; Values = Tambour.Data.Floats(t |> Array.map (fun t -> 50.0 - 4.9 * t * t)) } ] }
+            [ { Name = "Time"; Unit = "s"; Values = Tambour.Data.Floats t; Uncertainty = None }
+              { Name = "Height"; Unit = "m"; Values = Tambour.Data.Floats(t |> Array.map (fun t -> 50.0 - 4.9 * t * t)); Uncertainty = None } ] }
 
     Tambour.Data.Csv.writeFile (Path.Combine(dir, "trials.csv")) trials
     File.WriteAllText(Path.Combine(dir, "figure.fsx"), "// Figures of the trials.\n")
@@ -320,9 +320,9 @@ let ``columns without units are plotted, and the block compiles`` () =
     let runs: Tambour.Data.Table =
         { Name = "runs"
           Columns =
-            [ { Name = "step"; Unit = null; Values = Tambour.Data.Ints(Array.init 20 id) }
-              { Name = "auc"; Unit = null; Values = Tambour.Data.Floats(Array.init 20 (fun i -> 0.5 + 0.02 * float i)) }
-              { Name = "loss"; Unit = null; Values = Tambour.Data.Floats(Array.init 20 (fun i -> 1.0 / float (i + 1))) } ] }
+            [ { Name = "step"; Unit = null; Values = Tambour.Data.Ints(Array.init 20 id); Uncertainty = None }
+              { Name = "auc"; Unit = null; Values = Tambour.Data.Floats(Array.init 20 (fun i -> 0.5 + 0.02 * float i)); Uncertainty = None }
+              { Name = "loss"; Unit = null; Values = Tambour.Data.Floats(Array.init 20 (fun i -> 1.0 / float (i + 1))); Uncertainty = None } ] }
 
     Tambour.Data.Csv.writeFile (Path.Combine(dir, "runs.csv")) runs
     File.WriteAllText(Path.Combine(dir, "figure.fsx"), "// Figures of the runs.\n")

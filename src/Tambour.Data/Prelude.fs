@@ -54,6 +54,11 @@ let private literal (s: string) = "\"" + s.Replace("\\", "\\\\").Replace("\"", "
 
 let private invariant = Globalization.CultureInfo.InvariantCulture
 
+/// A number as F# reads it back exactly.
+let private roundTrip (x: float) =
+    let text = x.ToString("R", invariant)
+    if text |> Seq.exists (fun c -> c = '.' || c = 'E' || c = 'e' || Char.IsLetter c) then text else text + ".0"
+
 /// A column's F# type in the record.
 let fieldType (c: Column) =
     match c.Values with
@@ -68,6 +73,33 @@ let fieldType (c: Column) =
 
 /// A table the prelude binds: the table, and the file it is kept in, by name.
 type Source = { Table: Table; File: string }
+
+/// Whether a column reaches a script as uncertain values: a float column with a declaration.
+let isUncertain (c: Column) =
+    match c.Values, c.Uncertainty with
+    | Floats _, Some _ -> true
+    | _ -> false
+
+/// The columns a table's records have: each but a companion `u(name)` whose column's
+/// declaration reads it, since that column's values carry it.
+let fieldsOf (t: Table) =
+    let read =
+        t.Columns |> List.filter (fun c -> isUncertain c && Uncertainty.usesCompanion c) |> List.map (fun c -> Uncertainty.companion c.Name) |> Set.ofList
+
+    t.Columns |> List.filter (fun c -> not (read.Contains c.Name))
+
+/// Whether a table's rows are read raw and then measured: it has an uncertain column.
+let isMeasured (t: Table) = t.Columns |> List.exists isUncertain
+
+/// The measure of a column's values as a script sees them: `m`, or `1` for a plain float.
+let private measureOf (c: Column) =
+    match Units.typing c.Unit with
+    | Typed(measure, _) -> measure
+    | _ -> "1"
+
+/// A column's F# type in the record: uncertain values where it has a declaration.
+let recordType (c: Column) =
+    if isUncertain c then $"Uncertain<{measureOf c}>" else fieldType c
 
 /// The reader of the tables' files, for a script run outside Tambour: CSV as Tambour writes it.
 let private csvReader =
@@ -155,114 +187,6 @@ module private ReadArrow =
     let date (a: IArrowArray) i = (a :?> TimestampArray).GetTimestamp(i).Value.UtcDateTime
 """
 
-/// The prelude for a project's tables.
-let generate (sources: Source list) : string =
-    let text = StringBuilder()
-    let line (s: string) = text.Append(s).Append('\n') |> ignore
-    let arrow = sources |> List.exists (fun s -> s.File.EndsWith ".arrow")
-
-    line "// Written by Tambour from the project's tables whenever their columns change; an edit here is"
-    line "// lost. Tambour loads and opens it for every script beside it; a script run elsewhere says"
-    line "// #load \"prelude.fsx\" and open Prelude."
-
-    if arrow then
-        line "#if !TAMBOUR"
-        line "#r \"nuget: Apache.Arrow, 23.0.0\""
-        line "#endif"
-
-    line "module Prelude"
-    line ""
-    line "open System"
-    line "open Microsoft.FSharp.Data.UnitSystems.SI.UnitSymbols"
-
-    for s in sources do
-        let t = s.Table
-        line ""
-        line $"/// One row of the table {t.Name}, from {s.File}."
-        line $"type {typeName t.Name} ="
-
-        t.Columns
-        |> List.iteri (fun i c ->
-            let note =
-                match c.Values, Units.typing c.Unit with
-                | Floats _, Typed _ -> $"      /// {c.Unit}\n"
-                | Floats _, Untyped why -> $"      /// {c.Unit}: a plain float, since {why}\n"
-                | _ -> ""
-
-            let opening = if i = 0 then "    { " else "      "
-            let closing = if i = t.Columns.Length - 1 then " }" else ""
-            text.Append(if i = 0 then note.Replace("      ///", "    ///") else note) |> ignore
-            line $"{opening}{identifier c.Name}: {fieldType c}{closing}")
-
-    line ""
-    line "#if TAMBOUR"
-
-    for s in sources do
-        let t = s.Table
-        let name = typeName t.Name
-        line ("let mutable " + identifier t.Name + ": " + name + "[] = Tambour.Data.Bound.rows<" + name + "> " + literal t.Name)
-
-    line "#else"
-    text.Append(csvReader) |> ignore
-    if arrow then text.Append(arrowReader) |> ignore
-
-    for s in sources do
-        let t = s.Table
-        let path = "IO.Path.Combine(__SOURCE_DIRECTORY__, " + literal s.File + ")"
-        line ""
-
-        let value (j: int) (c: Column) =
-            let wrap (raw: string) =
-                match c.Values, Units.typing c.Unit with
-                | Floats _, Typed(measure, factor) when factor = 1.0 -> "LanguagePrimitives.FloatWithMeasure<" + measure + "> (" + raw + ")"
-                | Floats _, Typed(measure, factor) ->
-                    "LanguagePrimitives.FloatWithMeasure<" + measure + "> (" + raw + " * " + factor.ToString("R", invariant) + ")"
-                | _ -> raw
-
-            if s.File.EndsWith ".arrow" then
-                let reader =
-                    match c.Values with
-                    | Floats _ -> "ReadArrow.float"
-                    | Ints _ -> "ReadArrow.int"
-                    | Texts _ -> "ReadArrow.text"
-                    | Bools _ -> "ReadArrow.bool"
-                    | Dates _ -> "ReadArrow.date"
-
-                identifier c.Name + " = " + wrap ("columns.[" + string j + "].[i] :?> _"),
-                "ReadArrow.column batches " + string j + " (fun a i -> box (" + reader + " a i))"
-            else
-                let reader =
-                    match c.Values with
-                    | Floats _ -> "Read.float"
-                    | Ints _ -> "Read.int"
-                    | Texts _ -> "id"
-                    | Bools _ -> "Read.bool"
-                    | Dates _ -> "Read.date"
-
-                identifier c.Name + " = " + wrap (reader + " r.[" + string j + "]"), ""
-
-        if s.File.EndsWith ".arrow" then
-            line $"let {identifier t.Name}: {typeName t.Name}[] ="
-            line $"    let batches = ReadArrow.batches ({path})"
-            line "    let columns ="
-            line "        [|"
-            t.Columns |> List.iteri (fun j c -> line $"            {snd (value j c)}")
-            line "        |]"
-            line $"    Array.init (if columns.Length = 0 then 0 else columns.[0].Length) (fun i ->"
-            line "        {"
-            t.Columns |> List.iteri (fun j c -> line $"          {fst (value j c)}")
-            line "        })"
-        else
-            line $"let {identifier t.Name}: {typeName t.Name}[] ="
-            line $"    Read.rows ({path})"
-            line "    |> Array.map (fun r ->"
-            line "        {"
-            t.Columns |> List.iteri (fun j c -> line $"          {fst (value j c)}")
-            line "        })"
-
-    line "#endif"
-    text.ToString()
-
 // ---- Witnesses ------------------------------------------------------------------------------------
 
 /// Marey's witness for each SI symbol, by its symbol: what a typed column is plotted under.
@@ -328,3 +252,235 @@ let witness (unitText: string) : string option =
             | _ -> None
         | Error _ -> None
     | _ -> None
+
+/// The prelude for a project's tables.
+let generate (sources: Source list) : string =
+    let text = StringBuilder()
+    let line (s: string) = text.Append(s).Append('\n') |> ignore
+    let arrow = sources |> List.exists (fun s -> s.File.EndsWith ".arrow")
+
+    line "// Written by Tambour from the project's tables whenever their columns change; an edit here is"
+    line "// lost. Tambour loads and opens it for every script beside it; a script run elsewhere says"
+    line "// #load \"prelude.fsx\" and open Prelude."
+
+    if arrow then
+        line "#if !TAMBOUR"
+        line "#r \"nuget: Apache.Arrow, 23.0.0\""
+        line "#endif"
+
+    line "module Prelude"
+    line ""
+    line "open System"
+    line "open Microsoft.FSharp.Data.UnitSystems.SI.UnitSymbols"
+
+    let measured = sources |> List.filter (fun s -> isMeasured s.Table)
+
+    if not measured.IsEmpty then
+        line "open Marey"
+
+    /// A record type, a field per column, each with its unit and its uncertainty noted.
+    let record (indent: string) (doc: string) (name: string) (columns: Column list) (typeOf: Column -> string) =
+        line ""
+        line $"{indent}/// {doc}"
+        line $"{indent}type {name} ="
+
+        columns
+        |> List.iteri (fun i c ->
+            let unit =
+                match c.Values, Units.typing c.Unit with
+                | Floats _, Typed _ -> Some c.Unit
+                | Floats _, Untyped why -> Some $"{c.Unit}: a plain float, since {why}"
+                | _ -> None
+
+            let uncertainty =
+                match c.Uncertainty with
+                | Some u when typeOf c <> fieldType c ->
+                    let part (kind: string) (p: Part) =
+                        let value = if Uncertainty.fromColumn p then $"each row's in {Uncertainty.companion c.Name}" else p.Value.ToString("R", invariant)
+                        let source = if String.IsNullOrEmpty p.Source then "" else $" ({p.Source})"
+                        $"{kind}: {Uncertainty.describe p.Spread}, {value}{source}"
+
+                    [ u.PerReading |> Option.map (part "each reading's own")
+                      u.Shared |> Option.map (part "shared by every reading") ]
+                    |> List.choose id
+                    |> function
+                        | [] -> None
+                        | parts -> Some(String.Join("; ", parts))
+                | _ -> None
+
+            let note = [ unit; uncertainty ] |> List.choose id
+
+            let opening = if i = 0 then $"{indent}    {{ " else $"{indent}      "
+            let closing = if i = columns.Length - 1 then " }" else ""
+
+            if not note.IsEmpty then
+                line $"""{(if i = 0 then indent + "    " else indent + "      ")}/// {String.Join(". ", note)}"""
+
+            line $"{opening}{identifier c.Name}: {typeOf c}{closing}")
+
+    if not measured.IsEmpty then
+        line ""
+        line "/// The rows of the tables with uncertain columns as their files hold them, before the"
+        line "/// uncertainties are put on."
+        line "module Raw ="
+
+        for s in measured do
+            record "    " $"One row of the table {s.Table.Name} as {s.File} holds it." (typeName s.Table.Name) s.Table.Columns fieldType
+
+    for s in sources do
+        let t = s.Table
+        record "" $"One row of the table {t.Name}, from {s.File}." (typeName t.Name) (fieldsOf t) recordType
+
+    if not measured.IsEmpty then
+        line ""
+        line "/// Each table's rows with their columns' uncertainties put on: each reading its own input,"
+        line "/// and a shared part one input for the whole column, so it cancels in a difference."
+        line "module Measured ="
+        line "    /// A reading with its own uncertainty, as stated; exact where the row states none."
+        line "    let private reading (make: string -> U<'u> -> float<'u> -> float<'u> -> Uncertain<'u>) (label: string) (unit: U<'u>) (value: float<'u>) (u: float<'u>) ="
+        line "        if Double.IsNaN(float u) || Double.IsNaN(float value) then Uncertain.exact unit value else make label unit value u"
+
+        for s in measured do
+            let t = s.Table
+            let name = typeName t.Name
+            line ""
+            line $"    let {identifier t.Name} (rows: Raw.{name}[]) : {name}[] ="
+
+            let witnessOf (c: Column) = witness c.Unit |> Option.defaultValue "U.one"
+            let scaled (c: Column) (v: float) =
+                match Units.typing c.Unit with
+                | Typed(measure, factor) -> $"{roundTrip (v * factor)}<{measure}>"
+                | _ -> roundTrip v
+
+            let make (c: Column) (p: Part) =
+                let dof =
+                    match c.Uncertainty with
+                    | Some u when not (Double.IsPositiveInfinity u.Dof) -> $" |> Uncertain.withDof {roundTrip u.Dof}"
+                    | _ -> ""
+
+                match p.Spread with
+                | Spread.Standard when dof = "" -> "Uncertain.standard"
+                | Spread.Standard -> $"(fun l w v u -> Uncertain.standard l w v u{dof})"
+                | Spread.Rectangular -> "Uncertain.rectangular"
+                | Spread.Triangular -> "Uncertain.triangular"
+                | Spread.Resolution -> "Uncertain.resolution"
+                | Spread.Expanded k -> $"(fun l w v u -> Uncertain.certificate l w v u {roundTrip k})"
+
+            let label (c: Column) (p: Part) (shared: bool) =
+                let source = if String.IsNullOrEmpty p.Source then "" else ": " + p.Source
+                if shared then literal (c.Name + (if source = "" then ": shared" else source))
+                else literal (c.Name + ", row ") + " + string (i + 1)" + (if source = "" then "" else " + " + literal source)
+
+            // A shared part is made once, with an estimate of zero, and added to every reading.
+            for c in t.Columns do
+                match c.Uncertainty with
+                | Some { Shared = Some p } when isUncertain c ->
+                    let zero = match Units.typing c.Unit with Typed(m, _) -> $"0.0<{m}>" | _ -> "0.0"
+                    line $"        let ``{c.Name} shared`` = {make c p} {label c p true} {witnessOf c} {zero} ({scaled c p.Value})"
+                | _ -> ()
+
+            line "        rows"
+            line "        |> Array.mapi (fun i r ->"
+            line "            {"
+
+            for c in fieldsOf t do
+                let field = $"r.{identifier c.Name}"
+
+                let value =
+                    match c.Uncertainty with
+                    | Some u when isUncertain c ->
+                        let own =
+                            match u.PerReading with
+                            | Some p ->
+                                let stated = if Uncertainty.fromColumn p then $"r.{identifier (Uncertainty.companion c.Name)}" else $"({scaled c p.Value})"
+                                $"reading {make c p} ({label c p false}) {witnessOf c} {field} {stated}"
+                            | None -> $"Uncertain.exact {witnessOf c} {field}"
+
+                        match u.Shared with
+                        | Some _ -> $"{own} + ``{c.Name} shared``"
+                        | None -> own
+                    | _ -> field
+
+                line $"              {identifier c.Name} = {value}"
+
+            line "            })"
+
+    line ""
+    line "#if TAMBOUR"
+
+    for s in sources do
+        let t = s.Table
+        let name = typeName t.Name
+        if isMeasured t then
+            line ("let mutable " + identifier t.Name + ": " + name + "[] = Tambour.Data.Bound.rows<Raw." + name + "> " + literal t.Name + " |> Measured." + identifier t.Name)
+        else
+            line ("let mutable " + identifier t.Name + ": " + name + "[] = Tambour.Data.Bound.rows<" + name + "> " + literal t.Name)
+
+    line "#else"
+    text.Append(csvReader) |> ignore
+    if arrow then text.Append(arrowReader) |> ignore
+
+    for s in sources do
+        let t = s.Table
+        let path = "IO.Path.Combine(__SOURCE_DIRECTORY__, " + literal s.File + ")"
+        line ""
+
+        let value (j: int) (c: Column) =
+            let wrap (raw: string) =
+                match c.Values, Units.typing c.Unit with
+                | Floats _, Typed(measure, factor) when factor = 1.0 -> "LanguagePrimitives.FloatWithMeasure<" + measure + "> (" + raw + ")"
+                | Floats _, Typed(measure, factor) ->
+                    "LanguagePrimitives.FloatWithMeasure<" + measure + "> (" + raw + " * " + factor.ToString("R", invariant) + ")"
+                | _ -> raw
+
+            if s.File.EndsWith ".arrow" then
+                let reader =
+                    match c.Values with
+                    | Floats _ -> "ReadArrow.float"
+                    | Ints _ -> "ReadArrow.int"
+                    | Texts _ -> "ReadArrow.text"
+                    | Bools _ -> "ReadArrow.bool"
+                    | Dates _ -> "ReadArrow.date"
+
+                identifier c.Name + " = " + wrap ("columns.[" + string j + "].[i] :?> _"),
+                "ReadArrow.column batches " + string j + " (fun a i -> box (" + reader + " a i))"
+            else
+                let reader =
+                    match c.Values with
+                    | Floats _ -> "Read.float"
+                    | Ints _ -> "Read.int"
+                    | Texts _ -> "id"
+                    | Bools _ -> "Read.bool"
+                    | Dates _ -> "Read.date"
+
+                identifier c.Name + " = " + wrap (reader + " r.[" + string j + "]"), ""
+
+        // A measured table's fields are the raw record's, each named by its type.
+        let measured = isMeasured t
+        let fieldLine (_: int) (text: string) = if measured then $"Raw.{typeName t.Name}.{text}" else text
+        let measure () = if measured then line $"    |> Measured.{identifier t.Name}"
+
+        if s.File.EndsWith ".arrow" then
+            line $"let {identifier t.Name}: {typeName t.Name}[] ="
+            line $"    let batches = ReadArrow.batches ({path})"
+            line "    let columns ="
+            line "        [|"
+            t.Columns |> List.iteri (fun j c -> line $"            {snd (value j c)}")
+            line "        |]"
+            line $"    Array.init (if columns.Length = 0 then 0 else columns.[0].Length) (fun i ->"
+            line "        {"
+            t.Columns |> List.iteri (fun j c -> line $"          {fieldLine j (fst (value j c))}")
+            line "        })"
+            measure ()
+        else
+            line $"let {identifier t.Name}: {typeName t.Name}[] ="
+            line $"    Read.rows ({path})"
+            line "    |> Array.map (fun r ->"
+            line "        {"
+            t.Columns |> List.iteri (fun j c -> line $"          {fieldLine j (fst (value j c))}")
+            line "        })"
+            measure ()
+
+    line "#endif"
+    text.ToString()
+

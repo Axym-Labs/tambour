@@ -61,6 +61,9 @@ type Preferences =
       RunOnSave: bool
       /// The format Export writes unless another is chosen.
       ExportFormat: string
+      /// How the grid writes a value with its uncertainty: `concise`, 1.234(5), or `plusminus`,
+      /// 1.234 ± 0.005.
+      UncertaintyForm: string
       /// How many opened files the recent list keeps.
       RecentKeep: int
       /// Shortcuts changed from the app's own, by the command's name; an empty one takes the key away.
@@ -81,6 +84,7 @@ let defaults =
       Ligatures = true
       RunOnSave = true
       ExportFormat = "png"
+      UncertaintyForm = "concise"
       RecentKeep = 10
       Keys = Map.empty }
 
@@ -88,6 +92,7 @@ let defaults =
 let editorSizes = (9.0, 32.0)
 let recentKeeps = (1, 50)
 let exportFormats = [ "png"; "pdf"; "svg" ]
+let uncertaintyForms = [ "concise"; "plusminus" ]
 
 /// The recent list with a path opened: at its head, once, the oldest past the length kept dropped.
 let opened (keep: int) (path: string) (recent: string list) =
@@ -152,6 +157,11 @@ let read (directory: string) : Preferences =
             | true, f when f.ValueKind = JsonValueKind.String && List.contains (f.GetString()) exportFormats -> f.GetString()
             | _ -> defaults.ExportFormat
 
+        let uncertaintyForm =
+            match root.TryGetProperty "uncertaintyForm" with
+            | true, f when f.ValueKind = JsonValueKind.String && List.contains (f.GetString()) uncertaintyForms -> f.GetString()
+            | _ -> defaults.UncertaintyForm
+
         { Theme = theme
           Recent = paths "recent"
           Tabs = paths "tabs"
@@ -165,6 +175,7 @@ let read (directory: string) : Preferences =
           Ligatures = flag "ligatures"
           RunOnSave = flag "runOnSave"
           ExportFormat = format
+          UncertaintyForm = uncertaintyForm
           RecentKeep = int (number "recentKeep" (float defaults.RecentKeep) (float (fst recentKeeps), float (snd recentKeeps)))
           Keys = keys }
     with _ ->
@@ -197,6 +208,7 @@ let write (directory: string) (preferences: Preferences) =
               "ligatures", box preferences.Ligatures
               "runOnSave", box preferences.RunOnSave
               "exportFormat", box preferences.ExportFormat
+              "uncertaintyForm", box preferences.UncertaintyForm
               "recentKeep", box preferences.RecentKeep
               "keys", box (dict [ for KeyValue(k, v) in preferences.Keys -> k, v ])
               match preferences.Window with

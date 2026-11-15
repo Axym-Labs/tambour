@@ -23,8 +23,8 @@ let private workspace (dir: string) =
     let table =
         { Name = "trial"
           Columns =
-            [ { Name = "t"; Unit = "s"; Values = Floats [| 0.0; 0.5; nan |] }
-              { Name = "label"; Unit = null; Values = Texts [| "a"; null; "c" |] } ] }
+            [ { Name = "t"; Unit = "s"; Values = Floats [| 0.0; 0.5; nan |]; Uncertainty = None }
+              { Name = "label"; Unit = null; Values = Texts [| "a"; null; "c" |]; Uncertainty = None } ] }
 
     Csv.writeFile (Path.Combine(dir, "tables", "trial.csv")) table
     Arrow.writeFile (Path.Combine(dir, "tables", "big.arrow")) { table with Name = "big" }
