@@ -172,6 +172,9 @@ module Budgets =
             |> Chart.withTitle $"{name} = {Uncertain.report x}"
             |> Chart.withSubtitle (expanded x)
             |> Chart.withYLabel "share of u², %"
+            // Shares from zero, the bars standing on the axis; past 0–100 only where correlations
+            // take some away or add more.
+            |> Chart.withYDomain (min 0.0 (bars |> Array.map snd |> Array.min)) (max 100.0 (bars |> Array.map snd |> Array.max))
             |> Some
 
 /// The value of a binding as a live figure, if it is a figure, or a value with its uncertainty,
