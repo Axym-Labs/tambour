@@ -12,8 +12,8 @@ source, and the source runs unchanged in plain `dotnet fsi`.
 
 ## Status
 
-0.2.0 is the current release, on Marey 1.0.0-rc.3, for Linux and Windows, with no .NET installed.
-Its packages are on the Releases page.
+0.2.0 is the current release, on Marey 1.0.0-rc.3, for Linux and Windows. It needs no .NET
+installed, and its packages are on the Releases page.
 
 ## What it does
 
@@ -27,9 +27,9 @@ and renaming. A column plotted under the wrong unit is a compile error, underlin
 happens. Where Marey can tell what a call is missing, such as `Chart.lineIn t x` without the
 witnesses of its units, Ctrl+. or the right button on the call offers the fix. Ctrl+., Ctrl+Space
 (completion) and F2 (renaming) are Edit menu commands like any other, so their keys can be changed
-in Preferences → Keyboard shortcuts. Ctrl+click or F12 on a name goes to its definition: in the
-script, or for Marey and FSharp.Core in their source, which the app carries at the commit it was
-built from and opens read-only in a tab above the script. Alt+Left goes back.
+in Preferences → Keyboard shortcuts. Ctrl+click or F12 on a name goes to its definition. A
+definition in Marey or FSharp.Core opens read-only in a tab above the script, from the source the
+app carries at the commit it was built from. Alt+Left goes back.
 
 **GUI actions** (title, labels, log axis, domain, theme, legend, colour, facet, fit, a layer)
 edit the script rather than the figure. An action, a fix and typed text share one history, so
@@ -37,17 +37,19 @@ Ctrl+Z takes back each in turn.
 
 **Tables.** A table is a grid of typed columns, each with a name and a unit, imported from CSV or
 Arrow or typed in. A drag selects a block of cells and Ctrl+drag adds more, which Delete empties
-at once; on whole rows already empty, Delete removes them. Selecting two columns and pressing Ctrl+Shift+P writes a `plot { }` block for
-them into the script; a point picked in the figure marks its row in the grid. Edits to a table
-run the figure again and are undone like the script's.
+at once; on whole rows already empty, Delete removes them. Selecting two columns and pressing
+Ctrl+Shift+P writes a `plot { }` block for them into the script, and a point picked in the figure
+marks its row in the grid. Edits to a table run the figure again and are undone like the
+script's.
 
-**Uncertainties.** A float column's *Uncertainty…* (its menu) states what each reading's own is
-(a resolution, a ± per reading, a standard uncertainty, a certificate's U and k) and what is
-shared by every reading (a calibration, a zero offset), in the lab's words. Typing `1.234 ± 0.005`
-or `1.234(5)` in a cell keeps each row's own in a column `u(name)` beside it, so the CSV reads
-anywhere. *Combine as readings* turns repeated readings into their means with s/√n. The script
-sees such a column as `Uncertain<m>` (Marey.Uncertainty), plotted with its error bars, and a
-value with its uncertainty that a script binds is shown beside the figures as its budget.
+**Uncertainties.** *Uncertainty…* in a float column's menu says, in the lab's words, how
+uncertain each reading is on its own (a resolution, a ± per reading, a standard uncertainty, a
+certificate's U and k) and what every reading shares (a calibration, a zero offset). Typing
+`1.234 ± 0.005` or `1.234(5)` in a cell keeps that row's uncertainty in a column `u(name)` beside
+it, so the CSV reads anywhere. *Combine as readings* turns repeated readings into their means with
+s/√n. The script sees such a column as `Uncertain<m>` (Marey.Uncertainty) and plots it with its
+error bars. When a script binds a value with its uncertainty, its budget appears beside the
+figures.
 
 **Workspaces.** Each tab is a workspace with its own scripts, tables, history and worker; nothing
 is shared between tabs. A new workspace saves as a single `.tambour` file: a zip holding the
@@ -68,9 +70,9 @@ A script may take `open Marey` and the SI unit symbols for granted. An axis has 
 script gives one (`x U.second (fun r -> r.Time)`) and none where it does not
 (`x (fun r -> r.Index)`). A script that wants every axis to have one opens `Marey.UnitsOfMeasure`,
 as does one that passes arrays in units to `Chart.lineIn` and its kin, which only that mode has.
-A workspace's tables reach its scripts as typed records through a generated `prelude.fsx`: inside
-Tambour it binds the columns in the grid, and outside it reads the table files, so with
-`#load "prelude.fsx"` and Marey referenced a script runs as it is in `dotnet fsi`.
+A workspace's tables reach its scripts as typed records through a generated `prelude.fsx`. Inside
+Tambour it binds the columns in the grid, and outside it reads the table files, so a script that
+loads `prelude.fsx` and references Marey runs as it is in `dotnet fsi`.
 `#r "nuget: …"` works where a .NET SDK is installed, and says what to install where none is.
 
 A workspace on disk, unpacked or exported:
@@ -141,7 +143,7 @@ The package is not code-signed yet, so Windows treats it as coming from an unkno
 
 ## Building
 
-The .NET 10 SDK (`global.json`). Marey comes from nuget.org, at the exact version
+Building needs the .NET 10 SDK (`global.json`). Marey comes from nuget.org, at the exact version
 `Directory.Packages.props` pins.
 
 ```bash
@@ -150,10 +152,10 @@ dotnet test Tambour.slnx
 dotnet run --project src/Tambour -- --self-check
 ```
 
-`--self-check` opens a window, paints a figure in it and exits, with 0 if it painted. The tests
-that check every GUI action against Marey's examples look for them in a checkout of Marey beside
-this one, or in `MAREY_EXAMPLES`, at the commit `Directory.Packages.props` names, and skip without
-one.
+`--self-check` opens a window, paints a figure in it and exits, with 0 if it painted. Some tests
+check every GUI action against Marey's examples. They look for the examples in a checkout of Marey
+beside this one, or in `MAREY_EXAMPLES`, at the commit `Directory.Packages.props` names, and skip
+when there is none.
 
 Three more checks run the app end to end, each exiting 0 when it holds:
 
@@ -167,9 +169,9 @@ Three more checks run the app end to end, each exiting 0 when it holds:
 ## Packages
 
 `tools/package.sh [version]` writes to `artifacts/package` a self-contained Linux tarball (and an
-AppImage of it where `appimagetool` is on the path) and a Windows zip. Nothing is written next to
-the executable: settings, caches and the workers' sockets go to the XDG directories on Linux and to
-the user's application data on Windows (the sockets to its temporary directory), so the same
+AppImage of it where `appimagetool` is on the path) and a Windows zip. The app writes nothing next
+to its executable. Settings, caches and the workers' sockets go to the XDG directories on Linux and
+to the user's application data on Windows (the sockets to its temporary directory), so the same
 directory can also be wrapped as a Flatpak or an AUR package. `tools/no-dotnet.sh` runs a command
 in a bubblewrap sandbox that hides every .NET installation:
 
